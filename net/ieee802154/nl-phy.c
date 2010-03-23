@@ -177,6 +177,7 @@ static int ieee802154_add_iface(struct sk_buff *skb,
 	const char *devname;
 	int rc = -ENOBUFS;
 	struct net_device *dev;
+	int type = IEEE802154_DEV_WPAN;
 
 	pr_debug("%s\n", __func__);
 
@@ -191,13 +192,26 @@ static int ieee802154_add_iface(struct sk_buff *skb,
 		devname = nla_data(info->attrs[IEEE802154_ATTR_DEV_NAME]);
 		if (devname[nla_len(info->attrs[IEEE802154_ATTR_DEV_NAME]) - 1]
 				!= '\0')
-			return -EINVAL; /* phy name should be null-terminated */
+			return -EINVAL; /* dev name should be null-terminated */
 	} else  {
 		devname = "wpan%d";
 	}
 
 	if (strlen(devname) >= IFNAMSIZ)
 		return -ENAMETOOLONG;
+
+	if (info->attrs[IEEE802154_ATTR_HW_ADDR] &&
+	    nla_len(info->attrs[IEEE802154_ATTR_HW_ADDR]) !=
+			IEEE802154_ADDR_LEN) {
+		return -EINVAL;
+	}
+
+	if (info->attrs[IEEE802154_ATTR_DEV_TYPE]) {
+		type = nla_get_u8(info->attrs[IEEE802154_ATTR_DEV_TYPE]);
+		if (type > __IEEE802154_DEV_MAX) {
+			return -EINVAL;
+		}
+	}
 
 	phy = wpan_phy_find(name);
 	if (!phy)
@@ -212,14 +226,7 @@ static int ieee802154_add_iface(struct sk_buff *skb,
 		goto nla_put_failure;
 	}
 
-	if (info->attrs[IEEE802154_ATTR_HW_ADDR] &&
-	    nla_len(info->attrs[IEEE802154_ATTR_HW_ADDR]) !=
-			IEEE802154_ADDR_LEN) {
-		rc = -EINVAL;
-		goto nla_put_failure;
-	}
-
-	dev = phy->add_iface(phy, devname);
+	dev = phy->add_iface(phy, devname, type);
 	if (IS_ERR(dev)) {
 		rc = PTR_ERR(dev);
 		goto nla_put_failure;

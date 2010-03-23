@@ -27,6 +27,7 @@
 #include <linux/rculist.h>
 #include <linux/random.h>
 #include <linux/crc-ccitt.h>
+#include <linux/nl802154.h>
 
 #include <net/rtnetlink.h>
 #include <net/af_ieee802154.h>
@@ -530,11 +531,15 @@ void ieee802154_del_iface(struct wpan_phy *phy,
 }
 
 struct net_device *ieee802154_add_iface(struct wpan_phy *phy,
-		const char *name)
+		const char *name, int type)
 {
 	struct net_device *dev;
-	int err = -ENOMEM;
+	int err = -EINVAL;
 
+	if (type != IEEE802154_DEV_WPAN)
+		goto err;
+
+	err = -ENOMEM;
 	dev = alloc_netdev(sizeof(struct ieee802154_sub_if_data),
 			name, ieee802154_netdev_setup);
 	if (!dev)
