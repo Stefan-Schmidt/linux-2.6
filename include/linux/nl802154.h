@@ -75,8 +75,6 @@ enum {
 
 #define IEEE802154_ATTR_MAX (__IEEE802154_ATTR_MAX - 1)
 
-extern const struct nla_policy ieee802154_policy[];
-
 /* commands */
 /* REQ should be responded with CONF
  * and INDIC with RESP
