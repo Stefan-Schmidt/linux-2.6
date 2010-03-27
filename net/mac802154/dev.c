@@ -41,6 +41,8 @@
 #include "beacon_hash.h"
 #include "mib.h"
 
+static void ieee802154_notify_monitors(struct ieee802154_priv *priv, struct sk_buff *skb);
+
 struct xmit_work {
 	struct sk_buff *skb;
 	struct work_struct work;
@@ -116,6 +118,8 @@ static netdev_tx_t ieee802154_net_xmit(struct sk_buff *skb, struct net_device *d
 	if (!work)
 		return NETDEV_TX_BUSY;
 
+	ieee802154_notify_monitors(ieee802154_to_priv(&priv->hw->hw), skb);
+
 	INIT_WORK(&work->work, ieee802154_xmit_worker);
 	work->skb = skb;
 	work->priv = priv->hw;
@@ -166,7 +170,7 @@ static int ieee802154_slave_close(struct net_device *dev)
 }
 
 
-static int ieee802154_slave_ioctl(struct net_device *dev, struct ifreq *ifr,
+static int ieee802154_wpan_ioctl(struct net_device *dev, struct ifreq *ifr,
 		int cmd)
 {
 	struct ieee802154_sub_if_data *priv = netdev_priv(dev);
@@ -212,7 +216,7 @@ static int ieee802154_slave_ioctl(struct net_device *dev, struct ifreq *ifr,
 	return err;
 }
 
-static int ieee802154_slave_mac_addr(struct net_device *dev, void *p)
+static int ieee802154_wpan_mac_addr(struct net_device *dev, void *p)
 {
 	struct sockaddr *addr = p;
 
@@ -423,16 +427,25 @@ static struct header_ops ieee802154_header_ops = {
 	.parse		= ieee802154_header_parse,
 };
 
-static const struct net_device_ops ieee802154_slave_ops = {
+static const struct net_device_ops ieee802154_wpan_ops = {
 	.ndo_open		= ieee802154_slave_open,
 	.ndo_stop		= ieee802154_slave_close,
 	.ndo_start_xmit		= ieee802154_net_xmit,
-	.ndo_do_ioctl		= ieee802154_slave_ioctl,
-	.ndo_set_mac_address	= ieee802154_slave_mac_addr,
+	.ndo_do_ioctl		= ieee802154_wpan_ioctl,
+	.ndo_set_mac_address	= ieee802154_wpan_mac_addr,
 };
 
-static void ieee802154_netdev_setup(struct net_device *dev)
+static const struct net_device_ops ieee802154_monitor_ops = {
+	.ndo_open		= ieee802154_slave_open,
+	.ndo_stop		= ieee802154_slave_close,
+	.ndo_start_xmit		= ieee802154_net_xmit,
+};
+
+
+static void ieee802154_wpan_setup(struct net_device *dev)
 {
+	struct ieee802154_sub_if_data *priv;
+
 	dev->addr_len		= IEEE802154_ADDR_LEN;
 	memset(dev->broadcast, 0xff, IEEE802154_ADDR_LEN);
 	dev->features		= NETIF_F_NO_CSUM;
@@ -446,8 +459,46 @@ static void ieee802154_netdev_setup(struct net_device *dev)
 	dev->watchdog_timeo	= 0;
 
 	dev->destructor		= free_netdev;
-	dev->netdev_ops		= &ieee802154_slave_ops;
+	dev->netdev_ops		= &ieee802154_wpan_ops;
 	dev->ml_priv		= &mac802154_mlme;
+
+	priv = netdev_priv(dev);
+	priv->type = IEEE802154_DEV_WPAN;
+
+	priv->chan = -1; /* not initialized */
+	priv->page = 0; /* for compat */
+
+	spin_lock_init(&priv->mib_lock);
+
+	get_random_bytes(&priv->bsn, 1);
+	get_random_bytes(&priv->dsn, 1);
+
+	priv->pan_id = IEEE802154_PANID_BROADCAST;
+	priv->short_addr = IEEE802154_ADDR_BROADCAST;
+}
+
+static void ieee802154_monitor_setup(struct net_device *dev)
+{
+	struct ieee802154_sub_if_data *priv;
+
+	dev->addr_len		= 0;
+	dev->features		= NETIF_F_NO_CSUM;
+	dev->hard_header_len	= 0;
+	dev->needed_tailroom	= 2; /* FCS */
+	dev->mtu		= 127;
+	dev->tx_queue_len	= 10;
+	dev->type		= ARPHRD_IEEE802154_MONITOR;
+	dev->flags		= IFF_NOARP | IFF_BROADCAST;
+	dev->watchdog_timeo	= 0;
+
+	dev->destructor		= free_netdev;
+	dev->netdev_ops		= &ieee802154_wpan_ops; // FIXME
+
+	priv = netdev_priv(dev);
+	priv->type = IEEE802154_DEV_MONITOR;
+
+	priv->chan = -1; /* not initialized */
+	priv->page = 0; /* for compat */
 }
 
 /*
@@ -481,17 +532,6 @@ static int ieee802154_netdev_register(struct wpan_phy *phy,
 	priv = netdev_priv(dev);
 	priv->dev = dev;
 	priv->hw = ipriv;
-
-	priv->chan = -1; /* not initialized */
-	priv->page = 0; /* for compat */
-
-	spin_lock_init(&priv->mib_lock);
-
-	get_random_bytes(&priv->bsn, 1);
-	get_random_bytes(&priv->dsn, 1);
-
-	priv->pan_id = IEEE802154_PANID_BROADCAST;
-	priv->short_addr = IEEE802154_ADDR_BROADCAST;
 
 	dev->needed_headroom = ipriv->hw.extra_tx_headroom;
 
@@ -534,16 +574,25 @@ struct net_device *ieee802154_add_iface(struct wpan_phy *phy,
 		const char *name, int type)
 {
 	struct net_device *dev;
-	int err = -EINVAL;
+	int err = -ENOMEM;
 
-	if (type != IEEE802154_DEV_WPAN)
-		goto err;
-
-	err = -ENOMEM;
-	dev = alloc_netdev(sizeof(struct ieee802154_sub_if_data),
-			name, ieee802154_netdev_setup);
+	switch (type) {
+	case IEEE802154_DEV_WPAN:
+		dev = alloc_netdev(sizeof(struct ieee802154_sub_if_data),
+				name, ieee802154_wpan_setup);
+		break;
+	case IEEE802154_DEV_MONITOR:
+		dev = alloc_netdev(sizeof(struct ieee802154_sub_if_data),
+				name, ieee802154_monitor_setup);
+		break;
+	default:
+		dev = NULL;
+		err = -EINVAL;
+		break;
+	}
 	if (!dev)
 		goto err;
+
 
 	err = ieee802154_netdev_register(phy, dev);
 
@@ -815,6 +864,28 @@ exit_error:
 	return -EINVAL;
 }
 
+static void ieee802154_notify_monitors(struct ieee802154_priv *priv, struct sk_buff *skb)
+{
+	struct sk_buff *skb2;
+	struct ieee802154_sub_if_data *sdata;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(sdata, &priv->slaves, list) {
+		if (sdata->type != IEEE802154_DEV_MONITOR)
+			continue;
+
+		skb2 = skb_clone(skb, GFP_ATOMIC);
+		skb2->dev = sdata->dev;
+		skb2->pkt_type = PACKET_HOST;
+
+		if (in_interrupt())
+			netif_rx(skb2);
+		else
+			netif_rx_ni(skb2);
+	}
+	rcu_read_unlock();
+}
+
 void ieee802154_subif_rx(struct ieee802154_dev *hw, struct sk_buff *skb)
 {
 	struct ieee802154_priv *priv = ieee802154_to_priv(hw);
@@ -839,6 +910,8 @@ void ieee802154_subif_rx(struct ieee802154_dev *hw, struct sk_buff *skb)
 		skb_trim(skb, skb->len - 2); /* CRC */
 	}
 
+	ieee802154_notify_monitors(priv, skb);
+
 	ret = parse_frame_start(skb); /* 3 bytes pulled after this */
 	if (ret) {
 		pr_debug("%s(): Got invalid frame\n", __func__);
@@ -850,6 +923,9 @@ void ieee802154_subif_rx(struct ieee802154_dev *hw, struct sk_buff *skb)
 	rcu_read_lock();
 	list_for_each_entry_rcu(sdata, &priv->slaves, list)
 	{
+		if (sdata->type == IEEE802154_DEV_MONITOR)
+			continue;
+
 		if (prev) {
 			struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
 			if (skb2)

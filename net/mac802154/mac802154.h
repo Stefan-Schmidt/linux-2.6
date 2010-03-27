@@ -53,6 +53,8 @@ struct ieee802154_sub_if_data {
 	struct ieee802154_priv *hw;
 	struct net_device *dev;
 
+	int type;
+
 	spinlock_t mib_lock;
 
 	u16 pan_id;
