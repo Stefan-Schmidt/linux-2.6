@@ -219,6 +219,10 @@ cc2420_write_txfifo(struct cc2420_local *lp, u8 *data, u8 len)
 		.tx_buf		= lp->buf,
 		.rx_buf		= lp->buf,
 	};
+	struct spi_transfer xfer_len = {
+		.len		= 1,
+		.tx_buf		= &len,
+	};
 	struct spi_transfer xfer_buf = {
 		.len		= len,
 		.tx_buf		= data,
@@ -230,6 +234,7 @@ cc2420_write_txfifo(struct cc2420_local *lp, u8 *data, u8 len)
 
 	spi_message_init(&msg);
 	spi_message_add_tail(&xfer_head, &msg);
+	spi_message_add_tail(&xfer_len, &msg);
 	spi_message_add_tail(&xfer_buf, &msg);
 
 	status = spi_sync(lp->spi, &msg);
