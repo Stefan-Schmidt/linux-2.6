@@ -65,7 +65,7 @@ struct ieee802154_sub_if_data {
 
 	/* MAC BSN field */
 	u8 bsn;
-	/* MAC BSN field */
+	/* MAC DSN field */
 	u8 dsn;
 };
 
