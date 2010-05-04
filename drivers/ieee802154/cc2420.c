@@ -588,10 +588,12 @@ static int __devinit cc2420_probe(struct spi_device *spi)
 	ret = gpio_request(lp->pdata->cca, "cca");
 	if (ret)
 		goto err_free_gpio_fifo;
+#if 0
 	/* This is causing problems as fifop is gpio 0 ? */
 	ret = gpio_request(lp->pdata->fifop, "fifop");
 	if (ret)
 		goto err_free_gpio_cca;
+#endif
 	ret = gpio_request(lp->pdata->sfd, "sfd");
 	if (ret)
 		goto err_free_gpio_fifop;
@@ -700,8 +702,8 @@ err_free_gpio_sfd:
 	gpio_free(lp->pdata->sfd);
 err_free_gpio_fifop:
 	gpio_free(lp->pdata->fifop);
-err_free_gpio_cca:
-	gpio_free(lp->pdata->cca);
+//err_free_gpio_cca:
+//	gpio_free(lp->pdata->cca);
 err_free_gpio_fifo:
 	gpio_free(lp->pdata->fifo);
 err_free_buf:
