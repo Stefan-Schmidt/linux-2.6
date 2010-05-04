@@ -496,7 +496,7 @@ static void cc2420_sfd_irqwork(struct work_struct *work)
 		= container_of(work, struct cc2420_local, sfd_irqwork);
 	unsigned long flags;
 
-	dev_dbg(&lp->spi->dev, "fifop interrupt received\n");
+	dev_dbg(&lp->spi->dev, "sfd interrupt received\n");
 
 	spin_lock_irqsave(&lp->lock, flags);
 	if (lp->is_tx) {
@@ -544,7 +544,7 @@ static int cc2420_hw_init(struct cc2420_local *lp)
 		udelay(1);
 	} while (!(status & CC2420_STATUS_XOSC16M_STABLE));
 
-	dev_info(&lp->spi->dev, "oscillator succesfully brought up \n");
+	dev_info(&lp->spi->dev, "oscillator succesfully brought up\n");
 
 	return 0;
 error_ret:
@@ -645,7 +645,7 @@ static int __devinit cc2420_probe(struct spi_device *spi)
 		goto err_free_gpio_vreg;
 	}
 	/* TODO: make it more readable */
-	dev_info(&lp->spi->dev, "Found Chipon CC2420\n");
+	dev_info(&lp->spi->dev, "Found Chipcon CC2420\n");
 	dev_info(&lp->spi->dev, "Manufacturer ID:%x Version:%x Partnum:%x\n",
 		   manidl & 0x0FFF, manidh >> 12, manidl >> 12);
 
@@ -662,7 +662,7 @@ static int __devinit cc2420_probe(struct spi_device *spi)
 					  dev_name(&spi->dev),
 					  lp);
 	if (ret) {
-		dev_err(&spi->dev, "could not get fifop irq for some reason? \n");
+		dev_err(&spi->dev, "could not get fifop irq?\n");
 		goto err_free_fifop_irq;
 	}
 
@@ -672,12 +672,13 @@ static int __devinit cc2420_probe(struct spi_device *spi)
 					  dev_name(&spi->dev),
 					  lp);
 	if (ret) {
-		dev_err(&spi->dev, "could not get sfd irq for some reason? \n");
+		dev_err(&spi->dev, "could not get sfd irq?\n");
 		goto err_free_sfd_irq;
 	}
 
-	dev_dbg(&lp->spi->dev, "Close addr decode\n");
-	cc2420_write_16_bit_reg_partial(lp, CC2420_MDMCTRL0, 0, 1 << CC2420_MDMCTRL0_ADRDECODE);
+	dev_dbg(&lp->spi->dev, "Disable hardware address decoding\n");
+	cc2420_write_16_bit_reg_partial(lp, CC2420_MDMCTRL0,
+					0, 1 << CC2420_MDMCTRL0_ADRDECODE);
 	dev_info(&lp->spi->dev, "Set fifo threshold to 127\n");
 	cc2420_write_16_bit_reg_partial(lp, CC2420_IOCFG0, 127, CC2420_FIFOP_THR_MASK);
 	ret = cc2420_register(lp);
