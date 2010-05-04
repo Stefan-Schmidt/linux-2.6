@@ -23,6 +23,7 @@
 #include <linux/i2c.h>
 #include <linux/mfd/da903x.h>
 #include <linux/sht15.h>
+#include <linux/spi/cc2420.h>
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
@@ -38,6 +39,13 @@
 
 #include "devices.h"
 #include "generic.h"
+
+#define GPIO_FIFOP	0
+#define GPIO_SFD	16
+#define GPIO_RESET	22
+#define GPIO_FIFO	114
+#define GPIO_VREG	115
+#define GPIO_CCA	116
 
 static unsigned long imote2_pin_config[] __initdata = {
 
@@ -57,15 +65,6 @@ static unsigned long imote2_pin_config[] __initdata = {
 	GPIO109_MMC_DAT_1,
 	GPIO110_MMC_DAT_2,
 	GPIO111_MMC_DAT_3,
-
-	/* 802.15.4 radio - driver out of mainline */
-	GPIO22_GPIO,			/* CC_RSTN */
-	GPIO114_GPIO,			/* CC_FIFO */
-	GPIO116_GPIO,			/* CC_CCA */
-	GPIO0_GPIO,			/* CC_FIFOP */
-	GPIO16_GPIO,			/* CCSFD */
-	GPIO39_GPIO,			/* CSn */
-	GPIO115_GPIO,			/* Power enable */
 
 	/* I2C */
 	GPIO117_I2C_SCL,
@@ -505,6 +504,15 @@ static struct pxa2xx_spi_chip cc2420_info = {
 	.gpio_cs = 39,
 };
 
+static struct cc2420_platform_data cc2420_pdata = {
+        .fifo	= GPIO_FIFO,
+        .cca	= GPIO_CCA,
+        .fifop	= GPIO_FIFOP,
+        .sfd	= GPIO_SFD,
+        .reset	= GPIO_RESET,
+        .vreg	= GPIO_VREG,
+};
+
 static struct spi_board_info spi_board_info[] __initdata = {
 	{ /* Driver in IIO */
 		.modalias = "lis3l02dq",
@@ -519,6 +527,7 @@ static struct spi_board_info spi_board_info[] __initdata = {
 		.bus_num = 3,
 		.chip_select = 0,
 		.controller_data = &cc2420_info,
+		.platform_data = &cc2420_pdata,
 	},
 };
 
