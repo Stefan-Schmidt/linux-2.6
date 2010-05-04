@@ -367,8 +367,9 @@ static int cc2420_rx(struct cc2420_local *lp)
 		return -EINVAL;
 	}
 
-	skb_trim(skb, len-1); /* We do not put CRC and Corr into
-							the frame, but remain rssi value */
+	/* Clip last two bytes. When using hardware FCS they get replaced with
+	 * correlation value, FCS flag and RSSI value */
+	skb_trim(skb, len-2);
 
 	ieee802154_rx_irqsafe(lp->dev, skb, lqi);
 
