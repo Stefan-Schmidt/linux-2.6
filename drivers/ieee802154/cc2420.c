@@ -213,6 +213,8 @@ static int
 cc2420_write_txfifo(struct cc2420_local *lp, u8 *data, u8 len)
 {
 	int status;
+	/* Length byte must include FCS even if calculated in hardware */
+	int len_byte = len + 2;
 	struct spi_message msg;
 	struct spi_transfer xfer_head = {
 		.len		= 1,
@@ -221,7 +223,7 @@ cc2420_write_txfifo(struct cc2420_local *lp, u8 *data, u8 len)
 	};
 	struct spi_transfer xfer_len = {
 		.len		= 1,
-		.tx_buf		= &len,
+		.tx_buf		= &len_byte,
 	};
 	struct spi_transfer xfer_buf = {
 		.len		= len,
