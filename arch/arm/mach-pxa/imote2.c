@@ -66,6 +66,15 @@ static unsigned long imote2_pin_config[] __initdata = {
 	GPIO110_MMC_DAT_2,
 	GPIO111_MMC_DAT_3,
 
+	/* 802.15.4 radio - driver out of mainline */
+	GPIO22_GPIO,			/* CC_RSTN */
+	GPIO114_GPIO,			/* CC_FIFO */
+	GPIO116_GPIO,			/* CC_CCA */
+	GPIO0_GPIO,			/* CC_FIFOP */
+	GPIO16_GPIO,			/* CCSFD */
+	GPIO39_GPIO,			/* CSn */
+	GPIO115_GPIO,			/* Power enable */
+
 	/* I2C */
 	GPIO117_I2C_SCL,
 	GPIO118_I2C_SDA,
