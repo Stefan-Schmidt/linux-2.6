@@ -20,7 +20,7 @@
  * Maxim Gorbachyov <maxim.gorbachev@siemens.com>
  */
 
-#include <linux/net.h>
+#include <linux/netdevice.h>
 #include <linux/capability.h>
 #include <linux/module.h>
 #include <linux/if_arp.h>
@@ -37,138 +37,32 @@
 #include <net/wpan-phy.h>
 
 #include "mac802154.h"
-#include "beacon.h"
-#include "beacon_hash.h"
 #include "mib.h"
 
-static void ieee802154_notify_monitors(struct ieee802154_priv *priv, struct sk_buff *skb);
-
-struct xmit_work {
-	struct sk_buff *skb;
-	struct work_struct work;
-	struct ieee802154_priv *priv;
-	u8 page;
-	u8 chan;
-};
-
-static void ieee802154_xmit_worker(struct work_struct *work)
-{
-	struct xmit_work *xw = container_of(work, struct xmit_work, work);
-	int res;
-
-	BUG_ON(xw->chan == (u8)-1);
-
-	mutex_lock(&xw->priv->phy->pib_lock);
-	if (xw->priv->phy->current_channel != xw->chan) {
-		res = xw->priv->ops->set_channel(&xw->priv->hw,
-				xw->chan);
-		if (res) {
-			pr_debug("set_channel failed\n");
-			goto out;
-		}
-	}
-
-	res = xw->priv->ops->xmit(&xw->priv->hw, xw->skb);
-
-out:
-	mutex_unlock(&xw->priv->phy->pib_lock);
-
-	/* FIXME: result processing and/or requeue!!! */
-	dev_kfree_skb(xw->skb);
-
-	kfree(xw);
-}
-
-
-static netdev_tx_t ieee802154_net_xmit(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t ieee802154_wpan_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct ieee802154_sub_if_data *priv;
-	struct xmit_work *work;
+	u8 chan, page;
 
 	priv = netdev_priv(dev);
 
-	if (priv->chan == (u8)-1) /* not init */
+	spin_lock_bh(&priv->mib_lock);
+	chan = priv->chan;
+	page = priv->page;
+	spin_unlock_bh(&priv->mib_lock);
+
+	if (chan == (u8)-1) /* not init */
 		return NETDEV_TX_OK;
 
-	BUG_ON(priv->page >= 32);
-	BUG_ON(priv->chan >= 27);
-
-	if (WARN_ON(!(priv->hw->phy->channels_supported[priv->page] &
-					(1 << priv->chan))))
-		return NETDEV_TX_OK;
-
-	if (!(priv->hw->hw.flags & IEEE802154_HW_OMIT_CKSUM)) {
-		u16 crc = crc_ccitt(0, skb->data, skb->len);
-		u8 *data = skb_put(skb, 2);
-		data[0] = crc & 0xff;
-		data[1] = crc >> 8;
-	}
+	BUG_ON(page >= 32);
+	BUG_ON(chan >= 27);
 
 	skb->skb_iif = dev->ifindex;
 	dev->stats.tx_packets++;
 	dev->stats.tx_bytes += skb->len;
 
-
-	if (skb_cow_head(skb, priv->hw->hw.extra_tx_headroom)) {
-		dev_kfree_skb(skb);
-		return NETDEV_TX_OK;
-	}
-
-	work = kzalloc(sizeof(struct xmit_work), GFP_ATOMIC);
-	if (!work)
-		return NETDEV_TX_BUSY;
-
-	ieee802154_notify_monitors(ieee802154_to_priv(&priv->hw->hw), skb);
-
-	INIT_WORK(&work->work, ieee802154_xmit_worker);
-	work->skb = skb;
-	work->priv = priv->hw;
-
-	spin_lock_bh(&priv->mib_lock);
-	work->chan = priv->chan;
-	work->page = priv->page;
-	spin_unlock_bh(&priv->mib_lock);
-
-
-	queue_work(priv->hw->dev_workqueue, &work->work);
-
-	return NETDEV_TX_OK;
+	return ieee802154_tx(priv->hw, skb, page, chan);
 }
-
-static int ieee802154_slave_open(struct net_device *dev)
-{
-	struct ieee802154_sub_if_data *priv = netdev_priv(dev);
-	int res = 0;
-
-	if (priv->hw->open_count++ == 0) {
-		res = priv->hw->ops->start(&priv->hw->hw);
-		WARN_ON(res);
-		if (res)
-			goto err;
-	}
-
-	netif_start_queue(dev);
-	return 0;
-err:
-	priv->hw->open_count--;
-
-	return res;
-}
-
-static int ieee802154_slave_close(struct net_device *dev)
-{
-	struct ieee802154_sub_if_data *priv = netdev_priv(dev);
-
-	dev->priv_flags &= ~IFF_IEEE802154_COORD;
-
-	netif_stop_queue(dev);
-
-	if ((--priv->hw->open_count) == 0)
-		priv->hw->ops->stop(&priv->hw->hw);
-
-	return 0;
-}
-
 
 static int ieee802154_wpan_ioctl(struct net_device *dev, struct ifreq *ifr,
 		int cmd)
@@ -430,19 +324,12 @@ static struct header_ops ieee802154_header_ops = {
 static const struct net_device_ops ieee802154_wpan_ops = {
 	.ndo_open		= ieee802154_slave_open,
 	.ndo_stop		= ieee802154_slave_close,
-	.ndo_start_xmit		= ieee802154_net_xmit,
+	.ndo_start_xmit		= ieee802154_wpan_xmit,
 	.ndo_do_ioctl		= ieee802154_wpan_ioctl,
 	.ndo_set_mac_address	= ieee802154_wpan_mac_addr,
 };
 
-static const struct net_device_ops ieee802154_monitor_ops = {
-	.ndo_open		= ieee802154_slave_open,
-	.ndo_stop		= ieee802154_slave_close,
-	.ndo_start_xmit		= ieee802154_net_xmit,
-};
-
-
-static void ieee802154_wpan_setup(struct net_device *dev)
+void ieee802154_wpan_setup(struct net_device *dev)
 {
 	struct ieee802154_sub_if_data *priv;
 
@@ -475,160 +362,6 @@ static void ieee802154_wpan_setup(struct net_device *dev)
 
 	priv->pan_id = IEEE802154_PANID_BROADCAST;
 	priv->short_addr = IEEE802154_ADDR_BROADCAST;
-}
-
-static void ieee802154_monitor_setup(struct net_device *dev)
-{
-	struct ieee802154_sub_if_data *priv;
-
-	dev->addr_len		= 0;
-	dev->features		= NETIF_F_NO_CSUM;
-	dev->hard_header_len	= 0;
-	dev->needed_tailroom	= 2; /* FCS */
-	dev->mtu		= 127;
-	dev->tx_queue_len	= 10;
-	dev->type		= ARPHRD_IEEE802154_MONITOR;
-	dev->flags		= IFF_NOARP | IFF_BROADCAST;
-	dev->watchdog_timeo	= 0;
-
-	dev->destructor		= free_netdev;
-	dev->netdev_ops		= &ieee802154_wpan_ops; // FIXME
-
-	priv = netdev_priv(dev);
-	priv->type = IEEE802154_DEV_MONITOR;
-
-	priv->chan = -1; /* not initialized */
-	priv->page = 0; /* for compat */
-}
-
-/*
- * This is for hw unregistration only, as it doesn't do RCU locking
- */
-void ieee802154_drop_slaves(struct ieee802154_dev *hw)
-{
-	struct ieee802154_priv *priv = ieee802154_to_priv(hw);
-	struct ieee802154_sub_if_data *sdata, *next;
-
-	ASSERT_RTNL();
-
-	list_for_each_entry_safe(sdata, next, &priv->slaves, list) {
-		mutex_lock(&sdata->hw->slaves_mtx);
-		list_del(&sdata->list);
-		mutex_unlock(&sdata->hw->slaves_mtx);
-
-		unregister_netdevice(sdata->dev);
-	}
-}
-
-static int ieee802154_netdev_register(struct wpan_phy *phy,
-					struct net_device *dev)
-{
-	struct ieee802154_sub_if_data *priv;
-	struct ieee802154_priv *ipriv;
-	int err;
-
-	ipriv = wpan_phy_priv(phy);
-
-	priv = netdev_priv(dev);
-	priv->dev = dev;
-	priv->hw = ipriv;
-
-	dev->needed_headroom = ipriv->hw.extra_tx_headroom;
-
-	SET_NETDEV_DEV(dev, &ipriv->phy->dev);
-
-	err = register_netdev(dev);
-	if (err < 0)
-		return err;
-
-	rtnl_lock();
-	mutex_lock(&ipriv->slaves_mtx);
-	list_add_tail_rcu(&priv->list, &ipriv->slaves);
-	mutex_unlock(&ipriv->slaves_mtx);
-	rtnl_unlock();
-
-	return 0;
-}
-
-void ieee802154_del_iface(struct wpan_phy *phy,
-		struct net_device *dev)
-{
-	struct ieee802154_sub_if_data *sdata;
-	ASSERT_RTNL();
-
-	BUG_ON(dev->type != ARPHRD_IEEE802154);
-
-	sdata = netdev_priv(dev);
-
-	BUG_ON(sdata->hw->phy != phy);
-
-	mutex_lock(&sdata->hw->slaves_mtx);
-	list_del_rcu(&sdata->list);
-	mutex_unlock(&sdata->hw->slaves_mtx);
-
-	synchronize_rcu();
-	unregister_netdevice(sdata->dev);
-}
-
-struct net_device *ieee802154_add_iface(struct wpan_phy *phy,
-		const char *name, int type)
-{
-	struct net_device *dev;
-	int err = -ENOMEM;
-
-	switch (type) {
-	case IEEE802154_DEV_WPAN:
-		dev = alloc_netdev(sizeof(struct ieee802154_sub_if_data),
-				name, ieee802154_wpan_setup);
-		break;
-	case IEEE802154_DEV_MONITOR:
-		dev = alloc_netdev(sizeof(struct ieee802154_sub_if_data),
-				name, ieee802154_monitor_setup);
-		break;
-	default:
-		dev = NULL;
-		err = -EINVAL;
-		break;
-	}
-	if (!dev)
-		goto err;
-
-
-	err = ieee802154_netdev_register(phy, dev);
-
-	if (err)
-		goto err_free;
-
-	dev_hold(dev); /* we return a device w/ incremented refcount */
-	return dev;
-
-err_free:
-	free_netdev(dev);
-err:
-	return ERR_PTR(err);
-}
-
-static int ieee802154_process_beacon(struct net_device *dev,
-		struct sk_buff *skb)
-{
-	int flags;
-	int ret;
-	ret = parse_beacon_frame(skb, NULL, &flags, NULL);
-
-	/* Here we have cb->sa = coordinator address, and PAN address */
-
-	if (ret < 0) {
-		ret = NET_RX_DROP;
-		goto fail;
-	}
-	dev_dbg(&dev->dev, "got beacon from pan %04x\n",
-			mac_cb(skb)->sa.pan_id);
-	ieee802154_beacon_hash_add(&mac_cb(skb)->sa);
-	ieee802154_beacon_hash_dump();
-	ret = NET_RX_SUCCESS;
-fail:
-	kfree_skb(skb);
-	return ret;
 }
 
 static int ieee802154_process_ack(struct net_device *dev, struct sk_buff *skb)
@@ -737,11 +470,14 @@ static u16 fetch_skb_u16(struct sk_buff *skb)
 	return ret;
 }
 
-static void fetch_skb_u64(struct sk_buff *skb, void *data)
+static void fetch_skb_u64(struct sk_buff *skb, u8 *dest)
 {
+	int i;
+
 	BUG_ON(skb->len < IEEE802154_ADDR_LEN);
 
-	ieee802154_haddr_copy_swap(data, skb->data);
+	for (i = 0; i < IEEE802154_ADDR_LEN; i++)
+		dest[IEEE802154_ADDR_LEN - i - 1] = skb->data[i];
 	skb_pull(skb, IEEE802154_ADDR_LEN);
 }
 
@@ -763,7 +499,7 @@ static void fetch_skb_u64(struct sk_buff *skb, void *data)
 	do {						\
 		if (skb->len < IEEE802154_ADDR_LEN)	\
 			goto exit_error;		\
-		fetch_skb_u64(skb, &var);		\
+		fetch_skb_u64(skb, var);		\
 	} while (0)
 
 static int parse_frame_start(struct sk_buff *skb)
@@ -864,58 +600,16 @@ exit_error:
 	return -EINVAL;
 }
 
-static void ieee802154_notify_monitors(struct ieee802154_priv *priv, struct sk_buff *skb)
+void ieee802154_wpans_rx(struct ieee802154_priv *priv, struct sk_buff *skb)
 {
-	struct sk_buff *skb2;
-	struct ieee802154_sub_if_data *sdata;
-
-	rcu_read_lock();
-	list_for_each_entry_rcu(sdata, &priv->slaves, list) {
-		if (sdata->type != IEEE802154_DEV_MONITOR)
-			continue;
-
-		skb2 = skb_clone(skb, GFP_ATOMIC);
-		skb2->dev = sdata->dev;
-		skb2->pkt_type = PACKET_HOST;
-
-		if (in_interrupt())
-			netif_rx(skb2);
-		else
-			netif_rx_ni(skb2);
-	}
-	rcu_read_unlock();
-}
-
-void ieee802154_subif_rx(struct ieee802154_dev *hw, struct sk_buff *skb)
-{
-	struct ieee802154_priv *priv = ieee802154_to_priv(hw);
-	struct ieee802154_sub_if_data *sdata, *prev = NULL;
 	int ret;
-
-	BUILD_BUG_ON(sizeof(struct ieee802154_mac_cb) > sizeof(skb->cb));
-	pr_debug("%s()\n", __func__);
-
-	if (!(priv->hw.flags & IEEE802154_HW_OMIT_CKSUM)) {
-		u16 crc;
-
-		if (skb->len < 2) {
-			pr_debug("%s(): Got invalid frame\n", __func__);
-			goto out;
-		}
-		crc = crc_ccitt(0, skb->data, skb->len);
-		if (crc) {
-			pr_debug("%s(): CRC mismatch\n", __func__);
-			goto out;
-		}
-		skb_trim(skb, skb->len - 2); /* CRC */
-	}
-
-	ieee802154_notify_monitors(priv, skb);
+	struct ieee802154_sub_if_data *sdata;
+	struct sk_buff *skb2;
 
 	ret = parse_frame_start(skb); /* 3 bytes pulled after this */
 	if (ret) {
 		pr_debug("%s(): Got invalid frame\n", __func__);
-		goto out;
+		return;
 	}
 
 	pr_debug("%s() frame %d\n", __func__, mac_cb_type(skb));
@@ -923,27 +617,14 @@ void ieee802154_subif_rx(struct ieee802154_dev *hw, struct sk_buff *skb)
 	rcu_read_lock();
 	list_for_each_entry_rcu(sdata, &priv->slaves, list)
 	{
-		if (sdata->type == IEEE802154_DEV_MONITOR)
+		if (sdata->type != IEEE802154_DEV_WPAN)
 			continue;
 
-		if (prev) {
-			struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
-			if (skb2)
-				ieee802154_subif_frame(prev, skb2);
-		}
-
-		prev = sdata;
-	}
-
-	if (prev) {
-		ieee802154_subif_frame(prev, skb);
-		skb = NULL;
+		skb2 = skb_clone(skb, GFP_ATOMIC);
+		if (skb2)
+			ieee802154_subif_frame(sdata, skb2);
 	}
 
 	rcu_read_unlock();
-
-out:
-	dev_kfree_skb(skb);
-	return;
 }
 

@@ -24,12 +24,43 @@
 #include <linux/module.h>
 #include <linux/workqueue.h>
 #include <linux/netdevice.h>
+#include <linux/crc-ccitt.h>
 
 #include <net/af_ieee802154.h>
 #include <net/mac802154.h>
 #include <net/ieee802154_netdev.h>
 
 #include "mac802154.h"
+
+static void ieee802154_subif_rx(struct ieee802154_dev *hw, struct sk_buff *skb)
+{
+	struct ieee802154_priv *priv = ieee802154_to_priv(hw);
+
+	BUILD_BUG_ON(sizeof(struct ieee802154_mac_cb) > sizeof(skb->cb));
+	pr_debug("%s()\n", __func__);
+
+	if (!(priv->hw.flags & IEEE802154_HW_OMIT_CKSUM)) {
+		u16 crc;
+
+		if (skb->len < 2) {
+			pr_debug("%s(): Got invalid frame\n", __func__);
+			goto out;
+		}
+		crc = crc_ccitt(0, skb->data, skb->len);
+		if (crc) {
+			pr_debug("%s(): CRC mismatch\n", __func__);
+			goto out;
+		}
+		skb_trim(skb, skb->len - 2); /* CRC */
+	}
+
+	ieee802154_monitors_rx(priv, skb);
+	ieee802154_wpans_rx(priv, skb);
+
+out:
+	dev_kfree_skb(skb);
+	return;
+}
 
 static void __ieee802154_rx_prepare(struct ieee802154_dev *dev,
 		struct sk_buff *skb, u8 lqi)

@@ -31,7 +31,6 @@
 #include <net/nl802154.h>
 
 #include "mac802154.h"
-#include "beacon.h"
 #include "mib.h"
 
 static int ieee802154_cmd_beacon_req(struct sk_buff *skb)

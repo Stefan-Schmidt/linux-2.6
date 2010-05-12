@@ -35,7 +35,6 @@
 #include <net/wpan-phy.h>
 
 #include "mac802154.h"
-#include "beacon.h"
 
 /*
  * ED scan is periodic issuing of ed device function

@@ -33,7 +33,7 @@
 #include <net/ieee802154_netdev.h>
 
 #include "mac802154.h"
-#include "beacon.h"
+#include "beacon_hash.h"
 
 /* Beacon frame format per specification is the followinf:
  * Standard MAC frame header:
@@ -98,6 +98,20 @@ struct ieee802154_address_list {
 	struct list_head list;
 	struct ieee802154_addr addr;
 };
+
+/* Per spec; optimizations are needed */
+struct ieee802154_pandsc {
+	struct list_head	list;
+	struct ieee802154_addr	addr; /* Contains panid */
+	int			channel;
+	u16			sf;
+	bool			gts_permit;
+	u8			lqi;
+/* FIXME: Aging of stored PAN descriptors is not decided yet,
+ * because no PAN descriptor storage is implemented yet */
+	u32			timestamp;
+};
+
 /*
  * @dev device
  * @addr destination address
@@ -192,7 +206,7 @@ int ieee802154_send_beacon(struct net_device *dev,
 /* at entry to this function we need skb->data to point to start
  * of beacon field and MAC frame already parsed into MAC_CB */
 
-int parse_beacon_frame(struct sk_buff *skb, u8 *buf,
+static int parse_beacon_frame(struct sk_buff *skb, u8 *buf,
 		int *flags, struct list_head *al)
 {
 	int offt = 0;
@@ -241,5 +255,28 @@ int parse_beacon_frame(struct sk_buff *skb, u8 *buf,
 	if (buf && (skb->len - offt > 0))
 		memcpy(buf, skb->data + offt, skb->len - offt);
 	return 0;
+}
+
+int ieee802154_process_beacon(struct net_device *dev,
+		struct sk_buff *skb)
+{
+	int flags;
+	int ret;
+	ret = parse_beacon_frame(skb, NULL, &flags, NULL);
+
+	/* Here we have cb->sa = coordinator address, and PAN address */
+
+	if (ret < 0) {
+		ret = NET_RX_DROP;
+		goto fail;
+	}
+	dev_dbg(&dev->dev, "got beacon from pan %04x\n",
+			mac_cb(skb)->sa.pan_id);
+	ieee802154_beacon_hash_add(&mac_cb(skb)->sa);
+	ieee802154_beacon_hash_dump();
+	ret = NET_RX_SUCCESS;
+fail:
+	kfree_skb(skb);
+	return ret;
 }
 
