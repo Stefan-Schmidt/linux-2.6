@@ -251,17 +251,42 @@ static void init_sdram_rows(void)
 	if (mdcnfg & (MDCNFG_DE0 | MDCNFG_DE1))
 		drac0 = MDCNFG_DRAC0(mdcnfg);
 
-	sdram_rows = 1 << (11 + max(drac0, drac2));
+	sdram_rows = 11 + max(drac0, drac2);
 }
 
 static u32 mdrefr_dri(unsigned int freq)
 {
 	u32 dri = 0;
 
-	if (cpu_is_pxa25x())
-		dri = ((freq * SDRAM_TREF) / (sdram_rows * 32));
+	/*
+	 * PXA255 (6.5.3):
+	 * 	DRI = (Refresh time / rows * memory clock frequency) / 32
+	 * PXA270 (Table 91):
+	 * 	DRI = (Refresh time / rows * memory clock frequency - 31) / 32
+	 *
+	 * Memory clock frequency is in MHz here! (Refresh time is in ms).
+	 */
+
+	/*
+	 * SDRAM_TREF	Refresh time
+	 * freq		Memory clock frequency (in kHz)
+	 * sdram_rows	Rows
+	 *
+	 * Here we do the common part for both CPUs:
+	 * 	(Refresh time / rows * memory clock frequency)
+	 *
+	 * NOTE: We must convert freq from kHz to MHz, but we do the
+	 * multiplication prior to division to retain percision.
+	 */
+	dri = (SDRAM_TREF * freq) / (sdram_rows * 1000);
+
+	/* On PXA27x, substitute 31 from the value first (Table 91). */
 	if (cpu_is_pxa27x())
-		dri = ((freq * SDRAM_TREF) / (sdram_rows - 31)) / 32;
+		dri -= 31;
+
+	/* Finaly, divide the result by 32. */
+	dri /= 32;
+
 	return dri;
 }
 
