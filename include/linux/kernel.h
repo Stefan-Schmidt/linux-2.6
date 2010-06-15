@@ -67,7 +67,7 @@ extern const char linux_proc_banner[];
 )
 
 #define _RET_IP_		(unsigned long)__builtin_return_address(0)
-#define _THIS_IP_  ({ __label__ __here; __here: (unsigned long)&&__here; })
+#define _THIS_IP_ ({ unsigned long ip; asm volatile("call .LTHISIP%=;.LTHISIP%=:pop %0":"=r"(ip)); ip;})
 
 #ifdef CONFIG_LBDAF
 # include <asm/div64.h>
