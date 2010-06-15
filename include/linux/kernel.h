@@ -9,7 +9,7 @@
 
 #ifdef __KERNEL__
 
-#include <stdarg.h>
+#include "/usr/local/lib/clang/2.0/include/stdarg.h"
 #include <linux/linkage.h>
 #include <linux/stddef.h>
 #include <linux/types.h>
