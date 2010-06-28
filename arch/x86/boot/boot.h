@@ -20,7 +20,7 @@
 
 #ifndef __ASSEMBLY__
 
-#include <stdarg.h>
+#include "/usr/local/lib/clang/2.0/include/stdarg.h"
 #include <linux/types.h>
 #include <linux/edd.h>
 #include <asm/boot.h>
