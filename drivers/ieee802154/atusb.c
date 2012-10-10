@@ -623,8 +623,8 @@ static int atusb_probe(struct usb_interface *interface,
 		goto err_free;
 	}
 
-	set_irq_chip_data(atusb->slave_irq, atusb);
-	set_irq_chip_and_handler(atusb->slave_irq, &atusb_irq_chip,
+	irq_set_chip_data(atusb->slave_irq, atusb);
+	irq_set_chip_and_handler(atusb->slave_irq, &atusb_irq_chip,
 	    handle_level_irq);
 
 	/* FIXME prepare USB IRQ */
@@ -676,8 +676,8 @@ err_master:
 		usb_kill_urb(atusb->irq_urb);
 	spi_master_put(atusb->master);
 err_slave_irq:
-	set_irq_chained_handler(atusb->slave_irq, NULL);
-	set_irq_chip_data(atusb->slave_irq, NULL);
+	irq_set_chained_handler(atusb->slave_irq, NULL);
+	irq_set_chip_data(atusb->slave_irq, NULL);
 	irq_free_desc(atusb->slave_irq);
 err_free:
 	return retval;
@@ -702,8 +702,8 @@ static void atusb_disconnect(struct usb_interface *interface)
 
 	spi_unregister_master(master);
 
-	set_irq_chained_handler(atusb->slave_irq, NULL);
-	set_irq_chip_data(atusb->slave_irq, NULL);
+	irq_set_chained_handler(atusb->slave_irq, NULL);
+	irq_set_chip_data(atusb->slave_irq, NULL);
 	irq_free_desc(atusb->slave_irq);
 
 	spi_master_put(master);
