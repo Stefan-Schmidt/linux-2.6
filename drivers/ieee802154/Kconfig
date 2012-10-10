@@ -34,3 +34,9 @@ config IEEE802154_AT86RF230
         depends on IEEE802154_DRIVERS && MAC802154
         tristate "AT86RF230/231 transceiver driver"
         depends on SPI
+
+config IEEE802154_ATUSB
+        depends on IEEE802154_DRIVERS && MAC802154
+        tristate "ATUSB transceiver driver"
+        depends on SPI
+	depends on USB

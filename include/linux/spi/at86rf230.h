@@ -26,6 +26,8 @@ struct at86rf230_platform_data {
 	int rstn;
 	int slp_tr;
 	int dig2;
+        void (*reset)(void *reset_data);
+        void *reset_data;
 };
 
 #endif
