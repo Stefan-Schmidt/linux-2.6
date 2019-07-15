@@ -16,14 +16,10 @@
 #include <linux/videodev2.h>
 
 #include <media/v4l2-device.h>
-
-#define HDPVR_MAJOR_VERSION 0
-#define HDPVR_MINOR_VERSION 2
-#define HDPVR_RELEASE 0
-#define HDPVR_VERSION \
-	KERNEL_VERSION(HDPVR_MAJOR_VERSION, HDPVR_MINOR_VERSION, HDPVR_RELEASE)
+#include <media/ir-kbd-i2c.h>
 
 #define HDPVR_MAX 8
+#define HDPVR_I2C_MAX_SIZE 128
 
 /* Define these values to match your devices */
 #define HD_PVR_VENDOR_ID	0x2040
@@ -105,13 +101,19 @@ struct hdpvr_device {
 	struct work_struct	worker;
 
 	/* I2C adapter */
-	struct i2c_adapter	*i2c_adapter;
+	struct i2c_adapter	i2c_adapter;
 	/* I2C lock */
 	struct mutex		i2c_mutex;
+	/* I2C message buffer space */
+	char			i2c_buf[HDPVR_I2C_MAX_SIZE];
+
+	/* For passing data to ir-kbd-i2c */
+	struct IR_i2c_init_data	ir_i2c_init_data;
 
 	/* usb control transfer buffer and lock */
 	struct mutex		usbc_mutex;
 	u8			*usbc_buf;
+	u8			fw_ver;
 };
 
 static inline struct hdpvr_device *to_hdpvr_dev(struct v4l2_device *v4l2_dev)
@@ -305,6 +307,9 @@ int hdpvr_cancel_queue(struct hdpvr_device *dev);
 /*========================================================================*/
 /* i2c adapter registration */
 int hdpvr_register_i2c_adapter(struct hdpvr_device *dev);
+
+struct i2c_client *hdpvr_register_ir_rx_i2c(struct hdpvr_device *dev);
+struct i2c_client *hdpvr_register_ir_tx_i2c(struct hdpvr_device *dev);
 
 /*========================================================================*/
 /* buffer management */

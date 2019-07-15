@@ -147,6 +147,17 @@ struct ocfs2_lock_res_ops;
 
 typedef void (*ocfs2_lock_callback)(int status, unsigned long data);
 
+#ifdef CONFIG_OCFS2_FS_STATS
+struct ocfs2_lock_stats {
+	u64		ls_total;	/* Total wait in NSEC */
+	u32		ls_gets;	/* Num acquires */
+	u32		ls_fail;	/* Num failed acquires */
+
+	/* Storing max wait in usecs saves 24 bytes per inode */
+	u32		ls_max;		/* Max wait in USEC */
+};
+#endif
+
 struct ocfs2_lock_res {
 	void                    *l_priv;
 	struct ocfs2_lock_res_ops *l_ops;
@@ -159,7 +170,9 @@ struct ocfs2_lock_res {
 	char                     l_name[OCFS2_LOCK_ID_MAX_LEN];
 	unsigned int             l_ro_holders;
 	unsigned int             l_ex_holders;
-	unsigned char            l_level;
+	signed char		 l_level;
+	signed char		 l_requested;
+	signed char		 l_blocking;
 
 	/* Data packed - type enum ocfs2_lock_type */
 	unsigned char            l_type;
@@ -169,8 +182,6 @@ struct ocfs2_lock_res {
 	unsigned char            l_action;
 	/* Data packed - enum type ocfs2_unlock_action */
 	unsigned char            l_unlock_action;
-	unsigned char            l_requested;
-	unsigned char            l_blocking;
 	unsigned int             l_pending_gen;
 
 	spinlock_t               l_lock;
@@ -182,15 +193,9 @@ struct ocfs2_lock_res {
 	struct list_head         l_debug_list;
 
 #ifdef CONFIG_OCFS2_FS_STATS
-	unsigned long long	 l_lock_num_prmode; 	   /* PR acquires */
-	unsigned long long 	 l_lock_num_exmode; 	   /* EX acquires */
-	unsigned int		 l_lock_num_prmode_failed; /* Failed PR gets */
-	unsigned int		 l_lock_num_exmode_failed; /* Failed EX gets */
-	unsigned long long	 l_lock_total_prmode; 	   /* Tot wait for PR */
-	unsigned long long	 l_lock_total_exmode; 	   /* Tot wait for EX */
-	unsigned int		 l_lock_max_prmode; 	   /* Max wait for PR */
-	unsigned int		 l_lock_max_exmode; 	   /* Max wait for EX */
-	unsigned int		 l_lock_refresh;	   /* Disk refreshes */
+	struct ocfs2_lock_stats  l_lock_prmode;		/* PR mode stats */
+	u32                      l_lock_refresh;	/* Disk refreshes */
+	struct ocfs2_lock_stats  l_lock_exmode;		/* EX mode stats */
 #endif
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	struct lockdep_map	 l_lockdep_map;
@@ -420,6 +425,11 @@ struct ocfs2_super
 	struct inode			*osb_tl_inode;
 	struct buffer_head		*osb_tl_bh;
 	struct delayed_work		osb_truncate_log_wq;
+	/*
+	 * How many clusters in our truncate log.
+	 * It must be protected by osb_tl_inode->i_mutex.
+	 */
+	unsigned int truncated_clusters;
 
 	struct ocfs2_node_map		osb_recovering_orphan_dirs;
 	unsigned int			*osb_orphan_wipes;
@@ -826,18 +836,65 @@ static inline unsigned int ocfs2_clusters_to_megabytes(struct super_block *sb,
 
 static inline void _ocfs2_set_bit(unsigned int bit, unsigned long *bitmap)
 {
-	ext2_set_bit(bit, bitmap);
+	__set_bit_le(bit, bitmap);
 }
 #define ocfs2_set_bit(bit, addr) _ocfs2_set_bit((bit), (unsigned long *)(addr))
 
 static inline void _ocfs2_clear_bit(unsigned int bit, unsigned long *bitmap)
 {
-	ext2_clear_bit(bit, bitmap);
+	__clear_bit_le(bit, bitmap);
 }
 #define ocfs2_clear_bit(bit, addr) _ocfs2_clear_bit((bit), (unsigned long *)(addr))
 
-#define ocfs2_test_bit ext2_test_bit
-#define ocfs2_find_next_zero_bit ext2_find_next_zero_bit
-#define ocfs2_find_next_bit ext2_find_next_bit
+#define ocfs2_test_bit test_bit_le
+#define ocfs2_find_next_zero_bit find_next_zero_bit_le
+#define ocfs2_find_next_bit find_next_bit_le
+
+static inline void *correct_addr_and_bit_unaligned(int *bit, void *addr)
+{
+#if BITS_PER_LONG == 64
+	*bit += ((unsigned long) addr & 7UL) << 3;
+	addr = (void *) ((unsigned long) addr & ~7UL);
+#elif BITS_PER_LONG == 32
+	*bit += ((unsigned long) addr & 3UL) << 3;
+	addr = (void *) ((unsigned long) addr & ~3UL);
+#else
+#error "how many bits you are?!"
+#endif
+	return addr;
+}
+
+static inline void ocfs2_set_bit_unaligned(int bit, void *bitmap)
+{
+	bitmap = correct_addr_and_bit_unaligned(&bit, bitmap);
+	ocfs2_set_bit(bit, bitmap);
+}
+
+static inline void ocfs2_clear_bit_unaligned(int bit, void *bitmap)
+{
+	bitmap = correct_addr_and_bit_unaligned(&bit, bitmap);
+	ocfs2_clear_bit(bit, bitmap);
+}
+
+static inline int ocfs2_test_bit_unaligned(int bit, void *bitmap)
+{
+	bitmap = correct_addr_and_bit_unaligned(&bit, bitmap);
+	return ocfs2_test_bit(bit, bitmap);
+}
+
+static inline int ocfs2_find_next_zero_bit_unaligned(void *bitmap, int max,
+							int start)
+{
+	int fix = 0, ret, tmpmax;
+	bitmap = correct_addr_and_bit_unaligned(&fix, bitmap);
+	tmpmax = max + fix;
+	start += fix;
+
+	ret = ocfs2_find_next_zero_bit(bitmap, tmpmax, start) - fix;
+	if (ret > max)
+		return max;
+	return ret;
+}
+
 #endif  /* OCFS2_H */
 

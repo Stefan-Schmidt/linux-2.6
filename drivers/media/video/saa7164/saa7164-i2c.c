@@ -23,7 +23,7 @@
 #include <linux/moduleparam.h>
 #include <linux/init.h>
 #include <linux/delay.h>
-#include <asm/io.h>
+#include <linux/io.h>
 
 #include "saa7164.h"
 
@@ -65,17 +65,8 @@ static int i2c_xfer(struct i2c_adapter *i2c_adap, struct i2c_msg *msgs, int num)
 	}
 	return num;
 
- err:
+err:
 	return retval;
-}
-
-void saa7164_call_i2c_clients(struct saa7164_i2c *bus, unsigned int cmd,
-	void *arg)
-{
-	if (bus->i2c_rc != 0)
-		return;
-
-	i2c_clients_command(&bus->i2c_adap, cmd, arg);
 }
 
 static u32 saa7164_functionality(struct i2c_adapter *adap)
@@ -106,21 +97,14 @@ int saa7164_i2c_register(struct saa7164_i2c *bus)
 
 	dprintk(DBGLVL_I2C, "%s(bus = %d)\n", __func__, bus->nr);
 
-	memcpy(&bus->i2c_adap, &saa7164_i2c_adap_template,
-	       sizeof(bus->i2c_adap));
-
-	memcpy(&bus->i2c_algo, &saa7164_i2c_algo_template,
-	       sizeof(bus->i2c_algo));
-
-	memcpy(&bus->i2c_client, &saa7164_i2c_client_template,
-	       sizeof(bus->i2c_client));
+	bus->i2c_adap = saa7164_i2c_adap_template;
+	bus->i2c_client = saa7164_i2c_client_template;
 
 	bus->i2c_adap.dev.parent = &dev->pci->dev;
 
 	strlcpy(bus->i2c_adap.name, bus->dev->name,
 		sizeof(bus->i2c_adap.name));
 
-	bus->i2c_algo.data = bus;
 	bus->i2c_adap.algo_data = bus;
 	i2c_set_adapdata(&bus->i2c_adap, bus);
 	i2c_add_adapter(&bus->i2c_adap);

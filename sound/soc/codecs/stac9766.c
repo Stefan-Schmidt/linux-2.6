@@ -236,7 +236,7 @@ static int stac9766_set_bias_level(struct snd_soc_codec *codec,
 		stac9766_ac97_write(codec, AC97_POWERDOWN, 0xffff);
 		break;
 	}
-	codec->bias_level = level;
+	codec->dapm.bias_level = level;
 	return 0;
 }
 
@@ -256,8 +256,7 @@ static int stac9766_reset(struct snd_soc_codec *codec, int try_warm)
 	return 0;
 }
 
-static int stac9766_codec_suspend(struct snd_soc_codec *codec,
-				  pm_message_t state)
+static int stac9766_codec_suspend(struct snd_soc_codec *codec)
 {
 	stac9766_set_bias_level(codec, SND_SOC_BIAS_OFF);
 	return 0;
@@ -286,11 +285,11 @@ reset:
 	return 0;
 }
 
-static struct snd_soc_dai_ops stac9766_dai_ops_analog = {
+static const struct snd_soc_dai_ops stac9766_dai_ops_analog = {
 	.prepare = ac97_analog_prepare,
 };
 
-static struct snd_soc_dai_ops stac9766_dai_ops_digital = {
+static const struct snd_soc_dai_ops stac9766_dai_ops_digital = {
 	.prepare = ac97_digital_prepare,
 };
 
@@ -341,6 +340,7 @@ static int stac9766_codec_probe(struct snd_soc_codec *codec)
 
 	printk(KERN_INFO "STAC9766 SoC Audio Codec %s\n", STAC9766_VERSION);
 
+	codec->control_data = codec;	/* we don't use regmap! */
 	ret = snd_soc_new_ac97_codec(codec, &soc_ac97_ops, 0);
 	if (ret < 0)
 		goto codec_err;
@@ -356,7 +356,7 @@ static int stac9766_codec_probe(struct snd_soc_codec *codec)
 
 	stac9766_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
 
-	snd_soc_add_controls(codec, stac9766_snd_ac97_controls,
+	snd_soc_add_codec_controls(codec, stac9766_snd_ac97_controls,
 			     ARRAY_SIZE(stac9766_snd_ac97_controls));
 
 	return 0;
@@ -380,9 +380,10 @@ static struct snd_soc_codec_driver soc_codec_dev_stac9766 = {
 	.remove = stac9766_codec_remove,
 	.suspend = stac9766_codec_suspend,
 	.resume = stac9766_codec_resume,
-	.reg_cache_size = sizeof(stac9766_reg),
+	.reg_cache_size = ARRAY_SIZE(stac9766_reg),
 	.reg_word_size = sizeof(u16),
 	.reg_cache_step = 2,
+	.reg_cache_default = stac9766_reg,
 };
 
 static __devinit int stac9766_probe(struct platform_device *pdev)
@@ -407,17 +408,7 @@ static struct platform_driver stac9766_codec_driver = {
 	.remove = __devexit_p(stac9766_remove),
 };
 
-static int __init stac9766_init(void)
-{
-	return platform_driver_register(&stac9766_codec_driver);
-}
-module_init(stac9766_init);
-
-static void __exit stac9766_exit(void)
-{
-	platform_driver_unregister(&stac9766_codec_driver);
-}
-module_exit(stac9766_exit);
+module_platform_driver(stac9766_codec_driver);
 
 MODULE_DESCRIPTION("ASoC stac9766 driver");
 MODULE_AUTHOR("Jon Smirl <jonsmirl@gmail.com>");

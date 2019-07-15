@@ -1,10 +1,12 @@
 #include <linux/pm.h>
 
+struct dev_state;
+
 /* Functions local to drivers/usb/core/ */
 
 extern int usb_create_sysfs_dev_files(struct usb_device *dev);
 extern void usb_remove_sysfs_dev_files(struct usb_device *dev);
-extern int usb_create_sysfs_intf_files(struct usb_interface *intf);
+extern void usb_create_sysfs_intf_files(struct usb_interface *intf);
 extern void usb_remove_sysfs_intf_files(struct usb_interface *intf);
 extern int usb_create_ep_devs(struct device *parent,
 				struct usb_host_endpoint *endpoint,
@@ -24,25 +26,32 @@ extern void usb_disable_device(struct usb_device *dev, int skip_ep0);
 extern int usb_deauthorize_device(struct usb_device *);
 extern int usb_authorize_device(struct usb_device *);
 extern void usb_detect_quirks(struct usb_device *udev);
+extern void usb_detect_interface_quirks(struct usb_device *udev);
 extern int usb_remove_device(struct usb_device *udev);
 
 extern int usb_get_device_descriptor(struct usb_device *dev,
 		unsigned int size);
+extern int usb_get_bos_descriptor(struct usb_device *dev);
+extern void usb_release_bos_descriptor(struct usb_device *dev);
 extern char *usb_cache_string(struct usb_device *udev, int index);
 extern int usb_set_configuration(struct usb_device *dev, int configuration);
 extern int usb_choose_configuration(struct usb_device *udev);
 
 extern void usb_kick_khubd(struct usb_device *dev);
+extern int usb_match_one_id_intf(struct usb_device *dev,
+				 struct usb_host_interface *intf,
+				 const struct usb_device_id *id);
 extern int usb_match_device(struct usb_device *dev,
 			    const struct usb_device_id *id);
 extern void usb_forced_unbind_intf(struct usb_interface *intf);
 extern void usb_rebind_intf(struct usb_interface *intf);
 
 extern int usb_hub_claim_port(struct usb_device *hdev, unsigned port,
-		void *owner);
+		struct dev_state *owner);
 extern int usb_hub_release_port(struct usb_device *hdev, unsigned port,
-		void *owner);
-extern void usb_hub_release_all_ports(struct usb_device *hdev, void *owner);
+		struct dev_state *owner);
+extern void usb_hub_release_all_ports(struct usb_device *hdev,
+		struct dev_state *owner);
 extern bool usb_device_is_owned(struct usb_device *udev);
 
 extern int  usb_hub_init(void);
@@ -54,6 +63,7 @@ extern void usb_major_cleanup(void);
 
 extern int usb_suspend(struct device *dev, pm_message_t msg);
 extern int usb_resume(struct device *dev, pm_message_t msg);
+extern int usb_resume_complete(struct device *dev);
 
 extern int usb_port_suspend(struct usb_device *dev, pm_message_t msg);
 extern int usb_port_resume(struct usb_device *dev, pm_message_t msg);
@@ -75,14 +85,16 @@ static inline int usb_port_resume(struct usb_device *udev, pm_message_t msg)
 #ifdef CONFIG_USB_SUSPEND
 
 extern void usb_autosuspend_device(struct usb_device *udev);
-extern void usb_try_autosuspend_device(struct usb_device *udev);
 extern int usb_autoresume_device(struct usb_device *udev);
 extern int usb_remote_wakeup(struct usb_device *dev);
+extern int usb_runtime_suspend(struct device *dev);
+extern int usb_runtime_resume(struct device *dev);
+extern int usb_runtime_idle(struct device *dev);
+extern int usb_set_usb2_hardware_lpm(struct usb_device *udev, int enable);
 
 #else
 
 #define usb_autosuspend_device(udev)		do {} while (0)
-#define usb_try_autosuspend_device(udev)	do {} while (0)
 static inline int usb_autoresume_device(struct usb_device *udev)
 {
 	return 0;
@@ -93,6 +105,10 @@ static inline int usb_remote_wakeup(struct usb_device *udev)
 	return 0;
 }
 
+static inline int usb_set_usb2_hardware_lpm(struct usb_device *udev, int enable)
+{
+	return 0;
+}
 #endif
 
 extern struct bus_type usb_bus_type;
@@ -124,7 +140,6 @@ static inline int is_usb_device_driver(struct device_driver *drv)
 			for_devices;
 }
 
-
 /* for labeling diagnostics */
 extern const char *usbcore_name;
 
@@ -148,3 +163,10 @@ extern void usb_notify_remove_device(struct usb_device *udev);
 extern void usb_notify_add_bus(struct usb_bus *ubus);
 extern void usb_notify_remove_bus(struct usb_bus *ubus);
 
+#ifdef CONFIG_ACPI
+extern int usb_acpi_register(void);
+extern void usb_acpi_unregister(void);
+#else
+static inline int usb_acpi_register(void) { return 0; };
+static inline void usb_acpi_unregister(void) { };
+#endif

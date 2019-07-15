@@ -18,6 +18,40 @@
 
 #include "pci.h"
 
+void pci_add_resource_offset(struct list_head *resources, struct resource *res,
+			     resource_size_t offset)
+{
+	struct pci_host_bridge_window *window;
+
+	window = kzalloc(sizeof(struct pci_host_bridge_window), GFP_KERNEL);
+	if (!window) {
+		printk(KERN_ERR "PCI: can't add host bridge window %pR\n", res);
+		return;
+	}
+
+	window->res = res;
+	window->offset = offset;
+	list_add_tail(&window->list, resources);
+}
+EXPORT_SYMBOL(pci_add_resource_offset);
+
+void pci_add_resource(struct list_head *resources, struct resource *res)
+{
+	pci_add_resource_offset(resources, res, 0);
+}
+EXPORT_SYMBOL(pci_add_resource);
+
+void pci_free_resource_list(struct list_head *resources)
+{
+	struct pci_host_bridge_window *window, *tmp;
+
+	list_for_each_entry_safe(window, tmp, resources, list) {
+		list_del(&window->list);
+		kfree(window);
+	}
+}
+EXPORT_SYMBOL(pci_free_resource_list);
+
 void pci_bus_add_resource(struct pci_bus *bus, struct resource *res,
 			  unsigned int flags)
 {
@@ -52,59 +86,12 @@ EXPORT_SYMBOL_GPL(pci_bus_resource_n);
 
 void pci_bus_remove_resources(struct pci_bus *bus)
 {
-	struct pci_bus_resource *bus_res, *tmp;
 	int i;
 
 	for (i = 0; i < PCI_BRIDGE_RESOURCE_NUM; i++)
 		bus->resource[i] = NULL;
 
-	list_for_each_entry_safe(bus_res, tmp, &bus->resources, list) {
-		list_del(&bus_res->list);
-		kfree(bus_res);
-	}
-}
-
-/*
- * Find the highest-address bus resource below the cursor "res".  If the
- * cursor is NULL, return the highest resource.
- */
-static struct resource *pci_bus_find_resource_prev(struct pci_bus *bus,
-						   unsigned int type,
-						   struct resource *res)
-{
-	struct resource *r, *prev = NULL;
-	int i;
-
-	pci_bus_for_each_resource(bus, r, i) {
-		if (!r)
-			continue;
-
-		if ((r->flags & IORESOURCE_TYPE_BITS) != type)
-			continue;
-
-		/* If this resource is at or past the cursor, skip it */
-		if (res) {
-			if (r == res)
-				continue;
-			if (r->end > res->end)
-				continue;
-			if (r->end == res->end && r->start > res->start)
-				continue;
-		}
-
-		if (!prev)
-			prev = r;
-
-		/*
-		 * A small resource is higher than a large one that ends at
-		 * the same address.
-		 */
-		if (r->end > prev->end ||
-		    (r->end == prev->end && r->start > prev->start))
-			prev = r;
-	}
-
-	return prev;
+	pci_free_resource_list(&bus->resources);
 }
 
 /**
@@ -132,10 +119,9 @@ pci_bus_alloc_resource(struct pci_bus *bus, struct resource *res,
 					  resource_size_t),
 		void *alignf_data)
 {
-	int ret = -ENOMEM;
+	int i, ret = -ENOMEM;
 	struct resource *r;
 	resource_size_t max = -1;
-	unsigned int type = res->flags & IORESOURCE_TYPE_BITS;
 
 	type_mask |= IORESOURCE_IO | IORESOURCE_MEM;
 
@@ -143,9 +129,10 @@ pci_bus_alloc_resource(struct pci_bus *bus, struct resource *res,
 	if (!(res->flags & IORESOURCE_MEM_64))
 		max = PCIBIOS_MAX_MEM_32;
 
-	/* Look for space at highest addresses first */
-	r = pci_bus_find_resource_prev(bus, type, NULL);
-	for ( ; r; r = pci_bus_find_resource_prev(bus, type, r)) {
+	pci_bus_for_each_resource(bus, r, i) {
+		if (!r)
+			continue;
+
 		/* type_mask must match */
 		if ((res->flags ^ r->flags) & type_mask)
 			continue;
@@ -177,6 +164,8 @@ pci_bus_alloc_resource(struct pci_bus *bus, struct resource *res,
 int pci_bus_add_device(struct pci_dev *dev)
 {
 	int retval;
+
+	pci_fixup_device(pci_fixup_final, dev);
 	retval = device_add(&dev->dev);
 	if (retval)
 		return retval;
@@ -205,12 +194,6 @@ int pci_bus_add_child(struct pci_bus *bus)
 		return retval;
 
 	bus->is_added = 1;
-
-	retval = device_create_file(&bus->dev, &dev_attr_cpuaffinity);
-	if (retval)
-		return retval;
-
-	retval = device_create_file(&bus->dev, &dev_attr_cpulistaffinity);
 
 	/* Create legacy_io and legacy_mem files for this bus */
 	pci_create_legacy_files(bus);

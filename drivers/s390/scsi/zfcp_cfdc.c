@@ -5,12 +5,13 @@
  * Access Control Lists / Control File Data Channel;
  * handling of response code and states for ports and LUNs.
  *
- * Copyright IBM Corporation 2008, 2010
+ * Copyright IBM Corp. 2008, 2010
  */
 
 #define KMSG_COMPONENT "zfcp"
 #define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
+#include <linux/compat.h>
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/miscdevice.h>
@@ -288,7 +289,7 @@ void zfcp_cfdc_adapter_access_changed(struct zfcp_adapter *adapter)
 		    (status & ZFCP_STATUS_COMMON_ACCESS_BOXED))
 			zfcp_erp_port_reopen(port,
 					     ZFCP_STATUS_COMMON_ERP_FAILED,
-					     "cfaac_1", NULL);
+					     "cfaac_1");
 	}
 	read_unlock_irqrestore(&adapter->port_list_lock, flags);
 
@@ -299,7 +300,7 @@ void zfcp_cfdc_adapter_access_changed(struct zfcp_adapter *adapter)
 		    (status & ZFCP_STATUS_COMMON_ACCESS_BOXED))
 			zfcp_erp_lun_reopen(sdev,
 					    ZFCP_STATUS_COMMON_ERP_FAILED,
-					    "cfaac_2", NULL);
+					    "cfaac_2");
 	}
 }
 
@@ -317,7 +318,7 @@ static void zfcp_act_eval_err(struct zfcp_adapter *adapter, u32 table)
 
 /**
  * zfcp_cfdc_port_denied - Process "access denied" for port
- * @port: The port where the acces has been denied
+ * @port: The port where the access has been denied
  * @qual: The FSF status qualifier for the access denied FSF status
  */
 void zfcp_cfdc_port_denied(struct zfcp_port *port,
@@ -426,7 +427,7 @@ int zfcp_cfdc_open_lun_eval(struct scsi_device *sdev,
 			zfcp_scsi_dev_lun(sdev),
 			(unsigned long long)zfcp_sdev->port->wwpn);
 		zfcp_erp_set_lun_status(sdev, ZFCP_STATUS_COMMON_ERP_FAILED);
-		zfcp_erp_lun_shutdown(sdev, 0, "fsouh_6", NULL);
+		zfcp_erp_lun_shutdown(sdev, 0, "fsouh_6");
 		return -EACCES;
 	}
 
@@ -437,7 +438,7 @@ int zfcp_cfdc_open_lun_eval(struct scsi_device *sdev,
 			zfcp_scsi_dev_lun(sdev),
 			(unsigned long long)zfcp_sdev->port->wwpn);
 		zfcp_erp_set_lun_status(sdev, ZFCP_STATUS_COMMON_ERP_FAILED);
-		zfcp_erp_lun_shutdown(sdev, 0, "fsosh_8", NULL);
+		zfcp_erp_lun_shutdown(sdev, 0, "fsosh_8");
 		return -EACCES;
 	}
 

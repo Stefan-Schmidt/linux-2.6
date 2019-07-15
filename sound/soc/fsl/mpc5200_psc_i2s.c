@@ -123,7 +123,7 @@ static int psc_i2s_set_fmt(struct snd_soc_dai *cpu_dai, unsigned int format)
 /**
  * psc_i2s_dai_template: template CPU Digital Audio Interface
  */
-static struct snd_soc_dai_ops psc_i2s_dai_ops = {
+static const struct snd_soc_dai_ops psc_i2s_dai_ops = {
 	.hw_params	= psc_i2s_hw_params,
 	.set_sysclk	= psc_i2s_set_sysclk,
 	.set_fmt	= psc_i2s_set_fmt,
@@ -150,8 +150,7 @@ static struct snd_soc_dai_driver psc_i2s_dai[] = {{
  * - Probe/remove operations
  * - OF device match table
  */
-static int __devinit psc_i2s_of_probe(struct platform_device *op,
-				      const struct of_device_id *match)
+static int __devinit psc_i2s_of_probe(struct platform_device *op)
 {
 	int rc;
 	struct psc_dma *psc_dma;
@@ -160,7 +159,7 @@ static int __devinit psc_i2s_of_probe(struct platform_device *op,
 	rc = snd_soc_register_dais(&op->dev, psc_i2s_dai, ARRAY_SIZE(psc_i2s_dai));
 	if (rc != 0) {
 		pr_err("Failed to register DAI\n");
-		return 0;
+		return rc;
 	}
 
 	psc_dma = dev_get_drvdata(&op->dev);
@@ -213,7 +212,7 @@ static struct of_device_id psc_i2s_match[] __devinitdata = {
 };
 MODULE_DEVICE_TABLE(of, psc_i2s_match);
 
-static struct of_platform_driver psc_i2s_driver = {
+static struct platform_driver psc_i2s_driver = {
 	.probe = psc_i2s_of_probe,
 	.remove = __devexit_p(psc_i2s_of_remove),
 	.driver = {
@@ -223,21 +222,7 @@ static struct of_platform_driver psc_i2s_driver = {
 	},
 };
 
-/* ---------------------------------------------------------------------
- * Module setup and teardown; simply register the of_platform driver
- * for the PSC in I2S mode.
- */
-static int __init psc_i2s_init(void)
-{
-	return of_register_platform_driver(&psc_i2s_driver);
-}
-module_init(psc_i2s_init);
-
-static void __exit psc_i2s_exit(void)
-{
-	of_unregister_platform_driver(&psc_i2s_driver);
-}
-module_exit(psc_i2s_exit);
+module_platform_driver(psc_i2s_driver);
 
 MODULE_AUTHOR("Grant Likely <grant.likely@secretlab.ca>");
 MODULE_DESCRIPTION("Freescale MPC5200 PSC in I2S mode ASoC Driver");

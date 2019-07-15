@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2012, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -55,7 +55,6 @@
 #include "acparser.h"
 #include "acdispat.h"
 #include "amlcode.h"
-#include "acnamesp.h"
 #include "acinterp.h"
 
 #define _COMPONENT          ACPI_PARSER
@@ -65,7 +64,7 @@ ACPI_MODULE_NAME("psparse")
  *
  * FUNCTION:    acpi_ps_get_opcode_size
  *
- * PARAMETERS:  Opcode          - An AML opcode
+ * PARAMETERS:  opcode          - An AML opcode
  *
  * RETURN:      Size of the opcode, in bytes (1 or 2)
  *
@@ -122,7 +121,7 @@ u16 acpi_ps_peek_opcode(struct acpi_parse_state * parser_state)
  * FUNCTION:    acpi_ps_complete_this_op
  *
  * PARAMETERS:  walk_state      - Current State
- *              Op              - Op to complete
+ *              op              - Op to complete
  *
  * RETURN:      Status
  *
@@ -312,7 +311,7 @@ acpi_ps_complete_this_op(struct acpi_walk_state * walk_state,
  * FUNCTION:    acpi_ps_next_parse_state
  *
  * PARAMETERS:  walk_state          - Current state
- *              Op                  - Current parse op
+ *              op                  - Current parse op
  *              callback_status     - Status from previous operation
  *
  * RETURN:      Status
@@ -539,24 +538,16 @@ acpi_status acpi_ps_parse_aml(struct acpi_walk_state *walk_state)
 			/* Check for possible multi-thread reentrancy problem */
 
 			if ((status == AE_ALREADY_EXISTS) &&
-			    (!walk_state->method_desc->method.mutex)) {
-				ACPI_INFO((AE_INFO,
-					   "Marking method %4.4s as Serialized because of AE_ALREADY_EXISTS error",
-					   walk_state->method_node->name.
-					   ascii));
-
+			    (!(walk_state->method_desc->method.
+			       info_flags & ACPI_METHOD_SERIALIZED))) {
 				/*
-				 * Method tried to create an object twice. The probable cause is
-				 * that the method cannot handle reentrancy.
-				 *
-				 * The method is marked not_serialized, but it tried to create
-				 * a named object, causing the second thread entrance to fail.
-				 * Workaround this problem by marking the method permanently
-				 * as Serialized.
+				 * Method is not serialized and tried to create an object
+				 * twice. The probable cause is that the method cannot
+				 * handle reentrancy. Mark as "pending serialized" now, and
+				 * then mark "serialized" when the last thread exits.
 				 */
-				walk_state->method_desc->method.method_flags |=
-				    AML_METHOD_SERIALIZED;
-				walk_state->method_desc->method.sync_level = 0;
+				walk_state->method_desc->method.info_flags |=
+				    ACPI_METHOD_SERIALIZED_PENDING;
 			}
 		}
 

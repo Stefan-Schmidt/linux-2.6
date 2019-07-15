@@ -22,7 +22,7 @@
 
 #include <net/netfilter/ipv4/nf_defrag_ipv4.h>
 
-#if defined(CONFIG_IP6_NF_IPTABLES) || defined(CONFIG_IP6_NF_IPTABLES_MODULE)
+#if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
 #define XT_TPROXY_HAVE_IPV6 1
 #include <net/if_inet6.h>
 #include <net/addrconf.h>
@@ -32,6 +32,20 @@
 
 #include <net/netfilter/nf_tproxy_core.h>
 #include <linux/netfilter/xt_TPROXY.h>
+
+static bool tproxy_sk_is_transparent(struct sock *sk)
+{
+	if (sk->sk_state != TCP_TIME_WAIT) {
+		if (inet_sk(sk)->transparent)
+			return true;
+		sock_put(sk);
+	} else {
+		if (inet_twsk(sk)->tw_transparent)
+			return true;
+		inet_twsk_put(inet_twsk(sk));
+	}
+	return false;
+}
 
 static inline __be32
 tproxy_laddr4(struct sk_buff *skb, __be32 user_laddr, __be32 daddr)
@@ -55,7 +69,7 @@ tproxy_laddr4(struct sk_buff *skb, __be32 user_laddr, __be32 daddr)
 }
 
 /**
- * tproxy_handle_time_wait4() - handle IPv4 TCP TIME_WAIT reopen redirections
+ * tproxy_handle_time_wait4 - handle IPv4 TCP TIME_WAIT reopen redirections
  * @skb:	The skb being processed.
  * @laddr:	IPv4 address to redirect to or zero.
  * @lport:	TCP port to redirect to or zero.
@@ -141,7 +155,7 @@ tproxy_tg4(struct sk_buff *skb, __be32 laddr, __be16 lport,
 					   skb->dev, NFT_LOOKUP_LISTENER);
 
 	/* NOTE: assign_sock consumes our sk reference */
-	if (sk && nf_tproxy_assign_sock(skb, sk)) {
+	if (sk && tproxy_sk_is_transparent(sk)) {
 		/* This should be in a separate target, but we don't do multiple
 		   targets on the same rule yet */
 		skb->mark = (skb->mark & ~mark_mask) ^ mark_value;
@@ -149,6 +163,8 @@ tproxy_tg4(struct sk_buff *skb, __be32 laddr, __be16 lport,
 		pr_debug("redirecting: proto %hhu %pI4:%hu -> %pI4:%hu, mark: %x\n",
 			 iph->protocol, &iph->daddr, ntohs(hp->dest),
 			 &laddr, ntohs(lport), skb->mark);
+
+		nf_tproxy_assign_sock(skb, sk);
 		return NF_ACCEPT;
 	}
 
@@ -204,7 +220,7 @@ tproxy_laddr6(struct sk_buff *skb, const struct in6_addr *user_laddr,
 }
 
 /**
- * tproxy_handle_time_wait6() - handle IPv6 TCP TIME_WAIT reopen redirections
+ * tproxy_handle_time_wait6 - handle IPv6 TCP TIME_WAIT reopen redirections
  * @skb:	The skb being processed.
  * @tproto:	Transport protocol.
  * @thoff:	Transport protocol header offset.
@@ -266,10 +282,10 @@ tproxy_tg6_v1(struct sk_buff *skb, const struct xt_action_param *par)
 	struct sock *sk;
 	const struct in6_addr *laddr;
 	__be16 lport;
-	int thoff;
+	int thoff = 0;
 	int tproto;
 
-	tproto = ipv6_find_hdr(skb, &thoff, -1, NULL);
+	tproto = ipv6_find_hdr(skb, &thoff, -1, NULL, NULL);
 	if (tproto < 0) {
 		pr_debug("unable to find transport header in IPv6 packet, dropping\n");
 		return NF_DROP;
@@ -306,7 +322,7 @@ tproxy_tg6_v1(struct sk_buff *skb, const struct xt_action_param *par)
 					   par->in, NFT_LOOKUP_LISTENER);
 
 	/* NOTE: assign_sock consumes our sk reference */
-	if (sk && nf_tproxy_assign_sock(skb, sk)) {
+	if (sk && tproxy_sk_is_transparent(sk)) {
 		/* This should be in a separate target, but we don't do multiple
 		   targets on the same rule yet */
 		skb->mark = (skb->mark & ~tgi->mark_mask) ^ tgi->mark_value;
@@ -314,6 +330,8 @@ tproxy_tg6_v1(struct sk_buff *skb, const struct xt_action_param *par)
 		pr_debug("redirecting: proto %hhu %pI6:%hu -> %pI6:%hu, mark: %x\n",
 			 tproto, &iph->saddr, ntohs(hp->source),
 			 laddr, ntohs(lport), skb->mark);
+
+		nf_tproxy_assign_sock(skb, sk);
 		return NF_ACCEPT;
 	}
 

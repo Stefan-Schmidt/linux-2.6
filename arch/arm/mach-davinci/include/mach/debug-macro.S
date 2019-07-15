@@ -18,53 +18,32 @@
 
 #include <linux/serial_reg.h>
 
-#include <asm/memory.h>
-
 #include <mach/serial.h>
 
 #define UART_SHIFT	2
 
-		.pushsection .data
-davinci_uart_phys:	.word	0
-davinci_uart_virt:	.word	0
-		.popsection
+#if defined(CONFIG_DEBUG_DAVINCI_DMx_UART0)
+#define UART_BASE	DAVINCI_UART0_BASE
+#elif defined(CONFIG_DEBUG_DAVINCI_DA8XX_UART0)
+#define UART_BASE	DA8XX_UART0_BASE
+#elif defined(CONFIG_DEBUG_DAVINCI_DA8XX_UART1)
+#define UART_BASE	DA8XX_UART1_BASE
+#elif defined(CONFIG_DEBUG_DAVINCI_DA8XX_UART2)
+#define UART_BASE	DA8XX_UART2_BASE
+#elif defined(CONFIG_DEBUG_DAVINCI_TNETV107X_UART1)
+#define UART_BASE	TNETV107X_UART2_BASE
+#define UART_VIRTBASE	TNETV107X_UART2_VIRT
+#else
+#error "Select a specifc port for DEBUG_LL"
+#endif
 
-		.macro addruart, rp, rv
+#ifndef UART_VIRTBASE
+#define UART_VIRTBASE	IO_ADDRESS(UART_BASE)
+#endif
 
-		/* Use davinci_uart_phys/virt if already configured */
-10:		mrc	p15, 0, \rp, c1, c0
-		tst	\rp, #1			@ MMU enabled?
-		ldreq	\rp, =__virt_to_phys(davinci_uart_phys)
-		ldrne	\rp, =davinci_uart_phys
-		add	\rv, \rp, #4		@ davinci_uart_virt
-		ldr	\rp, [\rp, #0]
-		ldr	\rv, [\rv, #0]
-		cmp	\rp, #0			@ is port configured?
-		cmpne	\rv, #0
-		bne	99f			@ already configured
-
-		/* Check the debug UART address set in uncompress.h */
-		mrc	p15, 0, \rp, c1, c0
-		tst	\rp, #1			@ MMU enabled?
-
-		/* Copy uart phys address from decompressor uart info */
-		ldreq	\rv, =__virt_to_phys(davinci_uart_phys)
-		ldrne	\rv, =davinci_uart_phys
-		ldreq	\rp, =DAVINCI_UART_INFO
-		ldrne	\rp, =__phys_to_virt(DAVINCI_UART_INFO)
-		ldr	\rp, [\rp, #0]
-		str	\rp, [\rv]
-
-		/* Copy uart virt address from decompressor uart info */
-		ldreq	\rv, =__virt_to_phys(davinci_uart_virt)
-		ldrne	\rv, =davinci_uart_virt
-		ldreq	\rp, =DAVINCI_UART_INFO
-		ldrne	\rp, =__phys_to_virt(DAVINCI_UART_INFO)
-		ldr	\rp, [\rp, #4]
-		str	\rp, [\rv]
-
-		b	10b
-99:
+		.macro addruart, rp, rv, tmp
+		ldr	\rp, =UART_BASE
+		ldr	\rv, =UART_VIRTBASE
 		.endm
 
 		.macro	senduart,rd,rx

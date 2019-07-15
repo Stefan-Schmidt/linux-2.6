@@ -2,9 +2,9 @@
 #define _ASM_X86_PGTABLE_2LEVEL_H
 
 #define pte_ERROR(e) \
-	printk("%s:%d: bad pte %08lx.\n", __FILE__, __LINE__, (e).pte_low)
+	pr_err("%s:%d: bad pte %08lx\n", __FILE__, __LINE__, (e).pte_low)
 #define pgd_ERROR(e) \
-	printk("%s:%d: bad pgd %08lx.\n", __FILE__, __LINE__, pgd_val(e))
+	pr_err("%s:%d: bad pgd %08lx\n", __FILE__, __LINE__, pgd_val(e))
 
 /*
  * Certain architectures need to do special things when PTEs
@@ -44,6 +44,15 @@ static inline pte_t native_ptep_get_and_clear(pte_t *xp)
 }
 #else
 #define native_ptep_get_and_clear(xp) native_local_ptep_get_and_clear(xp)
+#endif
+
+#ifdef CONFIG_SMP
+static inline pmd_t native_pmdp_get_and_clear(pmd_t *xp)
+{
+	return __pmd(xchg((pmdval_t *)xp, 0));
+}
+#else
+#define native_pmdp_get_and_clear(xp) native_local_pmdp_get_and_clear(xp)
 #endif
 
 /*

@@ -15,7 +15,7 @@
 #include <linux/fb.h>
 #include <linux/i2c.h>
 #include <linux/i2c-gpio.h>
-#include <linux/i2c/qt602240_ts.h>
+#include <linux/i2c/atmel_mxt_ts.h>
 #include <linux/mfd/max8998.h>
 #include <linux/mfd/wm8994/pdata.h>
 #include <linux/regulator/fixed.h>
@@ -25,7 +25,11 @@
 #include <linux/gpio_keys.h>
 #include <linux/input.h>
 #include <linux/gpio.h>
+#include <linux/mmc/host.h>
+#include <linux/interrupt.h>
+#include <linux/platform_data/s3c-hsotg.h>
 
+#include <asm/hardware/vic.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <asm/setup.h>
@@ -33,11 +37,9 @@
 
 #include <mach/map.h>
 #include <mach/regs-clock.h>
-#include <mach/regs-fb.h>
 
 #include <plat/gpio-cfg.h>
 #include <plat/regs-serial.h>
-#include <plat/s5pv210.h>
 #include <plat/devs.h>
 #include <plat/cpu.h>
 #include <plat/fb.h>
@@ -45,6 +47,16 @@
 #include <plat/keypad.h>
 #include <plat/sdhci.h>
 #include <plat/clock.h>
+#include <plat/s5p-time.h>
+#include <plat/mfc.h>
+#include <plat/regs-fb-v4.h>
+#include <plat/camport.h>
+
+#include <media/v4l2-mediabus.h>
+#include <media/s5p_fimc.h>
+#include <media/noon010pc30.h>
+
+#include "common.h"
 
 /* Following are default values for UCON, ULCON and UFCON UART registers */
 #define GONI_UCON_DEFAULT	(S3C2410_UCON_TXILEVEL |	\
@@ -95,23 +107,29 @@ static struct s3c2410_uartcfg goni_uartcfgs[] __initdata = {
 
 /* Frame Buffer */
 static struct s3c_fb_pd_win goni_fb_win0 = {
-	.win_mode = {
-		.left_margin	= 16,
-		.right_margin	= 16,
-		.upper_margin	= 2,
-		.lower_margin	= 28,
-		.hsync_len	= 2,
-		.vsync_len	= 1,
-		.xres		= 480,
-		.yres		= 800,
-		.refresh	= 55,
-	},
 	.max_bpp	= 32,
 	.default_bpp	= 16,
+	.xres		= 480,
+	.yres		= 800,
+	.virtual_x	= 480,
+	.virtual_y	= 2 * 800,
+};
+
+static struct fb_videomode goni_lcd_timing = {
+	.left_margin	= 16,
+	.right_margin	= 16,
+	.upper_margin	= 2,
+	.lower_margin	= 28,
+	.hsync_len	= 2,
+	.vsync_len	= 1,
+	.xres		= 480,
+	.yres		= 800,
+	.refresh	= 55,
 };
 
 static struct s3c_fb_platdata goni_lcd_pdata __initdata = {
 	.win[0]		= &goni_fb_win0,
+	.vtiming	= &goni_lcd_timing,
 	.vidcon0	= VIDCON0_VIDOUT_RGB | VIDCON0_PNRMODE_RGB |
 			  VIDCON0_CLKSEL_LCD,
 	.vidcon1	= VIDCON1_INV_VCLK | VIDCON1_INV_VDEN
@@ -217,12 +235,11 @@ static void __init goni_radio_init(void)
 	i2c1_devs[0].irq = gpio_to_irq(gpio);
 
 	gpio = S5PV210_GPJ2(5);			/* XMSMDATA_5 */
-	gpio_request(gpio, "FM_RST");
-	gpio_direction_output(gpio, 1);
+	gpio_request_one(gpio, GPIOF_OUT_INIT_HIGH, "FM_RST");
 }
 
 /* TSP */
-static struct qt602240_platform_data qt602240_platform_data = {
+static struct mxt_platform_data qt602240_platform_data = {
 	.x_line		= 17,
 	.y_line		= 11,
 	.x_size		= 800,
@@ -230,7 +247,8 @@ static struct qt602240_platform_data qt602240_platform_data = {
 	.blen		= 0x21,
 	.threshold	= 0x28,
 	.voltage	= 2800000,              /* 2.8V */
-	.orient		= QT602240_DIAGONAL,
+	.orient		= MXT_DIAGONAL,
+	.irqflags	= IRQF_TRIGGER_FALLING,
 };
 
 static struct s3c2410_platform_i2c i2c2_data __initdata = {
@@ -253,8 +271,7 @@ static void __init goni_tsp_init(void)
 	int gpio;
 
 	gpio = S5PV210_GPJ1(3);		/* XMSMADDR_11 */
-	gpio_request(gpio, "TSP_LDO_ON");
-	gpio_direction_output(gpio, 1);
+	gpio_request_one(gpio, GPIOF_OUT_INIT_HIGH, "TSP_LDO_ON");
 	gpio_export(gpio, 0);
 
 	gpio = S5PV210_GPJ0(5);		/* XMSMADDR_5 */
@@ -266,11 +283,43 @@ static void __init goni_tsp_init(void)
 	i2c2_devs[0].irq = gpio_to_irq(gpio);
 }
 
+/* USB OTG */
+static struct s3c_hsotg_plat goni_hsotg_pdata;
+
+static void goni_camera_init(void)
+{
+	s5pv210_fimc_setup_gpio(S5P_CAMPORT_A);
+
+	/* Set max driver strength on CAM_A_CLKOUT pin. */
+	s5p_gpio_set_drvstr(S5PV210_GPE1(3), S5P_GPIO_DRVSTR_LV4);
+}
+
 /* MAX8998 regulators */
 #if defined(CONFIG_REGULATOR_MAX8998) || defined(CONFIG_REGULATOR_MAX8998_MODULE)
 
+static struct regulator_consumer_supply goni_ldo3_consumers[] = {
+	REGULATOR_SUPPLY("vusb_a", "s3c-hsotg"),
+};
+
 static struct regulator_consumer_supply goni_ldo5_consumers[] = {
 	REGULATOR_SUPPLY("vmmc", "s3c-sdhci.0"),
+};
+
+static struct regulator_consumer_supply goni_ldo8_consumers[] = {
+	REGULATOR_SUPPLY("vusb_d", "s3c-hsotg"),
+	REGULATOR_SUPPLY("vdd33a_dac", "s5p-sdo"),
+};
+
+static struct regulator_consumer_supply goni_ldo11_consumers[] = {
+	REGULATOR_SUPPLY("vddio", "0-0030"), /* "CAM_IO_2.8V" */
+};
+
+static struct regulator_consumer_supply goni_ldo13_consumers[] = {
+	REGULATOR_SUPPLY("vdda", "0-0030"), /* "CAM_A_2.8V" */
+};
+
+static struct regulator_consumer_supply goni_ldo14_consumers[] = {
+	REGULATOR_SUPPLY("vdd_core", "0-0030"), /* "CAM_CIF_1.8V" */
 };
 
 static struct regulator_init_data goni_ldo2_data = {
@@ -288,12 +337,14 @@ static struct regulator_init_data goni_ldo2_data = {
 
 static struct regulator_init_data goni_ldo3_data = {
 	.constraints	= {
-		.name		= "VUSB/MIPI_1.1V",
+		.name		= "VUSB+MIPI_1.1V",
 		.min_uV		= 1100000,
 		.max_uV		= 1100000,
 		.apply_uV	= 1,
-		.always_on	= 1,
+		.valid_ops_mask	= REGULATOR_CHANGE_STATUS,
 	},
+	.num_consumer_supplies = ARRAY_SIZE(goni_ldo3_consumers),
+	.consumer_supplies = goni_ldo3_consumers,
 };
 
 static struct regulator_init_data goni_ldo4_data = {
@@ -311,6 +362,7 @@ static struct regulator_init_data goni_ldo5_data = {
 		.min_uV		= 2800000,
 		.max_uV		= 2800000,
 		.apply_uV	= 1,
+		.valid_ops_mask	= REGULATOR_CHANGE_STATUS,
 	},
 	.num_consumer_supplies = ARRAY_SIZE(goni_ldo5_consumers),
 	.consumer_supplies = goni_ldo5_consumers,
@@ -337,21 +389,22 @@ static struct regulator_init_data goni_ldo7_data = {
 
 static struct regulator_init_data goni_ldo8_data = {
 	.constraints	= {
-		.name		= "VUSB/VADC_3.3V",
+		.name		= "VUSB+VADC_3.3V",
 		.min_uV		= 3300000,
 		.max_uV		= 3300000,
 		.apply_uV	= 1,
-		.always_on	= 1,
+		.valid_ops_mask	= REGULATOR_CHANGE_STATUS,
 	},
+	.num_consumer_supplies = ARRAY_SIZE(goni_ldo8_consumers),
+	.consumer_supplies = goni_ldo8_consumers,
 };
 
 static struct regulator_init_data goni_ldo9_data = {
 	.constraints	= {
-		.name		= "VCC/VCAM_2.8V",
+		.name		= "VCC+VCAM_2.8V",
 		.min_uV		= 2800000,
 		.max_uV		= 2800000,
 		.apply_uV	= 1,
-		.always_on	= 1,
 	},
 };
 
@@ -371,8 +424,10 @@ static struct regulator_init_data goni_ldo11_data = {
 		.min_uV		= 2800000,
 		.max_uV		= 2800000,
 		.apply_uV	= 1,
-		.always_on	= 1,
+		.valid_ops_mask	= REGULATOR_CHANGE_STATUS,
 	},
+	.num_consumer_supplies	= ARRAY_SIZE(goni_ldo11_consumers),
+	.consumer_supplies	= goni_ldo11_consumers,
 };
 
 static struct regulator_init_data goni_ldo12_data = {
@@ -381,7 +436,6 @@ static struct regulator_init_data goni_ldo12_data = {
 		.min_uV		= 1200000,
 		.max_uV		= 1200000,
 		.apply_uV	= 1,
-		.always_on	= 1,
 	},
 };
 
@@ -391,8 +445,10 @@ static struct regulator_init_data goni_ldo13_data = {
 		.min_uV		= 2800000,
 		.max_uV		= 2800000,
 		.apply_uV	= 1,
-		.always_on	= 1,
+		.valid_ops_mask	= REGULATOR_CHANGE_STATUS,
 	},
+	.num_consumer_supplies	= ARRAY_SIZE(goni_ldo13_consumers),
+	.consumer_supplies	= goni_ldo13_consumers,
 };
 
 static struct regulator_init_data goni_ldo14_data = {
@@ -401,8 +457,10 @@ static struct regulator_init_data goni_ldo14_data = {
 		.min_uV		= 1800000,
 		.max_uV		= 1800000,
 		.apply_uV	= 1,
-		.always_on	= 1,
+		.valid_ops_mask	= REGULATOR_CHANGE_STATUS,
 	},
+	.num_consumer_supplies	= ARRAY_SIZE(goni_ldo14_consumers),
+	.consumer_supplies	= goni_ldo14_consumers,
 };
 
 static struct regulator_init_data goni_ldo15_data = {
@@ -411,7 +469,6 @@ static struct regulator_init_data goni_ldo15_data = {
 		.min_uV		= 3300000,
 		.max_uV		= 3300000,
 		.apply_uV	= 1,
-		.always_on	= 1,
 	},
 };
 
@@ -421,7 +478,6 @@ static struct regulator_init_data goni_ldo16_data = {
 		.min_uV		= 1800000,
 		.max_uV		= 1800000,
 		.apply_uV	= 1,
-		.always_on	= 1,
 	},
 };
 
@@ -436,13 +492,15 @@ static struct regulator_init_data goni_ldo17_data = {
 };
 
 /* BUCK */
-static struct regulator_consumer_supply buck1_consumer[] = {
-	{	.supply	= "vddarm", },
-};
+static struct regulator_consumer_supply buck1_consumer =
+	REGULATOR_SUPPLY("vddarm", NULL);
 
-static struct regulator_consumer_supply buck2_consumer[] = {
-	{	.supply	= "vddint", },
-};
+static struct regulator_consumer_supply buck2_consumer =
+	REGULATOR_SUPPLY("vddint", NULL);
+
+static struct regulator_consumer_supply buck3_consumer =
+	REGULATOR_SUPPLY("vdet", "s5p-sdo");
+
 
 static struct regulator_init_data goni_buck1_data = {
 	.constraints	= {
@@ -453,8 +511,8 @@ static struct regulator_init_data goni_buck1_data = {
 		.valid_ops_mask	= REGULATOR_CHANGE_VOLTAGE |
 				  REGULATOR_CHANGE_STATUS,
 	},
-	.num_consumer_supplies	= ARRAY_SIZE(buck1_consumer),
-	.consumer_supplies	= buck1_consumer,
+	.num_consumer_supplies	= 1,
+	.consumer_supplies	= &buck1_consumer,
 };
 
 static struct regulator_init_data goni_buck2_data = {
@@ -466,8 +524,8 @@ static struct regulator_init_data goni_buck2_data = {
 		.valid_ops_mask	= REGULATOR_CHANGE_VOLTAGE |
 				  REGULATOR_CHANGE_STATUS,
 	},
-	.num_consumer_supplies	= ARRAY_SIZE(buck2_consumer),
-	.consumer_supplies	= buck2_consumer,
+	.num_consumer_supplies	= 1,
+	.consumer_supplies	= &buck2_consumer,
 };
 
 static struct regulator_init_data goni_buck3_data = {
@@ -480,6 +538,8 @@ static struct regulator_init_data goni_buck3_data = {
 			.enabled = 1,
 		},
 	},
+	.num_consumer_supplies	= 1,
+	.consumer_supplies	= &buck3_consumer,
 };
 
 static struct regulator_init_data goni_buck4_data = {
@@ -518,30 +578,27 @@ static struct max8998_regulator_data goni_regulators[] = {
 static struct max8998_platform_data goni_max8998_pdata = {
 	.num_regulators	= ARRAY_SIZE(goni_regulators),
 	.regulators	= goni_regulators,
+	.buck1_set1	= S5PV210_GPH0(3),
+	.buck1_set2	= S5PV210_GPH0(4),
+	.buck2_set3	= S5PV210_GPH0(5),
+	.buck1_voltage1	= 1200000,
+	.buck1_voltage2	= 1200000,
+	.buck1_voltage3	= 1200000,
+	.buck1_voltage4	= 1200000,
+	.buck2_voltage1	= 1200000,
+	.buck2_voltage2	= 1200000,
 };
 #endif
 
 static struct regulator_consumer_supply wm8994_fixed_voltage0_supplies[] = {
-	{
-		.dev_name	= "5-001a",
-		.supply		= "DBVDD",
-	}, {
-		.dev_name	= "5-001a",
-		.supply		= "AVDD2",
-	}, {
-		.dev_name	= "5-001a",
-		.supply		= "CPVDD",
-	},
+	REGULATOR_SUPPLY("DBVDD", "5-001a"),
+	REGULATOR_SUPPLY("AVDD2", "5-001a"),
+	REGULATOR_SUPPLY("CPVDD", "5-001a"),
 };
 
 static struct regulator_consumer_supply wm8994_fixed_voltage1_supplies[] = {
-	{
-		.dev_name	= "5-001a",
-		.supply		= "SPKVDD1",
-	}, {
-		.dev_name	= "5-001a",
-		.supply		= "SPKVDD2",
-	},
+	REGULATOR_SUPPLY("SPKVDD1", "5-001a"),
+	REGULATOR_SUPPLY("SPKVDD2", "5-001a"),
 };
 
 static struct regulator_init_data wm8994_fixed_voltage0_init_data = {
@@ -590,15 +647,11 @@ static struct platform_device wm8994_fixed_voltage1 = {
 	},
 };
 
-static struct regulator_consumer_supply wm8994_avdd1_supply = {
-	.dev_name	= "5-001a",
-	.supply		= "AVDD1",
-};
+static struct regulator_consumer_supply wm8994_avdd1_supply =
+	REGULATOR_SUPPLY("AVDD1", "5-001a");
 
-static struct regulator_consumer_supply wm8994_dcvdd_supply = {
-	.dev_name	= "5-001a",
-	.supply		= "DCVDD",
-};
+static struct regulator_consumer_supply wm8994_dcvdd_supply =
+	REGULATOR_SUPPLY("DCVDD", "5-001a");
 
 static struct regulator_init_data wm8994_ldo1_data = {
 	.constraints	= {
@@ -630,8 +683,8 @@ static struct wm8994_pdata wm8994_platform_data = {
 	.gpio_defaults[8] = 0x0100,
 	.gpio_defaults[9] = 0x0100,
 	.gpio_defaults[10] = 0x0100,
-	.ldo[0]	= { S5PV210_MP03(6), NULL, &wm8994_ldo1_data },	/* XM0FRNB_2 */
-	.ldo[1]	= { 0, NULL, &wm8994_ldo2_data },
+	.ldo[0]	= { S5PV210_MP03(6), &wm8994_ldo1_data },	/* XM0FRNB_2 */
+	.ldo[1]	= { 0, &wm8994_ldo2_data },
 };
 
 /* GPIO I2C PMIC */
@@ -721,6 +774,7 @@ static void __init goni_pmic_init(void)
 /* MoviNAND */
 static struct s3c_sdhci_platdata goni_hsmmc0_data __initdata = {
 	.max_width		= 4,
+	.host_caps2		= MMC_CAP2_BROKEN_VOLTAGE,
 	.cd_type		= S3C_SDHCI_CD_PERMANENT,
 };
 
@@ -777,17 +831,59 @@ static void goni_setup_sdhci(void)
 	s3c_sdhci2_set_platdata(&goni_hsmmc2_data);
 };
 
+static struct noon010pc30_platform_data noon010pc30_pldata = {
+	.clk_rate	= 16000000UL,
+	.gpio_nreset	= S5PV210_GPB(2), /* CAM_CIF_NRST */
+	.gpio_nstby	= S5PV210_GPB(0), /* CAM_CIF_NSTBY */
+};
+
+static struct i2c_board_info noon010pc30_board_info = {
+	I2C_BOARD_INFO("NOON010PC30", 0x60 >> 1),
+	.platform_data = &noon010pc30_pldata,
+};
+
+static struct s5p_fimc_isp_info goni_camera_sensors[] = {
+	{
+		.mux_id		= 0,
+		.flags		= V4L2_MBUS_PCLK_SAMPLE_FALLING |
+				  V4L2_MBUS_VSYNC_ACTIVE_LOW,
+		.bus_type	= FIMC_ITU_601,
+		.board_info	= &noon010pc30_board_info,
+		.i2c_bus_num	= 0,
+		.clk_frequency	= 16000000UL,
+	},
+};
+
+static struct s5p_platform_fimc goni_fimc_md_platdata __initdata = {
+	.isp_info	= goni_camera_sensors,
+	.num_clients	= ARRAY_SIZE(goni_camera_sensors),
+};
+
+/* Audio device */
+static struct platform_device goni_device_audio = {
+	.name = "smdk-audio",
+	.id = -1,
+};
+
 static struct platform_device *goni_devices[] __initdata = {
 	&s3c_device_fb,
 	&s5p_device_onenand,
 	&goni_spi_gpio,
 	&goni_i2c_gpio_pmic,
 	&goni_i2c_gpio5,
+	&goni_device_audio,
 	&mmc2_fixed_voltage,
 	&goni_device_gpiokeys,
+	&s5p_device_mfc,
+	&s5p_device_mfc_l,
+	&s5p_device_mfc_r,
+	&s5p_device_mixer,
+	&s5p_device_sdo,
+	&s3c_device_i2c0,
 	&s5p_device_fimc0,
 	&s5p_device_fimc1,
 	&s5p_device_fimc2,
+	&s5p_device_fimc_md,
 	&s3c_device_hsmmc0,
 	&s3c_device_hsmmc1,
 	&s3c_device_hsmmc2,
@@ -811,15 +907,24 @@ static void __init goni_sound_init(void)
 
 static void __init goni_map_io(void)
 {
-	s5p_init_io(NULL, 0, S5P_VA_CHIPID);
-	s3c24xx_init_clocks(24000000);
+	s5pv210_init_io(NULL, 0);
+	s3c24xx_init_clocks(clk_xusbxti.rate);
 	s3c24xx_init_uarts(goni_uartcfgs, ARRAY_SIZE(goni_uartcfgs));
+	s5p_set_timer_source(S5P_PWM3, S5P_PWM4);
+}
+
+static void __init goni_reserve(void)
+{
+	s5p_mfc_reserve_mem(0x43000000, 8 << 20, 0x51000000, 8 << 20);
 }
 
 static void __init goni_machine_init(void)
 {
 	/* Radio: call before I2C 1 registeration */
 	goni_radio_init();
+
+	/* I2C0 */
+	s3c_i2c0_set_platdata(NULL);
 
 	/* I2C1 */
 	s3c_i2c1_set_platdata(NULL);
@@ -847,22 +952,31 @@ static void __init goni_machine_init(void)
 	/* FB */
 	s3c_fb_set_platdata(&goni_lcd_pdata);
 
+	/* FIMC */
+	s3c_set_platdata(&goni_fimc_md_platdata, sizeof(goni_fimc_md_platdata),
+			 &s5p_device_fimc_md);
+
+	s3c_hsotg_set_platdata(&goni_hsotg_pdata);
+
+	goni_camera_init();
+
 	/* SPI */
 	spi_register_board_info(spi_board_info, ARRAY_SIZE(spi_board_info));
 
 	/* KEYPAD */
 	samsung_keypad_set_platdata(&keypad_data);
 
-	clk_xusbxti.rate = 24000000;
-
 	platform_add_devices(goni_devices, ARRAY_SIZE(goni_devices));
 }
 
 MACHINE_START(GONI, "GONI")
 	/* Maintainers: Kyungmin Park <kyungmin.park@samsung.com> */
-	.boot_params	= S5P_PA_SDRAM + 0x100,
+	.atag_offset	= 0x100,
 	.init_irq	= s5pv210_init_irq,
+	.handle_irq	= vic_handle_irq,
 	.map_io		= goni_map_io,
 	.init_machine	= goni_machine_init,
-	.timer		= &s3c24xx_timer,
+	.timer		= &s5p_timer,
+	.reserve	= &goni_reserve,
+	.restart	= s5pv210_restart,
 MACHINE_END

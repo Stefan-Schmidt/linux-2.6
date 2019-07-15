@@ -1,6 +1,6 @@
 /*
  * This only handles 32bit MTRR on 32bit hosts. This is strictly wrong
- * because MTRRs can span upto 40 bits (36bits on most modern x86)
+ * because MTRRs can span up to 40 bits (36bits on most modern x86)
  */
 #define DEBUG
 
@@ -12,7 +12,6 @@
 #include <asm/processor-flags.h>
 #include <asm/cpufeature.h>
 #include <asm/tlbflush.h>
-#include <asm/system.h>
 #include <asm/mtrr.h>
 #include <asm/msr.h>
 #include <asm/pat.h>
@@ -362,11 +361,7 @@ static void __init print_mtrr_state(void)
 	}
 	pr_debug("MTRR variable ranges %sabled:\n",
 		 mtrr_state.enabled & 2 ? "en" : "dis");
-	if (size_or_mask & 0xffffffffUL)
-		high_width = ffs(size_or_mask & 0xffffffffUL) - 1;
-	else
-		high_width = ffs(size_or_mask>>32) + 32 - 1;
-	high_width = (high_width - (32 - PAGE_SHIFT) + 3) / 4;
+	high_width = (__ffs64(size_or_mask) - (32 - PAGE_SHIFT) + 3) / 4;
 
 	for (i = 0; i < num_var_ranges; ++i) {
 		if (mtrr_state.var_ranges[i].mask_lo & (1 << 11))
@@ -547,6 +542,7 @@ static void generic_get_mtrr(unsigned int reg, unsigned long *base,
 
 		if (tmp != mask_lo) {
 			printk(KERN_WARNING "mtrr: your BIOS has configured an incorrect mask, fixing it.\n");
+			add_taint(TAINT_FIRMWARE_WORKAROUND);
 			mask_lo = tmp;
 		}
 	}
@@ -693,6 +689,7 @@ static void prepare_set(void) __acquires(set_atomicity_lock)
 
 	/* Disable MTRRs, and set the default type to uncached */
 	mtrr_wrmsr(MSR_MTRRdefType, deftype_lo & ~0xcff, deftype_hi);
+	wbinvd();
 }
 
 static void post_set(void) __releases(set_atomicity_lock)

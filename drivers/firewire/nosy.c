@@ -36,8 +36,8 @@
 #include <linux/timex.h>
 #include <linux/uaccess.h>
 #include <linux/wait.h>
-
-#include <asm/atomic.h>
+#include <linux/dma-mapping.h>
+#include <linux/atomic.h>
 #include <asm/byteorder.h>
 
 #include "nosy.h"
@@ -302,7 +302,7 @@ nosy_open(struct inode *inode, struct file *file)
 
 	file->private_data = client;
 
-	return 0;
+	return nonseekable_open(inode, file);
 fail:
 	kfree(client);
 	lynx_put(lynx);
@@ -405,7 +405,6 @@ static const struct file_operations nosy_ops = {
 	.poll =			nosy_poll,
 	.open =			nosy_open,
 	.release =		nosy_release,
-	.llseek =		noop_llseek,
 };
 
 #define PHY_PACKET_SIZE 12 /* 1 payload, 1 inverse, 1 ack = 3 quadlets */
@@ -537,7 +536,7 @@ add_card(struct pci_dev *dev, const struct pci_device_id *unused)
 	u32 p, end;
 	int ret, i;
 
-	if (pci_set_dma_mask(dev, 0xffffffff)) {
+	if (pci_set_dma_mask(dev, DMA_BIT_MASK(32))) {
 		dev_err(&dev->dev,
 		    "DMA address limits not supported for PCILynx hardware\n");
 		return -ENXIO;
@@ -694,6 +693,8 @@ static struct pci_device_id pci_table[] __devinitdata = {
 	{ }	/* Terminating entry */
 };
 
+MODULE_DEVICE_TABLE(pci, pci_table);
+
 static struct pci_driver lynx_pci_driver = {
 	.name =		driver_name,
 	.id_table =	pci_table,
@@ -701,22 +702,8 @@ static struct pci_driver lynx_pci_driver = {
 	.remove =	remove_card,
 };
 
+module_pci_driver(lynx_pci_driver);
+
 MODULE_AUTHOR("Kristian Hoegsberg");
 MODULE_DESCRIPTION("Snoop mode driver for TI pcilynx 1394 controllers");
 MODULE_LICENSE("GPL");
-MODULE_DEVICE_TABLE(pci, pci_table);
-
-static int __init nosy_init(void)
-{
-	return pci_register_driver(&lynx_pci_driver);
-}
-
-static void __exit nosy_cleanup(void)
-{
-	pci_unregister_driver(&lynx_pci_driver);
-
-	pr_info("Unloaded %s\n", driver_name);
-}
-
-module_init(nosy_init);
-module_exit(nosy_cleanup);

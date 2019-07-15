@@ -29,7 +29,7 @@ MODULE_DESCRIPTION("Core sound module");
 MODULE_AUTHOR("Alan Cox");
 MODULE_LICENSE("GPL");
 
-static char *sound_devnode(struct device *dev, mode_t *mode)
+static char *sound_devnode(struct device *dev, umode_t *mode)
 {
 	if (MAJOR(dev->devt) == SOUND_MAJOR)
 		return NULL;
@@ -104,7 +104,6 @@ module_exit(cleanup_soundcore);
 
 #include <linux/init.h>
 #include <linux/slab.h>
-#include <linux/smp_lock.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/sound.h>
@@ -362,7 +361,7 @@ int register_sound_special_device(const struct file_operations *fops, int unit,
 				  struct device *dev)
 {
 	const int chain = unit % SOUND_STEP;
-	int max_unit = 128 + chain;
+	int max_unit = 256;
 	const char *name;
 	char _name[16];
 
@@ -384,6 +383,9 @@ int register_sound_special_device(const struct file_operations *fops, int unit,
 		break;
 	    case 4:
 		name = "audio";
+		break;
+	    case 5:
+		name = "dspW";
 		break;
 	    case 8:
 		name = "sequencer2";

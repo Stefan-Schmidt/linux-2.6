@@ -1,6 +1,4 @@
 /*
- *  arch/s390/kernel/processor.c
- *
  *  Copyright IBM Corp. 2008
  *  Author(s): Martin Schwidefsky (schwidefsky@de.ibm.com)
  */
@@ -13,7 +11,7 @@
 #include <linux/smp.h>
 #include <linux/seq_file.h>
 #include <linux/delay.h>
-
+#include <linux/cpu.h>
 #include <asm/elf.h>
 #include <asm/lowcore.h>
 #include <asm/param.h>
@@ -25,24 +23,15 @@ static DEFINE_PER_CPU(struct cpuid, cpu_id);
  */
 void __cpuinit cpu_init(void)
 {
-	struct cpuid *id = &per_cpu(cpu_id, smp_processor_id());
+	struct s390_idle_data *idle = &__get_cpu_var(s390_idle);
+	struct cpuid *id = &__get_cpu_var(cpu_id);
 
 	get_cpu_id(id);
 	atomic_inc(&init_mm.mm_count);
 	current->active_mm = &init_mm;
 	BUG_ON(current->mm);
 	enter_lazy_tlb(&init_mm, current);
-}
-
-/*
- * print_cpu_info - print basic information about a cpu
- */
-void __cpuinit print_cpu_info(void)
-{
-	struct cpuid *id = &per_cpu(cpu_id, smp_processor_id());
-
-	pr_info("Processor %d started, address %d, identification %06X\n",
-		S390_lowcore.cpu_nr, stap(), id->ident);
+	memset(idle, 0, sizeof(*idle));
 }
 
 /*
@@ -57,9 +46,8 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	unsigned long n = (unsigned long) v - 1;
 	int i;
 
-	s390_adjust_jiffies();
-	preempt_disable();
 	if (!n) {
+		s390_adjust_jiffies();
 		seq_printf(m, "vendor_id       : IBM/S390\n"
 			   "# processors    : %i\n"
 			   "bogomips per cpu: %lu.%02lu\n",
@@ -71,7 +59,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 				seq_printf(m, "%s ", hwcap_str[i]);
 		seq_puts(m, "\n");
 	}
-
+	get_online_cpus();
 	if (cpu_online(n)) {
 		struct cpuid *id = &per_cpu(cpu_id, n);
 		seq_printf(m, "processor %li: "
@@ -80,13 +68,13 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 			   "machine = %04X\n",
 			   n, id->version, id->ident, id->machine);
 	}
-	preempt_enable();
+	put_online_cpus();
 	return 0;
 }
 
 static void *c_start(struct seq_file *m, loff_t *pos)
 {
-	return *pos < NR_CPUS ? (void *)((unsigned long) *pos + 1) : NULL;
+	return *pos < nr_cpu_ids ? (void *)((unsigned long) *pos + 1) : NULL;
 }
 
 static void *c_next(struct seq_file *m, void *v, loff_t *pos)

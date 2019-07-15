@@ -59,6 +59,8 @@ int lbs_allocate_cmd_buffer(struct lbs_private *priv);
 int lbs_free_cmd_buffer(struct lbs_private *priv);
 
 int lbs_execute_next_command(struct lbs_private *priv);
+void __lbs_complete_command(struct lbs_private *priv, struct cmd_ctrl_node *cmd,
+			    int result);
 void lbs_complete_command(struct lbs_private *priv, struct cmd_ctrl_node *cmd,
 			  int result);
 int lbs_process_command_response(struct lbs_private *priv, u8 *data, u32 len);
@@ -126,9 +128,7 @@ int lbs_set_monitor_mode(struct lbs_private *priv, int enable);
 
 int lbs_get_rssi(struct lbs_private *priv, s8 *snr, s8 *nf);
 
-int lbs_set_11d_domain_info(struct lbs_private *priv,
-			    struct regulatory_request *request,
-			    struct ieee80211_supported_band **bands);
+int lbs_set_11d_domain_info(struct lbs_private *priv);
 
 int lbs_get_reg(struct lbs_private *priv, u16 reg, u16 offset, u32 *value);
 

@@ -38,7 +38,7 @@
  * 2. 0x800/0x900/0xA00/0xC00/0xD00/0xE00
  * 3. RF register 0x00-2E
  * 4. Bit Mask for BB/RF register
- * 5. Other defintion for BB/RF R/W
+ * 5. Other definition for BB/RF R/W
  *
  * 1. PMAC duplicate register due to connection: RF_Mode, TRxRN, NumOf L-STF
  * 1. Page1(0x100)
@@ -184,7 +184,7 @@
 
 /*RxIQ DC offset, Rx digital filter, DC notch filter */
 #define	rOFDM0_XARxAFE			0xc10
-#define	rOFDM0_XARxIQImbalance		0xc14  /* RxIQ imblance matrix */
+#define	rOFDM0_XARxIQImbalance		0xc14  /* RxIQ imbalance matrix */
 #define	rOFDM0_XBRxAFE			0xc18
 #define	rOFDM0_XBRxIQImbalance		0xc1c
 #define	rOFDM0_XCRxAFE			0xc20
@@ -603,7 +603,7 @@
 #define	bCCKRxIG		0x7f00
 #define	bCCKLNAPolarity		0x800000
 #define	bCCKRx1stGain		0x7f0000
-#define	bCCKRFExtend		0x20000000 /* CCK Rx Iinital gain polarity */
+#define	bCCKRFExtend		0x20000000 /* CCK Rx inital gain polarity */
 #define	bCCKRxAGCSatLevel	0x1f000000
 #define	bCCKRxAGCSatCount       0xe0
 #define	bCCKRxRFSettle          0x1f       /* AGCsamp_dly */

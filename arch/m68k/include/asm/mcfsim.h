@@ -27,6 +27,9 @@
 #elif defined(CONFIG_M5249)
 #include <asm/m5249sim.h>
 #include <asm/mcfintc.h>
+#elif defined(CONFIG_M525x)
+#include <asm/m525xsim.h>
+#include <asm/mcfintc.h>
 #elif defined(CONFIG_M527x)
 #include <asm/m527xsim.h>
 #elif defined(CONFIG_M5272)
@@ -41,8 +44,10 @@
 #elif defined(CONFIG_M5407)
 #include <asm/m5407sim.h>
 #include <asm/mcfintc.h>
-#elif defined(CONFIG_M548x)
-#include <asm/m548xsim.h>
+#elif defined(CONFIG_M54xx)
+#include <asm/m54xxsim.h>
+#elif defined(CONFIG_M5441x)
+#include <asm/m5441xsim.h>
 #endif
 
 /****************************************************************************/

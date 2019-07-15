@@ -158,7 +158,7 @@ static int __devinit regulator_led_probe(struct platform_device *pdev)
 		return PTR_ERR(vcc);
 	}
 
-	led = kzalloc(sizeof(*led), GFP_KERNEL);
+	led = devm_kzalloc(&pdev->dev, sizeof(*led), GFP_KERNEL);
 	if (led == NULL) {
 		ret = -ENOMEM;
 		goto err_vcc;
@@ -169,7 +169,7 @@ static int __devinit regulator_led_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Invalid default brightness %d\n",
 				pdata->brightness);
 		ret = -EINVAL;
-		goto err_led;
+		goto err_vcc;
 	}
 	led->value = pdata->brightness;
 
@@ -177,6 +177,10 @@ static int __devinit regulator_led_probe(struct platform_device *pdev)
 	led->cdev.name = pdata->name;
 	led->cdev.flags |= LED_CORE_SUSPENDRESUME;
 	led->vcc = vcc;
+
+	/* to handle correctly an already enabled regulator */
+	if (regulator_is_enabled(led->vcc))
+		led->enabled = 1;
 
 	mutex_init(&led->mutex);
 	INIT_WORK(&led->work, led_work);
@@ -186,7 +190,7 @@ static int __devinit regulator_led_probe(struct platform_device *pdev)
 	ret = led_classdev_register(&pdev->dev, &led->cdev);
 	if (ret < 0) {
 		cancel_work_sync(&led->work);
-		goto err_led;
+		goto err_vcc;
 	}
 
 	/* to expose the default value to userspace */
@@ -197,8 +201,6 @@ static int __devinit regulator_led_probe(struct platform_device *pdev)
 
 	return 0;
 
-err_led:
-	kfree(led);
 err_vcc:
 	regulator_put(vcc);
 	return ret;
@@ -212,7 +214,6 @@ static int __devexit regulator_led_remove(struct platform_device *pdev)
 	cancel_work_sync(&led->work);
 	regulator_led_disable(led);
 	regulator_put(led->vcc);
-	kfree(led);
 	return 0;
 }
 
@@ -225,17 +226,7 @@ static struct platform_driver regulator_led_driver = {
 	.remove = __devexit_p(regulator_led_remove),
 };
 
-static int __init regulator_led_init(void)
-{
-	return platform_driver_register(&regulator_led_driver);
-}
-module_init(regulator_led_init);
-
-static void __exit regulator_led_exit(void)
-{
-	platform_driver_unregister(&regulator_led_driver);
-}
-module_exit(regulator_led_exit);
+module_platform_driver(regulator_led_driver);
 
 MODULE_AUTHOR("Antonio Ospite <ospite@studenti.unina.it>");
 MODULE_DESCRIPTION("Regulator driven LED driver");

@@ -38,7 +38,7 @@ int decnet_log_martians = 1;
 int decnet_no_fc_max_cwnd = NSP_MIN_WINDOW;
 
 /* Reasonable defaults, I hope, based on tcp's defaults */
-int sysctl_decnet_mem[3] = { 768 << 3, 1024 << 3, 1536 << 3 };
+long sysctl_decnet_mem[3] = { 768 << 3, 1024 << 3, 1536 << 3 };
 int sysctl_decnet_wmem[3] = { 4 * 1024, 16 * 1024, 128 * 1024 };
 int sysctl_decnet_rmem[3] = { 4 * 1024, 87380, 87380 * 2 };
 
@@ -68,14 +68,15 @@ static struct ctl_table_header *dn_table_header = NULL;
 static void strip_it(char *str)
 {
 	for(;;) {
-		switch(*str) {
-			case ' ':
-			case '\n':
-			case '\r':
-			case ':':
-				*str = 0;
-			case 0:
-				return;
+		switch (*str) {
+		case ' ':
+		case '\n':
+		case '\r':
+		case ':':
+			*str = 0;
+			/* Fallthrough */
+		case 0:
+			return;
 		}
 		str++;
 	}
@@ -324,7 +325,7 @@ static ctl_table dn_table[] = {
 		.data = &sysctl_decnet_mem,
 		.maxlen = sizeof(sysctl_decnet_mem),
 		.mode = 0644,
-		.proc_handler = proc_dointvec,
+		.proc_handler = proc_doulongvec_minmax
 	},
 	{
 		.procname = "decnet_rmem",
@@ -350,20 +351,14 @@ static ctl_table dn_table[] = {
 	{ }
 };
 
-static struct ctl_path dn_path[] = {
-	{ .procname = "net", },
-	{ .procname = "decnet", },
-	{ }
-};
-
 void dn_register_sysctl(void)
 {
-	dn_table_header = register_sysctl_paths(dn_path, dn_table);
+	dn_table_header = register_net_sysctl(&init_net, "net/decnet", dn_table);
 }
 
 void dn_unregister_sysctl(void)
 {
-	unregister_sysctl_table(dn_table_header);
+	unregister_net_sysctl_table(dn_table_header);
 }
 
 #else  /* CONFIG_SYSCTL */

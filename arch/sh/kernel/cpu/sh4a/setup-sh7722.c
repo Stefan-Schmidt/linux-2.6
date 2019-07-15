@@ -12,7 +12,9 @@
 #include <linux/platform_device.h>
 #include <linux/serial.h>
 #include <linux/serial_sci.h>
+#include <linux/sh_dma.h>
 #include <linux/sh_timer.h>
+#include <linux/sh_intc.h>
 #include <linux/uio_driver.h>
 #include <linux/usb/m66592.h>
 
@@ -22,6 +24,7 @@
 
 #include <cpu/dma-register.h>
 #include <cpu/sh7722.h>
+#include <cpu/serial.h>
 
 static const struct sh_dmae_slave_config sh7722_dmae_slaves[] = {
 	{
@@ -145,21 +148,21 @@ static struct resource sh7722_dmae_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		/* DMA error IRQ */
-		.start	= 78,
-		.end	= 78,
+		.name	= "error_irq",
+		.start	= evt2irq(0xbc0),
+		.end	= evt2irq(0xbc0),
 		.flags	= IORESOURCE_IRQ,
 	},
 	{
 		/* IRQ for channels 0-3 */
-		.start	= 48,
-		.end	= 51,
+		.start	= evt2irq(0x800),
+		.end	= evt2irq(0x860),
 		.flags	= IORESOURCE_IRQ,
 	},
 	{
 		/* IRQ for channels 4-5 */
-		.start	= 76,
-		.end	= 77,
+		.start	= evt2irq(0xb80),
+		.end	= evt2irq(0xba0),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -172,17 +175,18 @@ struct platform_device dma_device = {
 	.dev		= {
 		.platform_data	= &dma_platform_data,
 	},
-	.archdata = {
-		.hwblk_id = HWBLK_DMAC,
-	},
 };
 
 /* Serial */
 static struct plat_sci_port scif0_platform_data = {
 	.mapbase        = 0xffe00000,
 	.flags          = UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE,
+	.scbrr_algo_id	= SCBRR_ALGO_2,
 	.type           = PORT_SCIF,
-	.irqs           = { 80, 80, 80, 80 },
+	.irqs           = SCIx_IRQ_MUXED(evt2irq(0xc00)),
+	.ops		= &sh7722_sci_port_ops,
+	.regtype	= SCIx_SH4_SCIF_NO_SCSPTR_REGTYPE,
 };
 
 static struct platform_device scif0_device = {
@@ -196,8 +200,12 @@ static struct platform_device scif0_device = {
 static struct plat_sci_port scif1_platform_data = {
 	.mapbase        = 0xffe10000,
 	.flags          = UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE,
+	.scbrr_algo_id	= SCBRR_ALGO_2,
 	.type           = PORT_SCIF,
-	.irqs           = { 81, 81, 81, 81 },
+	.irqs           = SCIx_IRQ_MUXED(evt2irq(0xc20)),
+	.ops		= &sh7722_sci_port_ops,
+	.regtype	= SCIx_SH4_SCIF_NO_SCSPTR_REGTYPE,
 };
 
 static struct platform_device scif1_device = {
@@ -211,8 +219,12 @@ static struct platform_device scif1_device = {
 static struct plat_sci_port scif2_platform_data = {
 	.mapbase        = 0xffe20000,
 	.flags          = UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE,
+	.scbrr_algo_id	= SCBRR_ALGO_2,
 	.type           = PORT_SCIF,
-	.irqs           = { 82, 82, 82, 82 },
+	.irqs           = SCIx_IRQ_MUXED(evt2irq(0xc40)),
+	.ops		= &sh7722_sci_port_ops,
+	.regtype	= SCIx_SH4_SCIF_NO_SCSPTR_REGTYPE,
 };
 
 static struct platform_device scif2_device = {
@@ -231,17 +243,17 @@ static struct resource rtc_resources[] = {
 	},
 	[1] = {
 		/* Period IRQ */
-		.start	= 45,
+		.start	= evt2irq(0x7a0),
 		.flags	= IORESOURCE_IRQ,
 	},
 	[2] = {
 		/* Carry IRQ */
-		.start	= 46,
+		.start	= evt2irq(0x7c0),
 		.flags	= IORESOURCE_IRQ,
 	},
 	[3] = {
 		/* Alarm IRQ */
-		.start	= 44,
+		.start	= evt2irq(0x780),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -251,9 +263,6 @@ static struct platform_device rtc_device = {
 	.id		= -1,
 	.num_resources	= ARRAY_SIZE(rtc_resources),
 	.resource	= rtc_resources,
-	.archdata = {
-		.hwblk_id = HWBLK_RTC,
-	},
 };
 
 static struct m66592_platdata usbf_platdata = {
@@ -268,8 +277,8 @@ static struct resource usbf_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 65,
-		.end	= 65,
+		.start	= evt2irq(0xa20),
+		.end	= evt2irq(0xa20),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -284,9 +293,6 @@ static struct platform_device usbf_device = {
 	},
 	.num_resources	= ARRAY_SIZE(usbf_resources),
 	.resource	= usbf_resources,
-	.archdata = {
-		.hwblk_id = HWBLK_USBF,
-	},
 };
 
 static struct resource iic_resources[] = {
@@ -297,8 +303,8 @@ static struct resource iic_resources[] = {
 		.flags  = IORESOURCE_MEM,
 	},
 	[1] = {
-		.start  = 96,
-		.end    = 99,
+		.start  = evt2irq(0xe00),
+		.end    = evt2irq(0xe60),
 		.flags  = IORESOURCE_IRQ,
        },
 };
@@ -308,15 +314,12 @@ static struct platform_device iic_device = {
 	.id             = 0, /* "i2c0" clock */
 	.num_resources  = ARRAY_SIZE(iic_resources),
 	.resource       = iic_resources,
-	.archdata = {
-		.hwblk_id = HWBLK_IIC,
-	},
 };
 
 static struct uio_info vpu_platform_data = {
 	.name = "VPU4",
 	.version = "0",
-	.irq = 60,
+	.irq = evt2irq(0x980),
 };
 
 static struct resource vpu_resources[] = {
@@ -339,15 +342,12 @@ static struct platform_device vpu_device = {
 	},
 	.resource	= vpu_resources,
 	.num_resources	= ARRAY_SIZE(vpu_resources),
-	.archdata = {
-		.hwblk_id = HWBLK_VPU,
-	},
 };
 
 static struct uio_info veu_platform_data = {
 	.name = "VEU",
 	.version = "0",
-	.irq = 54,
+	.irq = evt2irq(0x8c0),
 };
 
 static struct resource veu_resources[] = {
@@ -370,15 +370,12 @@ static struct platform_device veu_device = {
 	},
 	.resource	= veu_resources,
 	.num_resources	= ARRAY_SIZE(veu_resources),
-	.archdata = {
-		.hwblk_id = HWBLK_VEU,
-	},
 };
 
 static struct uio_info jpu_platform_data = {
 	.name = "JPU",
 	.version = "0",
-	.irq = 27,
+	.irq = evt2irq(0x560),
 };
 
 static struct resource jpu_resources[] = {
@@ -401,9 +398,6 @@ static struct platform_device jpu_device = {
 	},
 	.resource	= jpu_resources,
 	.num_resources	= ARRAY_SIZE(jpu_resources),
-	.archdata = {
-		.hwblk_id = HWBLK_JPU,
-	},
 };
 
 static struct sh_timer_config cmt_platform_data = {
@@ -420,7 +414,7 @@ static struct resource cmt_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 104,
+		.start	= evt2irq(0xf00),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -433,9 +427,6 @@ static struct platform_device cmt_device = {
 	},
 	.resource	= cmt_resources,
 	.num_resources	= ARRAY_SIZE(cmt_resources),
-	.archdata = {
-		.hwblk_id = HWBLK_CMT,
-	},
 };
 
 static struct sh_timer_config tmu0_platform_data = {
@@ -451,7 +442,7 @@ static struct resource tmu0_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 16,
+		.start	= evt2irq(0x400),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -464,9 +455,6 @@ static struct platform_device tmu0_device = {
 	},
 	.resource	= tmu0_resources,
 	.num_resources	= ARRAY_SIZE(tmu0_resources),
-	.archdata = {
-		.hwblk_id = HWBLK_TMU,
-	},
 };
 
 static struct sh_timer_config tmu1_platform_data = {
@@ -482,7 +470,7 @@ static struct resource tmu1_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 17,
+		.start	= evt2irq(0x420),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -495,9 +483,6 @@ static struct platform_device tmu1_device = {
 	},
 	.resource	= tmu1_resources,
 	.num_resources	= ARRAY_SIZE(tmu1_resources),
-	.archdata = {
-		.hwblk_id = HWBLK_TMU,
-	},
 };
 
 static struct sh_timer_config tmu2_platform_data = {
@@ -525,13 +510,9 @@ static struct platform_device tmu2_device = {
 	},
 	.resource	= tmu2_resources,
 	.num_resources	= ARRAY_SIZE(tmu2_resources),
-	.archdata = {
-		.hwblk_id = HWBLK_TMU,
-	},
 };
 
 static struct siu_platform siu_platform_data = {
-	.dma_dev	= &dma_device.dev,
 	.dma_slave_tx_a	= SHDMA_SLAVE_SIUA_TX,
 	.dma_slave_rx_a	= SHDMA_SLAVE_SIUA_RX,
 	.dma_slave_tx_b	= SHDMA_SLAVE_SIUB_TX,
@@ -545,7 +526,7 @@ static struct resource siu_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 108,
+		.start	= evt2irq(0xf80),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -558,9 +539,6 @@ static struct platform_device siu_device = {
 	},
 	.resource	= siu_resources,
 	.num_resources	= ARRAY_SIZE(siu_resources),
-	.archdata = {
-		.hwblk_id = HWBLK_SIU,
-	},
 };
 
 static struct platform_device *sh7722_devices[] __initdata = {
@@ -699,7 +677,7 @@ static struct intc_mask_reg mask_registers[] __initdata = {
 	  { I2C_DTEI, I2C_WAITI, I2C_TACKI, I2C_ALI,
 	    FLCTL_FLTREQ1I, FLCTL_FLTREQ0I, FLCTL_FLENDI, FLCTL_FLSTEI } },
 	{ 0xa40800a0, 0xa40800e0, 8, /* IMR8 / IMCR8 */
-	  { DISABLED, DISABLED, ENABLED, ENABLED, 0, 0, TWODG, SIU } },
+	  { DISABLED, ENABLED, ENABLED, ENABLED, 0, 0, TWODG, SIU } },
 	{ 0xa40800a4, 0xa40800e4, 8, /* IMR9 / IMCR9 */
 	  { 0, 0, 0, CMT, 0, USB_USBI1, USB_USBI0, } },
 	{ 0xa40800a8, 0xa40800e8, 8, /* IMR10 / IMCR10 */

@@ -76,7 +76,7 @@ int rxrpc_queue_rcv_skb(struct rxrpc_call *call, struct sk_buff *skb,
 		 * --ANK */
 //		ret = -ENOBUFS;
 //		if (atomic_read(&sk->sk_rmem_alloc) + skb->truesize >=
-//		    (unsigned) sk->sk_rcvbuf)
+//		    (unsigned int) sk->sk_rcvbuf)
 //			goto out;
 
 		ret = sk_filter(sk, skb);
@@ -423,6 +423,7 @@ void rxrpc_fast_process_packet(struct rxrpc_call *call, struct sk_buff *skb)
 			goto protocol_error;
 		}
 
+	case RXRPC_PACKET_TYPE_ACKALL:
 	case RXRPC_PACKET_TYPE_ACK:
 		/* ACK processing is done in process context */
 		read_lock_bh(&call->state_lock);

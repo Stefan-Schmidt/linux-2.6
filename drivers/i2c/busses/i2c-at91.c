@@ -279,49 +279,37 @@ static int __devexit at91_i2c_remove(struct platform_device *pdev)
 
 /* NOTE: could save a few mA by keeping clock off outside of at91_xfer... */
 
-static int at91_i2c_suspend(struct platform_device *pdev, pm_message_t mesg)
+static int at91_i2c_suspend(struct device *dev)
 {
 	clk_disable(twi_clk);
 	return 0;
 }
 
-static int at91_i2c_resume(struct platform_device *pdev)
+static int at91_i2c_resume(struct device *dev)
 {
 	return clk_enable(twi_clk);
 }
 
-#else
-#define at91_i2c_suspend	NULL
-#define at91_i2c_resume		NULL
-#endif
+static SIMPLE_DEV_PM_OPS(at91_i2c_pm, at91_i2c_suspend, at91_i2c_resume);
+#define AT91_I2C_PM	(&at91_i2c_pm)
 
-/* work with "modprobe at91_i2c" from hotplugging or coldplugging */
-MODULE_ALIAS("platform:at91_i2c");
+#else
+#define AT91_I2C_PM	NULL
+#endif
 
 static struct platform_driver at91_i2c_driver = {
 	.probe		= at91_i2c_probe,
 	.remove		= __devexit_p(at91_i2c_remove),
-	.suspend	= at91_i2c_suspend,
-	.resume		= at91_i2c_resume,
 	.driver		= {
 		.name	= "at91_i2c",
 		.owner	= THIS_MODULE,
+		.pm	= AT91_I2C_PM,
 	},
 };
 
-static int __init at91_i2c_init(void)
-{
-	return platform_driver_register(&at91_i2c_driver);
-}
-
-static void __exit at91_i2c_exit(void)
-{
-	platform_driver_unregister(&at91_i2c_driver);
-}
-
-module_init(at91_i2c_init);
-module_exit(at91_i2c_exit);
+module_platform_driver(at91_i2c_driver);
 
 MODULE_AUTHOR("Rick Bronson");
 MODULE_DESCRIPTION("I2C (TWI) driver for Atmel AT91");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:at91_i2c");

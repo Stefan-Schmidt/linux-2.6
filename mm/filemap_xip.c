@@ -10,7 +10,7 @@
 
 #include <linux/fs.h>
 #include <linux/pagemap.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/uio.h>
 #include <linux/rmap.h>
 #include <linux/mmu_notifier.h>
@@ -183,7 +183,7 @@ __xip_unmap (struct address_space * mapping,
 		return;
 
 retry:
-	spin_lock(&mapping->i_mmap_lock);
+	mutex_lock(&mapping->i_mmap_mutex);
 	vma_prio_tree_foreach(vma, &iter, &mapping->i_mmap, pgoff, pgoff) {
 		mm = vma->vm_mm;
 		address = vma->vm_start +
@@ -201,7 +201,7 @@ retry:
 			page_cache_release(page);
 		}
 	}
-	spin_unlock(&mapping->i_mmap_lock);
+	mutex_unlock(&mapping->i_mmap_mutex);
 
 	if (locked) {
 		mutex_unlock(&xip_sparse_mutex);
@@ -263,7 +263,12 @@ found:
 							xip_pfn);
 		if (err == -ENOMEM)
 			return VM_FAULT_OOM;
-		BUG_ON(err);
+		/*
+		 * err == -EBUSY is fine, we've raced against another thread
+		 * that faulted-in the same page
+		 */
+		if (err != -EBUSY)
+			BUG_ON(err);
 		return VM_FAULT_NOPAGE;
 	} else {
 		int err, ret = VM_FAULT_OOM;
@@ -299,6 +304,7 @@ out:
 
 static const struct vm_operations_struct xip_file_vm_ops = {
 	.fault	= xip_file_fault,
+	.page_mkwrite	= filemap_page_mkwrite,
 };
 
 int xip_file_mmap(struct file * file, struct vm_area_struct * vma)
@@ -396,6 +402,8 @@ xip_file_write(struct file *filp, const char __user *buf, size_t len,
 	loff_t pos;
 	ssize_t ret;
 
+	sb_start_write(inode->i_sb);
+
 	mutex_lock(&inode->i_mutex);
 
 	if (!access_ok(VERIFY_READ, buf, len)) {
@@ -405,8 +413,6 @@ xip_file_write(struct file *filp, const char __user *buf, size_t len,
 
 	pos = *ppos;
 	count = len;
-
-	vfs_check_frozen(inode->i_sb, SB_FREEZE_WRITE);
 
 	/* We can write back this queue in page reclaim */
 	current->backing_dev_info = mapping->backing_dev_info;
@@ -421,7 +427,9 @@ xip_file_write(struct file *filp, const char __user *buf, size_t len,
 	if (ret)
 		goto out_backing;
 
-	file_update_time(filp);
+	ret = file_update_time(filp);
+	if (ret)
+		goto out_backing;
 
 	ret = __xip_file_write (filp, buf, count, pos, ppos);
 
@@ -429,6 +437,7 @@ xip_file_write(struct file *filp, const char __user *buf, size_t len,
 	current->backing_dev_info = NULL;
  out_up:
 	mutex_unlock(&inode->i_mutex);
+	sb_end_write(inode->i_sb);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(xip_file_write);

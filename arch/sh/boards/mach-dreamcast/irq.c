@@ -8,10 +8,11 @@
  * This file is part of the LinuxDC project (www.linuxdc.org)
  * Released under the terms of the GNU GPL v2.0
  */
-
 #include <linux/irq.h>
 #include <linux/io.h>
-#include <asm/irq.h>
+#include <linux/irq.h>
+#include <linux/export.h>
+#include <linux/err.h>
 #include <mach/sysasic.h>
 
 /*
@@ -51,7 +52,7 @@
  */
 #define LEVEL(event) (((event) - HW_EVENT_IRQ_BASE) / 32)
 
-/* Return the hardware event's bit positon within the EMR/ESR */
+/* Return the hardware event's bit position within the EMR/ESR */
 #define EVENT_BIT(event) (((event) - HW_EVENT_IRQ_BASE) & 31)
 
 /*
@@ -141,27 +142,15 @@ int systemasic_irq_demux(int irq)
 
 void systemasic_irq_init(void)
 {
-	int i, nid = cpu_to_node(boot_cpu_data);
+	int irq_base, i;
 
-	/* Assign all virtual IRQs to the System ASIC int. handler */
-	for (i = HW_EVENT_IRQ_BASE; i < HW_EVENT_IRQ_MAX; i++) {
-		unsigned int irq;
-
-		irq = create_irq_nr(i, nid);
-		if (unlikely(irq == 0)) {
-			pr_err("%s: failed hooking irq %d for systemasic\n",
-			       __func__, i);
-			return;
-		}
-
-		if (unlikely(irq != i)) {
-			pr_err("%s: got irq %d but wanted %d, bailing.\n",
-			       __func__, irq, i);
-			destroy_irq(irq);
-			return;
-		}
-
-		set_irq_chip_and_handler(i, &systemasic_int,
-					 handle_level_irq);
+	irq_base = irq_alloc_descs(HW_EVENT_IRQ_BASE, HW_EVENT_IRQ_BASE,
+				   HW_EVENT_IRQ_MAX - HW_EVENT_IRQ_BASE, -1);
+	if (IS_ERR_VALUE(irq_base)) {
+		pr_err("%s: failed hooking irqs\n", __func__);
+		return;
 	}
+
+	for (i = HW_EVENT_IRQ_BASE; i < HW_EVENT_IRQ_MAX; i++)
+		irq_set_chip_and_handler(i, &systemasic_int, handle_level_irq);
 }

@@ -62,9 +62,8 @@ void i_ADDI_AttachPCI1710(struct comedi_device *dev)
 	int ret = 0;
 	int n_subdevices = 9;
 
-	/* Update-0.7.57->0.7.68dev->n_subdevices = 9; */
-	ret = alloc_subdevices(dev, n_subdevices);
-	if (ret < 0)
+	ret = comedi_alloc_subdevices(dev, n_subdevices);
+	if (ret)
 		return;
 
 	/*  Allocate and Initialise Timer Subdevice Structures */
@@ -225,7 +224,7 @@ int i_APCI1710_Reset(struct comedi_device *dev)
 
 	devpriv->s_BoardInfos.b_BoardVersion = 1;
 
-	/*  Enable the interrupt for the controler */
+	/*  Enable the interrupt for the controller */
 	dw_Dummy = inl(devpriv->s_BoardInfos.ui_Address + 0x38);
 	outl(dw_Dummy | 0x2000, devpriv->s_BoardInfos.ui_Address + 0x38);
 

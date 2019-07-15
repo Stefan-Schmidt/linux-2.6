@@ -2,7 +2,7 @@
  * Contains register definitions common to the Book E PowerPC
  * specification.  Notice that while the IBM-40x series of CPUs
  * are not true Book E PowerPCs, they borrowed a number of features
- * before Book E was finalized, and are included here as well.  Unfortunatly,
+ * before Book E was finalized, and are included here as well.  Unfortunately,
  * they sometimes used different locations than true Book E CPUs did.
  *
  * This program is free software; you can redistribute it and/or
@@ -27,10 +27,12 @@
 #define MSR_CM		(1<<31) /* Computation Mode (0=32-bit, 1=64-bit) */
 
 #if defined(CONFIG_PPC_BOOK3E_64)
+#define MSR_64BIT	MSR_CM
+
 #define MSR_		MSR_ME | MSR_CE
-#define MSR_KERNEL      MSR_ | MSR_CM
-#define MSR_USER32	MSR_ | MSR_PR | MSR_EE | MSR_DE
-#define MSR_USER64	MSR_USER32 | MSR_CM | MSR_DE
+#define MSR_KERNEL	MSR_ | MSR_64BIT
+#define MSR_USER32	MSR_ | MSR_PR | MSR_EE
+#define MSR_USER64	MSR_USER32 | MSR_64BIT
 #elif defined (CONFIG_40x)
 #define MSR_KERNEL	(MSR_ME|MSR_RI|MSR_IR|MSR_DR|MSR_CE)
 #define MSR_USER	(MSR_KERNEL|MSR_PR|MSR_EE)
@@ -54,17 +56,30 @@
 #define SPRN_SPRG7W	0x117	/* Special Purpose Register General 7 Write */
 #define SPRN_EPCR	0x133	/* Embedded Processor Control Register */
 #define SPRN_DBCR2	0x136	/* Debug Control Register 2 */
+#define SPRN_MSRP	0x137	/* MSR Protect Register */
 #define SPRN_IAC3	0x13A	/* Instruction Address Compare 3 */
 #define SPRN_IAC4	0x13B	/* Instruction Address Compare 4 */
 #define SPRN_DVC1	0x13E	/* Data Value Compare Register 1 */
 #define SPRN_DVC2	0x13F	/* Data Value Compare Register 2 */
+#define SPRN_LPID	0x152	/* Logical Partition ID */
 #define SPRN_MAS8	0x155	/* MMU Assist Register 8 */
 #define SPRN_TLB0PS	0x158	/* TLB 0 Page Size Register */
+#define SPRN_TLB1PS	0x159	/* TLB 1 Page Size Register */
 #define SPRN_MAS5_MAS6	0x15c	/* MMU Assist Register 5 || 6 */
 #define SPRN_MAS8_MAS1	0x15d	/* MMU Assist Register 8 || 1 */
 #define SPRN_EPTCFG	0x15e	/* Embedded Page Table Config */
+#define SPRN_GSPRG0	0x170	/* Guest SPRG0 */
+#define SPRN_GSPRG1	0x171	/* Guest SPRG1 */
+#define SPRN_GSPRG2	0x172	/* Guest SPRG2 */
+#define SPRN_GSPRG3	0x173	/* Guest SPRG3 */
 #define SPRN_MAS7_MAS3	0x174	/* MMU Assist Register 7 || 3 */
 #define SPRN_MAS0_MAS1	0x175	/* MMU Assist Register 0 || 1 */
+#define SPRN_GSRR0	0x17A	/* Guest SRR0 */
+#define SPRN_GSRR1	0x17B	/* Guest SRR1 */
+#define SPRN_GEPR	0x17C	/* Guest EPR */
+#define SPRN_GDEAR	0x17D	/* Guest DEAR */
+#define SPRN_GPIR	0x17E	/* Guest PIR */
+#define SPRN_GESR	0x17F	/* Guest Exception Syndrome Register */
 #define SPRN_IVOR0	0x190	/* Interrupt Vector Offset Register 0 */
 #define SPRN_IVOR1	0x191	/* Interrupt Vector Offset Register 1 */
 #define SPRN_IVOR2	0x192	/* Interrupt Vector Offset Register 2 */
@@ -81,6 +96,17 @@
 #define SPRN_IVOR13	0x19D	/* Interrupt Vector Offset Register 13 */
 #define SPRN_IVOR14	0x19E	/* Interrupt Vector Offset Register 14 */
 #define SPRN_IVOR15	0x19F	/* Interrupt Vector Offset Register 15 */
+#define SPRN_IVOR38	0x1B0	/* Interrupt Vector Offset Register 38 */
+#define SPRN_IVOR39	0x1B1	/* Interrupt Vector Offset Register 39 */
+#define SPRN_IVOR40	0x1B2	/* Interrupt Vector Offset Register 40 */
+#define SPRN_IVOR41	0x1B3	/* Interrupt Vector Offset Register 41 */
+#define SPRN_GIVOR2	0x1B8	/* Guest IVOR2 */
+#define SPRN_GIVOR3	0x1B9	/* Guest IVOR3 */
+#define SPRN_GIVOR4	0x1BA	/* Guest IVOR4 */
+#define SPRN_GIVOR8	0x1BB	/* Guest IVOR8 */
+#define SPRN_GIVOR13	0x1BC	/* Guest IVOR13 */
+#define SPRN_GIVOR14	0x1BD	/* Guest IVOR14 */
+#define SPRN_GIVPR	0x1BF	/* Guest IVPR */
 #define SPRN_SPEFSCR	0x200	/* SPE & Embedded FP Status & Control */
 #define SPRN_BBEAR	0x201	/* Branch Buffer Entry Address Register */
 #define SPRN_BBTAR	0x202	/* Branch Buffer Target Address Register */
@@ -110,7 +136,7 @@
 #define SPRN_MAS2	0x272	/* MMU Assist Register 2 */
 #define SPRN_MAS3	0x273	/* MMU Assist Register 3 */
 #define SPRN_MAS4	0x274	/* MMU Assist Register 4 */
-#define SPRN_MAS5	0x275	/* MMU Assist Register 5 */
+#define SPRN_MAS5	0x153	/* MMU Assist Register 5 */
 #define SPRN_MAS6	0x276	/* MMU Assist Register 6 */
 #define SPRN_PID1	0x279	/* Process ID Register 1 */
 #define SPRN_PID2	0x27A	/* Process ID Register 2 */
@@ -150,8 +176,6 @@
  * or IBM 40x.
  */
 #ifdef CONFIG_BOOKE
-#define SPRN_PID	0x030	/* Process ID */
-#define SPRN_PID0	SPRN_PID/* Process ID Register 0 */
 #define SPRN_CSRR0	0x03A	/* Critical Save and Restore Register 0 */
 #define SPRN_CSRR1	0x03B	/* Critical Save and Restore Register 1 */
 #define SPRN_DEAR	0x03D	/* Data Error Address Register */
@@ -168,7 +192,6 @@
 #define SPRN_TCR	0x154	/* Timer Control Register */
 #endif /* Book E */
 #ifdef CONFIG_40x
-#define SPRN_PID	0x3B1	/* Process ID */
 #define SPRN_DBCR1	0x3BD	/* Debug Control Register 1 */		
 #define SPRN_ESR	0x3D4	/* Exception Syndrome Register */
 #define SPRN_DEAR	0x3D5	/* Data Error Address Register */
@@ -182,6 +205,10 @@
 #define SPRN_DAC2	0x3F7	/* Data Address Compare 2 */
 #define SPRN_CSRR0	SPRN_SRR2 /* Critical Save and Restore Register 0 */
 #define SPRN_CSRR1	SPRN_SRR3 /* Critical Save and Restore Register 1 */
+#endif
+
+#ifdef CONFIG_PPC_ICSWX
+#define SPRN_HACOP	0x15F	/* Hypervisor Available Coprocessor Register */
 #endif
 
 /* Bit definitions for CCR1. */
@@ -232,6 +259,10 @@
 #define MCSR_LDG	0x00002000UL /* Guarded Load */
 #define MCSR_TLBSYNC	0x00000002UL /* Multiple tlbsyncs detected */
 #define MCSR_BSL2_ERR	0x00000001UL /* Backside L2 cache error */
+
+#define MSRP_UCLEP	0x04000000 /* Protect MSR[UCLE] */
+#define MSRP_DEP	0x00000200 /* Protect MSR[DE] */
+#define MSRP_PMMP	0x00000004 /* Protect MSR[PMM] */
 #endif
 
 #ifdef CONFIG_E200
@@ -244,6 +275,20 @@
 #define MCSR_BUS_DRERR 	0x00000008UL /* Read Bus Error on data load */
 #define MCSR_BUS_WRERR 	0x00000004UL /* Write Bus Error on buffered
 					store or cache line push */
+#endif
+
+/* Bit definitions for the HID1 */
+#ifdef CONFIG_E500
+/* e500v1/v2 */
+#define HID1_PLL_CFG_MASK 0xfc000000	/* PLL_CFG input pins */
+#define HID1_RFXE	0x00020000	/* Read fault exception enable */
+#define HID1_R1DPE	0x00008000	/* R1 data bus parity enable */
+#define HID1_R2DPE	0x00004000	/* R2 data bus parity enable */
+#define HID1_ASTME	0x00002000	/* Address bus streaming mode enable */
+#define HID1_ABE	0x00001000	/* Address broadcast enable */
+#define HID1_MPXTT	0x00000400	/* MPX re-map transfer type */
+#define HID1_ATS	0x00000080	/* Atomic status */
+#define HID1_MID_MASK	0x0000000f	/* MID input pins */
 #endif
 
 /* Bit definitions for the DBSR. */
@@ -301,6 +346,7 @@
 #define ESR_ILK		0x00100000	/* Instr. Cache Locking */
 #define ESR_PUO		0x00040000	/* Unimplemented Operation exception */
 #define ESR_BO		0x00020000	/* Byte Ordering */
+#define ESR_SPV		0x00000080	/* Signal Processing operation */
 
 /* Bit definitions related to the DBCR0. */
 #if defined(CONFIG_40x)
@@ -530,6 +576,9 @@
 #define L1CSR1_ICFI	0x00000002	/* Instr Cache Flash Invalidate */
 #define L1CSR1_ICE	0x00000001	/* Instr Cache Enable */
 
+/* Bit definitions for L1CSR2. */
+#define L1CSR2_DCWS	0x40000000	/* Data Cache write shadow */
+
 /* Bit definitions for L2CSR0. */
 #define L2CSR0_L2E	0x80000000	/* L2 Cache Enable */
 #define L2CSR0_L2PE	0x40000000	/* L2 Cache Parity/ECC Enable */
@@ -568,6 +617,17 @@
 #define SPRN_EPCR_DMIUH		0x00400000	/* Disable MAS Interrupt updates
 						 * for hypervisor */
 
+/* Bit definitions for EPLC/EPSC */
+#define EPC_EPR		0x80000000 /* 1 = user, 0 = kernel */
+#define EPC_EPR_SHIFT	31
+#define EPC_EAS		0x40000000 /* Address Space */
+#define EPC_EAS_SHIFT	30
+#define EPC_EGS		0x20000000 /* 1 = guest, 0 = hypervisor */
+#define EPC_EGS_SHIFT	29
+#define EPC_ELPID	0x00ff0000
+#define EPC_ELPID_SHIFT	16
+#define EPC_EPID	0x00003fff
+#define EPC_EPID_SHIFT	0
 
 /*
  * The IBM-403 is an even more odd special case, as it is much

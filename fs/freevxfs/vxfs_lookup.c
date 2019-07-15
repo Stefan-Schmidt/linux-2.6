@@ -48,7 +48,7 @@
 #define VXFS_BLOCK_PER_PAGE(sbp)  ((PAGE_CACHE_SIZE / (sbp)->s_blocksize))
 
 
-static struct dentry *	vxfs_lookup(struct inode *, struct dentry *, struct nameidata *);
+static struct dentry *	vxfs_lookup(struct inode *, struct dentry *, unsigned int);
 static int		vxfs_readdir(struct file *, void *, filldir_t);
 
 const struct inode_operations vxfs_dir_inode_ops = {
@@ -162,7 +162,7 @@ vxfs_find_entry(struct inode *ip, struct dentry *dp, struct page **ppp)
 /**
  * vxfs_inode_by_name - find inode number for dentry
  * @dip:	directory to search in
- * @dp:		dentry we seach for
+ * @dp:		dentry we search for
  *
  * Description:
  *   vxfs_inode_by_name finds out the inode number of
@@ -203,7 +203,7 @@ vxfs_inode_by_name(struct inode *dip, struct dentry *dp)
  *   in the return pointer.
  */
 static struct dentry *
-vxfs_lookup(struct inode *dip, struct dentry *dp, struct nameidata *nd)
+vxfs_lookup(struct inode *dip, struct dentry *dp, unsigned int flags)
 {
 	struct inode		*ip = NULL;
 	ino_t			ino;

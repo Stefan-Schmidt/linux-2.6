@@ -16,6 +16,7 @@
 
 #include <linux/types.h>
 #include <linux/netdevice.h>
+#include <linux/module.h>
 #include <linux/hdlc.h>
 #include <linux/if_arp.h>
 #include <linux/init.h>
@@ -108,9 +109,9 @@ extern int  unregister_hdlc_device_v7 (hdlc_device *);
 #endif
 
 int         error_flag;         /* module load error reporting */
-int         log_level = LOG_ERROR;
+int         cxt1e1_log_level = LOG_ERROR;
 int         log_level_default = LOG_ERROR;
-module_param(log_level, int, 0444);
+module_param(cxt1e1_log_level, int, 0444);
 
 int         cxt1e1_max_mru = MUSYCC_MRU;
 int         max_mru_default = MUSYCC_MRU;
@@ -497,7 +498,7 @@ create_chan (struct net_device * ndev, ci_t * ci,
     rtnl_lock ();                   /* needed due to Ioctl calling sequence */
     if (ret)
     {
-        if (log_level >= LOG_WARN)
+        if (cxt1e1_log_level >= LOG_WARN)
             pr_info("%s: create_chan[%d] registration error = %d.\n",
                     ci->devname, cp->channum, ret);
         free_netdev (dev);          /* cleanup */
@@ -548,7 +549,7 @@ do_set_port (struct net_device * ndev, void *data)
         return -EINVAL;             /* get card info */
 
     if (pp.portnum >= ci->max_port) /* sanity check */
-        return ENXIO;
+        return -ENXIO;
 
     memcpy (&ci->port[pp.portnum].p, &pp, sizeof (struct sbecom_port_param));
     return mkret (c4_set_port (ci, pp.portnum));
@@ -722,11 +723,11 @@ do_get_chan_stats (struct net_device * ndev, void *data)
 STATIC      status_t
 do_set_loglevel (struct net_device * ndev, void *data)
 {
-    unsigned int log_level;
+    unsigned int cxt1e1_log_level;
 
-    if (copy_from_user (&log_level, data, sizeof (int)))
+    if (copy_from_user (&cxt1e1_log_level, data, sizeof (int)))
         return -EFAULT;
-    sbecom_set_loglevel (log_level);
+    sbecom_set_loglevel (cxt1e1_log_level);
     return 0;
 }
 
@@ -1017,13 +1018,7 @@ c4_add_dev (hdw_info_t * hi, int brdno, unsigned long f0, unsigned long f1,
      **************************************************************/
 
     if (request_irq (irq0, &c4_linux_interrupt,
-#if defined(SBE_ISR_TASKLET)
-                     IRQF_DISABLED | IRQF_SHARED,
-#elif defined(SBE_ISR_IMMEDIATE)
-                     IRQF_DISABLED | IRQF_SHARED,
-#elif defined(SBE_ISR_INLINE)
                      IRQF_SHARED,
-#endif
                      ndev->name, ndev))
     {
         pr_warning("%s: MUSYCC could not get irq: %d\n", ndev->name, irq0);
@@ -1115,9 +1110,9 @@ c4_mod_init (void)
         return -rtn;                /* installation failure - see system log */
 
     /* housekeeping notifications */
-    if (log_level != log_level_default)
-        pr_info("NOTE: driver parameter <log_level> changed from default %d to %d.\n",
-                log_level_default, log_level);
+    if (cxt1e1_log_level != log_level_default)
+        pr_info("NOTE: driver parameter <cxt1e1_log_level> changed from default %d to %d.\n",
+                log_level_default, cxt1e1_log_level);
        if (cxt1e1_max_mru != max_mru_default)
                pr_info("NOTE: driver parameter <cxt1e1_max_mru> changed from default %d to %d.\n",
                                max_mru_default, cxt1e1_max_mru);

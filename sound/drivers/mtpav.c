@@ -52,16 +52,16 @@
 
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/module.h>
 #include <linux/err.h>
 #include <linux/platform_device.h>
 #include <linux/ioport.h>
+#include <linux/io.h>
 #include <linux/moduleparam.h>
 #include <sound/core.h>
 #include <sound/initval.h>
 #include <sound/rawmidi.h>
 #include <linux/delay.h>
-
-#include <asm/io.h>
 
 /*
  *      globals
@@ -590,7 +590,7 @@ static int __devinit snd_mtpav_get_ISA(struct mtpav * mcard)
 		return -EBUSY;
 	}
 	mcard->port = port;
-	if (request_irq(irq, snd_mtpav_irqh, IRQF_DISABLED, "MOTU MTPAV", mcard)) {
+	if (request_irq(irq, snd_mtpav_irqh, 0, "MOTU MTPAV", mcard)) {
 		snd_printk(KERN_ERR "MTVAP IRQ %d busy\n", irq);
 		return -EBUSY;
 	}
@@ -759,7 +759,8 @@ static struct platform_driver snd_mtpav_driver = {
 	.probe		= snd_mtpav_probe,
 	.remove		= __devexit_p(snd_mtpav_remove),
 	.driver		= {
-		.name	= SND_MTPAV_DRIVER
+		.name	= SND_MTPAV_DRIVER,
+		.owner	= THIS_MODULE,
 	},
 };
 

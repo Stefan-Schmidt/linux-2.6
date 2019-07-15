@@ -1,8 +1,7 @@
 /*
- *  drivers/s390/cio/cio.c
  *   S/390 common I/O routines -- low level i/o calls
  *
- *    Copyright IBM Corp. 1999,2008
+ *    Copyright IBM Corp. 1999, 2008
  *    Author(s): Ingo Adlung (adlung@de.ibm.com)
  *		 Cornelia Huck (cornelia.huck@de.ibm.com)
  *		 Arnd Bergmann (arndb@de.ibm.com)
@@ -84,29 +83,14 @@ out_unregister:
 
 arch_initcall (cio_debug_init);
 
-int
-cio_set_options (struct subchannel *sch, int flags)
+int cio_set_options(struct subchannel *sch, int flags)
 {
-       sch->options.suspend = (flags & DOIO_ALLOW_SUSPEND) != 0;
-       sch->options.prefetch = (flags & DOIO_DENY_PREFETCH) != 0;
-       sch->options.inter = (flags & DOIO_SUPPRESS_INTER) != 0;
-       return 0;
-}
+	struct io_subchannel_private *priv = to_io_private(sch);
 
-/* FIXME: who wants to use this? */
-int
-cio_get_options (struct subchannel *sch)
-{
-       int flags;
-
-       flags = 0;
-       if (sch->options.suspend)
-		flags |= DOIO_ALLOW_SUSPEND;
-       if (sch->options.prefetch)
-		flags |= DOIO_DENY_PREFETCH;
-       if (sch->options.inter)
-		flags |= DOIO_SUPPRESS_INTER;
-       return flags;
+	priv->options.suspend = (flags & DOIO_ALLOW_SUSPEND) != 0;
+	priv->options.prefetch = (flags & DOIO_DENY_PREFETCH) != 0;
+	priv->options.inter = (flags & DOIO_SUPPRESS_INTER) != 0;
+	return 0;
 }
 
 static int
@@ -139,21 +123,21 @@ cio_start_key (struct subchannel *sch,	/* subchannel structure */
 	       __u8 lpm,		/* logical path mask */
 	       __u8 key)                /* storage key */
 {
+	struct io_subchannel_private *priv = to_io_private(sch);
+	union orb *orb = &priv->orb;
 	int ccode;
-	union orb *orb;
 
 	CIO_TRACE_EVENT(5, "stIO");
 	CIO_TRACE_EVENT(5, dev_name(&sch->dev));
 
-	orb = &to_io_private(sch)->orb;
 	memset(orb, 0, sizeof(union orb));
 	/* sch is always under 2G. */
 	orb->cmd.intparm = (u32)(addr_t)sch;
 	orb->cmd.fmt = 1;
 
-	orb->cmd.pfch = sch->options.prefetch == 0;
-	orb->cmd.spnd = sch->options.suspend;
-	orb->cmd.ssic = sch->options.suspend && sch->options.inter;
+	orb->cmd.pfch = priv->options.prefetch == 0;
+	orb->cmd.spnd = priv->options.suspend;
+	orb->cmd.ssic = priv->options.suspend && priv->options.inter;
 	orb->cmd.lpm = (lpm != 0) ? lpm : sch->lpm;
 #ifdef CONFIG_64BIT
 	/*
@@ -616,10 +600,8 @@ void __irq_entry do_IRQ(struct pt_regs *regs)
 	struct pt_regs *old_regs;
 
 	old_regs = set_irq_regs(regs);
-	s390_idle_check(regs, S390_lowcore.int_clock,
-			S390_lowcore.async_enter_timer);
 	irq_enter();
-	__get_cpu_var(s390_idle).nohz_delay = 1;
+	__this_cpu_write(s390_idle.nohz_delay, 1);
 	if (S390_lowcore.int_clock >= S390_lowcore.clock_comparator)
 		/* Serve timer interrupts first. */
 		clock_comparator_work();
@@ -630,17 +612,14 @@ void __irq_entry do_IRQ(struct pt_regs *regs)
 	irb = (struct irb *)&S390_lowcore.irb;
 	do {
 		kstat_cpu(smp_processor_id()).irqs[IO_INTERRUPT]++;
-		/*
-		 * Non I/O-subchannel thin interrupts are processed differently
-		 */
-		if (tpi_info->adapter_IO == 1 &&
-		    tpi_info->int_type == IO_INTERRUPT_TYPE) {
+		if (tpi_info->adapter_IO) {
 			do_adapter_IO(tpi_info->isc);
 			continue;
 		}
 		sch = (struct subchannel *)(unsigned long)tpi_info->intparm;
 		if (!sch) {
 			/* Clear pending interrupt condition. */
+			kstat_cpu(smp_processor_id()).irqs[IOINT_CIO]++;
 			tsch(tpi_info->schid, irb);
 			continue;
 		}
@@ -653,7 +632,10 @@ void __irq_entry do_IRQ(struct pt_regs *regs)
 			/* Call interrupt handler if there is one. */
 			if (sch->driver && sch->driver->irq)
 				sch->driver->irq(sch);
-		}
+			else
+				kstat_cpu(smp_processor_id()).irqs[IOINT_CIO]++;
+		} else
+			kstat_cpu(smp_processor_id()).irqs[IOINT_CIO]++;
 		spin_unlock(sch->lock);
 		/*
 		 * Are more interrupts pending?
@@ -673,40 +655,34 @@ static struct io_subchannel_private console_priv;
 static int console_subchannel_in_use;
 
 /*
- * Use tpi to get a pending interrupt, call the interrupt handler and
- * return a pointer to the subchannel structure.
+ * Use cio_tsch to update the subchannel status and call the interrupt handler
+ * if status had been pending. Called with the console_subchannel lock.
  */
-static int cio_tpi(void)
+static void cio_tsch(struct subchannel *sch)
 {
-	struct tpi_info *tpi_info;
-	struct subchannel *sch;
 	struct irb *irb;
 	int irq_context;
 
-	tpi_info = (struct tpi_info *)&S390_lowcore.subchannel_id;
-	if (tpi(NULL) != 1)
-		return 0;
 	irb = (struct irb *)&S390_lowcore.irb;
 	/* Store interrupt response block to lowcore. */
-	if (tsch(tpi_info->schid, irb) != 0)
+	if (tsch(sch->schid, irb) != 0)
 		/* Not status pending or not operational. */
-		return 1;
-	sch = (struct subchannel *)(unsigned long)tpi_info->intparm;
-	if (!sch)
-		return 1;
-	irq_context = in_interrupt();
-	if (!irq_context)
-		local_bh_disable();
-	irq_enter();
-	spin_lock(sch->lock);
+		return;
 	memcpy(&sch->schib.scsw, &irb->scsw, sizeof(union scsw));
+	/* Call interrupt handler with updated status. */
+	irq_context = in_interrupt();
+	if (!irq_context) {
+		local_bh_disable();
+		irq_enter();
+	}
 	if (sch->driver && sch->driver->irq)
 		sch->driver->irq(sch);
-	spin_unlock(sch->lock);
-	irq_exit();
-	if (!irq_context)
+	else
+		kstat_cpu(smp_processor_id()).irqs[IOINT_CIO]++;
+	if (!irq_context) {
+		irq_exit();
 		_local_bh_enable();
-	return 1;
+	}
 }
 
 void *cio_get_console_priv(void)
@@ -718,34 +694,16 @@ void *cio_get_console_priv(void)
  * busy wait for the next interrupt on the console
  */
 void wait_cons_dev(void)
-	__releases(console_subchannel.lock)
-	__acquires(console_subchannel.lock)
 {
-	unsigned long cr6      __attribute__ ((aligned (8)));
-	unsigned long save_cr6 __attribute__ ((aligned (8)));
-
-	/* 
-	 * before entering the spinlock we may already have
-	 * processed the interrupt on a different CPU...
-	 */
 	if (!console_subchannel_in_use)
 		return;
 
-	/* disable all but the console isc */
-	__ctl_store (save_cr6, 6, 6);
-	cr6 = 1UL << (31 - CONSOLE_ISC);
-	__ctl_load (cr6, 6, 6);
-
-	do {
-		spin_unlock(console_subchannel.lock);
-		if (!cio_tpi())
-			cpu_relax();
-		spin_lock(console_subchannel.lock);
-	} while (console_subchannel.schib.scsw.cmd.actl != 0);
-	/*
-	 * restore previous isc value
-	 */
-	__ctl_load (save_cr6, 6, 6);
+	while (1) {
+		cio_tsch(&console_subchannel);
+		if (console_subchannel.schib.scsw.cmd.actl == 0)
+			break;
+		udelay_simple(100);
+	}
 }
 
 static int
@@ -1073,7 +1031,7 @@ void reipl_ccw_dev(struct ccw_dev_id *devid)
 {
 	struct subchannel_id schid;
 
-	s390_reset_system();
+	s390_reset_system(NULL, NULL);
 	if (reipl_find_schid(devid, &schid) != 0)
 		panic("IPL Device not found\n");
 	do_reipl_asm(*((__u32*)&schid));

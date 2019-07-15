@@ -1,5 +1,5 @@
 /*
- * Copyright IBM Corp. 2006,2007
+ * Copyright IBM Corp. 2006, 2007
  * Author(s): Jan Glauber <jan.glauber@de.ibm.com>
  * Driver for the s390 pseudo random number generator
  */
@@ -76,7 +76,7 @@ static void prng_seed(int nbytes)
 
 	/* Add the entropy */
 	while (nbytes >= 8) {
-		*((__u64 *)parm_block) ^= *((__u64 *)buf+i*8);
+		*((__u64 *)parm_block) ^= *((__u64 *)(buf+i));
 		prng_add_entropy();
 		i += 8;
 		nbytes -= 8;
@@ -166,7 +166,7 @@ static int __init prng_init(void)
 	int ret;
 
 	/* check if the CPU has a PRNG */
-	if (!crypt_s390_func_available(KMC_PRNG))
+	if (!crypt_s390_func_available(KMC_PRNG, CRYPT_S390_MSA))
 		return -EOPNOTSUPP;
 
 	if (prng_chunk_size < 8)

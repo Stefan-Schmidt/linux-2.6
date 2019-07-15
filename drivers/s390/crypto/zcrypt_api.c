@@ -1,9 +1,7 @@
 /*
- *  linux/drivers/s390/crypto/zcrypt_api.c
- *
  *  zcrypt 2.1.0
  *
- *  Copyright (C)  2001, 2006 IBM Corporation
+ *  Copyright IBM Corp. 2001, 2006
  *  Author(s): Robert Burroughs
  *	       Eric Rossman (edrossma@us.ibm.com)
  *	       Cornelia Huck <cornelia.huck@de.ibm.com>
@@ -35,9 +33,8 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/compat.h>
-#include <linux/smp_lock.h>
 #include <linux/slab.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <asm/uaccess.h>
 #include <linux/hw_random.h>
 
@@ -48,7 +45,7 @@
  */
 MODULE_AUTHOR("IBM Corporation");
 MODULE_DESCRIPTION("Cryptographic Coprocessor interface, "
-		   "Copyright 2001, 2006 IBM Corporation");
+		   "Copyright IBM Corp. 2001, 2006");
 MODULE_LICENSE("GPL");
 
 static DEFINE_SPINLOCK(zcrypt_device_lock);
@@ -397,8 +394,15 @@ static long zcrypt_rsa_crt(struct ica_rsa_modexpo_crt *crt)
 			if (copied == 0) {
 				unsigned int len;
 				spin_unlock_bh(&zcrypt_device_lock);
-				/* len is max 256 / 2 - 120 = 8 */
-				len = crt->inputdatalength / 2 - 120;
+				/* len is max 256 / 2 - 120 = 8
+				 * For bigger device just assume len of leading
+				 * 0s is 8 as stated in the requirements for
+				 * ica_rsa_modexpo_crt struct in zcrypt.h.
+				 */
+				if (crt->inputdatalength <= 256)
+					len = crt->inputdatalength / 2 - 120;
+				else
+					len = 8;
 				if (len > sizeof(z1))
 					return -EFAULT;
 				z1 = z2 = z3 = 0;
@@ -406,6 +410,7 @@ static long zcrypt_rsa_crt(struct ica_rsa_modexpo_crt *crt)
 				    copy_from_user(&z2, crt->bp_key, len) ||
 				    copy_from_user(&z3, crt->u_mult_inv, len))
 					return -EFAULT;
+				z1 = z2 = z3 = 0;
 				copied = 1;
 				/*
 				 * We have to restart device lookup -
@@ -1213,7 +1218,5 @@ void zcrypt_api_exit(void)
 	misc_deregister(&zcrypt_misc_device);
 }
 
-#ifndef CONFIG_ZCRYPT_MONOLITHIC
 module_init(zcrypt_api_init);
 module_exit(zcrypt_api_exit);
-#endif

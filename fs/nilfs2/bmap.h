@@ -135,6 +135,13 @@ struct nilfs_bmap {
 /* state */
 #define NILFS_BMAP_DIRTY	0x00000001
 
+/**
+ * struct nilfs_bmap_store - shadow copy of bmap state
+ * @data: cached raw block mapping of on-disk inode
+ * @last_allocated_key: cached value of last allocated key for data block
+ * @last_allocated_ptr: cached value of last allocated ptr for data block
+ * @state: cached value of state field of bmap structure
+ */
 struct nilfs_bmap_store {
 	__le64 data[NILFS_BMAP_SIZE / sizeof(__le64)];
 	__u64 last_allocated_key;
@@ -239,9 +246,6 @@ __u64 nilfs_bmap_data_get_key(const struct nilfs_bmap *,
 
 __u64 nilfs_bmap_find_target_seq(const struct nilfs_bmap *, __u64);
 __u64 nilfs_bmap_find_target_in_group(const struct nilfs_bmap *);
-
-void nilfs_bmap_add_blocks(const struct nilfs_bmap *, int);
-void nilfs_bmap_sub_blocks(const struct nilfs_bmap *, int);
 
 
 /* Assume that bmap semaphore is locked. */

@@ -21,6 +21,7 @@ struct clkops {
 	void (*enable) (struct clk *);
 	void (*disable) (struct clk *);
 	unsigned long (*get_rate) (struct clk *);
+	int (*set_parent)(struct clk *, struct clk *);
 };
 
 /**
@@ -90,6 +91,10 @@ struct clk {
 
 	struct clk		*parent_cluster;
 	struct clk		*parent_periph;
+#if defined(CONFIG_DEBUG_FS)
+	struct dentry		*dent;		/* For visible tree hierarchy */
+	struct dentry		*dent_bus;	/* For visible tree hierarchy */
+#endif
 };
 
 #define DEFINE_PRCMU_CLK(_name, _cg_off, _cg_bit, _reg)		\
@@ -145,3 +150,15 @@ struct clk clk_##_name = {						\
 
 int __init clk_db8500_ed_fixup(void);
 int __init clk_init(void);
+
+#ifdef CONFIG_DEBUG_FS
+int clk_debugfs_init(void);
+#else
+static inline int clk_debugfs_init(void) { return 0; }
+#endif
+
+#ifdef CONFIG_CPU_FREQ
+int clk_init_smp_twd_cpufreq(void);
+#else
+static inline int clk_init_smp_twd_cpufreq(void) { return 0; }
+#endif

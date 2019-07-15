@@ -25,6 +25,7 @@
 #include <linux/gfp.h>
 #include <linux/time.h>
 #include <linux/mutex.h>
+#include <linux/export.h>
 
 #include <sound/core.h>
 #include <sound/emu10k1.h>
@@ -248,7 +249,7 @@ static int is_valid_page(struct snd_emu10k1 *emu, dma_addr_t addr)
 /*
  * map the given memory block on PTB.
  * if the block is already mapped, update the link order.
- * if no empty pages are found, tries to release unsed memory blocks
+ * if no empty pages are found, tries to release unused memory blocks
  * and retry the mapping.
  */
 int snd_emu10k1_memblk_map(struct snd_emu10k1 *emu, struct snd_emu10k1_memblk *blk)
@@ -325,7 +326,10 @@ snd_emu10k1_alloc_pages(struct snd_emu10k1 *emu, struct snd_pcm_substream *subst
 	for (page = blk->first_page; page <= blk->last_page; page++, idx++) {
 		unsigned long ofs = idx << PAGE_SHIFT;
 		dma_addr_t addr;
-		addr = snd_pcm_sgbuf_get_addr(substream, ofs);
+		if (ofs >= runtime->dma_bytes)
+			addr = emu->silent_page.addr;
+		else
+			addr = snd_pcm_sgbuf_get_addr(substream, ofs);
 		if (! is_valid_page(emu, addr)) {
 			printk(KERN_ERR "emu: failure page = %d\n", idx);
 			mutex_unlock(&hdr->block_mutex);

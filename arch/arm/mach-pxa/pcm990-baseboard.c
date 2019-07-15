@@ -19,16 +19,15 @@
  *  it under the terms of the GNU General Public License version 2 as
  *  published by the Free Software Foundation.
  */
-
+#include <linux/gpio.h>
 #include <linux/irq.h>
 #include <linux/platform_device.h>
 #include <linux/i2c.h>
+#include <linux/i2c/pxa-i2c.h>
 #include <linux/pwm_backlight.h>
 
 #include <media/soc_camera.h>
 
-#include <asm/gpio.h>
-#include <plat/i2c.h>
 #include <mach/camera.h>
 #include <asm/mach/map.h>
 #include <mach/pxa27x.h>
@@ -66,6 +65,18 @@ static unsigned long pcm990_pin_config[] __initdata = {
 	GPIO31_AC97_SYNC,
 };
 
+static void __iomem *pcm990_cpld_base;
+
+static u8 pcm990_cpld_readb(unsigned int reg)
+{
+	return readb(pcm990_cpld_base + reg);
+}
+
+static void pcm990_cpld_writeb(u8 value, unsigned int reg)
+{
+	writeb(value, pcm990_cpld_base + reg);
+}
+
 /*
  * pcm990_lcd_power - control power supply to the LCD
  * @on: 0 = switch off, 1 = switch on
@@ -79,13 +90,13 @@ static void pcm990_lcd_power(int on, struct fb_var_screeninfo *var)
 		/* enable LCD-Latches
 		 * power on LCD
 		 */
-		__PCM990_CTRL_REG(PCM990_CTRL_PHYS + PCM990_CTRL_REG3) =
-			PCM990_CTRL_LCDPWR + PCM990_CTRL_LCDON;
+		pcm990_cpld_writeb(PCM990_CTRL_LCDPWR + PCM990_CTRL_LCDON,
+				PCM990_CTRL_REG3);
 	} else {
 		/* disable LCD-Latches
 		 * power off LCD
 		 */
-		__PCM990_CTRL_REG(PCM990_CTRL_PHYS + PCM990_CTRL_REG3) = 0x00;
+		pcm990_cpld_writeb(0, PCM990_CTRL_REG3);
 	}
 }
 #endif
@@ -241,36 +252,52 @@ static struct platform_device pcm990_backlight_device = {
 
 static unsigned long pcm990_irq_enabled;
 
-static void pcm990_mask_ack_irq(unsigned int irq)
+static void pcm990_mask_ack_irq(struct irq_data *d)
 {
-	int pcm990_irq = (irq - PCM027_IRQ(0));
-	PCM990_INTMSKENA = (pcm990_irq_enabled &= ~(1 << pcm990_irq));
+	int pcm990_irq = (d->irq - PCM027_IRQ(0));
+
+	pcm990_irq_enabled &= ~(1 << pcm990_irq);
+
+	pcm990_cpld_writeb(pcm990_irq_enabled, PCM990_CTRL_INTMSKENA);
 }
 
-static void pcm990_unmask_irq(unsigned int irq)
+static void pcm990_unmask_irq(struct irq_data *d)
 {
-	int pcm990_irq = (irq - PCM027_IRQ(0));
+	int pcm990_irq = (d->irq - PCM027_IRQ(0));
+	u8 val;
+
 	/* the irq can be acknowledged only if deasserted, so it's done here */
-	PCM990_INTSETCLR |= 1 << pcm990_irq;
-	PCM990_INTMSKENA  = (pcm990_irq_enabled |= (1 << pcm990_irq));
+
+	pcm990_irq_enabled |= (1 << pcm990_irq);
+
+	val = pcm990_cpld_readb(PCM990_CTRL_INTSETCLR);
+	val |= 1 << pcm990_irq;
+	pcm990_cpld_writeb(val, PCM990_CTRL_INTSETCLR);
+
+	pcm990_cpld_writeb(pcm990_irq_enabled, PCM990_CTRL_INTMSKENA);
 }
 
 static struct irq_chip pcm990_irq_chip = {
-	.mask_ack	= pcm990_mask_ack_irq,
-	.unmask		= pcm990_unmask_irq,
+	.irq_mask_ack	= pcm990_mask_ack_irq,
+	.irq_unmask	= pcm990_unmask_irq,
 };
 
 static void pcm990_irq_handler(unsigned int irq, struct irq_desc *desc)
 {
-	unsigned long pending = (~PCM990_INTSETCLR) & pcm990_irq_enabled;
+	unsigned long pending;
+
+	pending = ~pcm990_cpld_readb(PCM990_CTRL_INTSETCLR);
+	pending &= pcm990_irq_enabled;
 
 	do {
-		desc->chip->ack(irq);	/* clear our parent IRQ */
+		/* clear our parent IRQ */
+		desc->irq_data.chip->irq_ack(&desc->irq_data);
 		if (likely(pending)) {
 			irq = PCM027_IRQ(0) + __ffs(pending);
 			generic_handle_irq(irq);
 		}
-		pending = (~PCM990_INTSETCLR) & pcm990_irq_enabled;
+		pending = ~pcm990_cpld_readb(PCM990_CTRL_INTSETCLR);
+		pending &= pcm990_irq_enabled;
 	} while (pending);
 }
 
@@ -280,16 +307,17 @@ static void __init pcm990_init_irq(void)
 
 	/* setup extra PCM990 irqs */
 	for (irq = PCM027_IRQ(0); irq <= PCM027_IRQ(3); irq++) {
-		set_irq_chip(irq, &pcm990_irq_chip);
-		set_irq_handler(irq, handle_level_irq);
+		irq_set_chip_and_handler(irq, &pcm990_irq_chip,
+					 handle_level_irq);
 		set_irq_flags(irq, IRQF_VALID | IRQF_PROBE);
 	}
 
-	PCM990_INTMSKENA = 0x00;	/* disable all Interrupts */
-	PCM990_INTSETCLR = 0xFF;
+	/* disable all Interrupts */
+	pcm990_cpld_writeb(0x0, PCM990_CTRL_INTMSKENA);
+	pcm990_cpld_writeb(0xff, PCM990_CTRL_INTSETCLR);
 
-	set_irq_chained_handler(PCM990_CTRL_INT_IRQ, pcm990_irq_handler);
-	set_irq_type(PCM990_CTRL_INT_IRQ, PCM990_CTRL_INT_IRQ_EDGE);
+	irq_set_chained_handler(PCM990_CTRL_INT_IRQ, pcm990_irq_handler);
+	irq_set_irq_type(PCM990_CTRL_INT_IRQ, PCM990_CTRL_INT_IRQ_EDGE);
 }
 
 static int pcm990_mci_init(struct device *dev, irq_handler_t mci_detect_int,
@@ -309,13 +337,16 @@ static int pcm990_mci_init(struct device *dev, irq_handler_t mci_detect_int,
 static void pcm990_mci_setpower(struct device *dev, unsigned int vdd)
 {
 	struct pxamci_platform_data *p_d = dev->platform_data;
+	u8 val;
+
+	val = pcm990_cpld_readb(PCM990_CTRL_REG5);
 
 	if ((1 << vdd) & p_d->ocr_mask)
-		__PCM990_CTRL_REG(PCM990_CTRL_PHYS + PCM990_CTRL_REG5) =
-						PCM990_CTRL_MMC2PWR;
+		val |= PCM990_CTRL_MMC2PWR;
 	else
-		__PCM990_CTRL_REG(PCM990_CTRL_PHYS + PCM990_CTRL_REG5) =
-						~PCM990_CTRL_MMC2PWR;
+		val &= ~PCM990_CTRL_MMC2PWR;
+
+	pcm990_cpld_writeb(PCM990_CTRL_MMC2PWR, PCM990_CTRL_REG5);
 }
 
 static void pcm990_mci_exit(struct device *dev, void *data)
@@ -378,7 +409,7 @@ struct pxacamera_platform_data pcm990_pxacamera_platform_data = {
 #include <linux/i2c/pca953x.h>
 
 static struct pca953x_platform_data pca9536_data = {
-	.gpio_base	= NR_BUILTIN_GPIO,
+	.gpio_base	= PXA_NR_BUILTIN_GPIO,
 };
 
 static int gpio_bus_switch = -EINVAL;
@@ -394,9 +425,9 @@ static int pcm990_camera_set_bus_param(struct soc_camera_link *link,
 	}
 
 	if (flags & SOCAM_DATAWIDTH_8)
-		gpio_set_value(gpio_bus_switch, 1);
+		gpio_set_value_cansleep(gpio_bus_switch, 1);
 	else
-		gpio_set_value(gpio_bus_switch, 0);
+		gpio_set_value_cansleep(gpio_bus_switch, 0);
 
 	return 0;
 }
@@ -406,9 +437,9 @@ static unsigned long pcm990_camera_query_bus_param(struct soc_camera_link *link)
 	int ret;
 
 	if (gpio_bus_switch < 0) {
-		ret = gpio_request(NR_BUILTIN_GPIO, "camera");
+		ret = gpio_request(PXA_NR_BUILTIN_GPIO, "camera");
 		if (!ret) {
-			gpio_bus_switch = NR_BUILTIN_GPIO;
+			gpio_bus_switch = PXA_NR_BUILTIN_GPIO;
 			gpio_direction_output(gpio_bus_switch, 0);
 		}
 	}
@@ -481,23 +512,6 @@ static struct platform_device pcm990_camera[] = {
 #endif /* CONFIG_VIDEO_PXA27x ||CONFIG_VIDEO_PXA27x_MODULE */
 
 /*
- * enable generic access to the base board control CPLDs U6 and U7
- */
-static struct map_desc pcm990_io_desc[] __initdata = {
-	{
-		.virtual	= PCM990_CTRL_BASE,
-		.pfn		= __phys_to_pfn(PCM990_CTRL_PHYS),
-		.length		= PCM990_CTRL_SIZE,
-		.type		= MT_DEVICE	/* CPLD */
-	}, {
-		.virtual	= PCM990_CF_PLD_BASE,
-		.pfn		= __phys_to_pfn(PCM990_CF_PLD_PHYS),
-		.length		= PCM990_CF_PLD_SIZE,
-		.type		= MT_DEVICE	/* CPLD */
-	}
-};
-
-/*
  * system init for baseboard usage. Will be called by pcm027 init.
  *
  * Add platform devices present on this baseboard and init
@@ -507,14 +521,17 @@ void __init pcm990_baseboard_init(void)
 {
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(pcm990_pin_config));
 
-	/* register CPLD access */
-	iotable_init(ARRAY_AND_SIZE(pcm990_io_desc));
+	pcm990_cpld_base = ioremap(PCM990_CTRL_PHYS, PCM990_CTRL_SIZE);
+	if (!pcm990_cpld_base) {
+		pr_err("pcm990: failed to ioremap cpld\n");
+		return;
+	}
 
 	/* register CPLD's IRQ controller */
 	pcm990_init_irq();
 
 #ifndef CONFIG_PCM990_DISPLAY_NONE
-	set_pxa_fb_info(&pcm990_fbinfo);
+	pxa_set_fb_info(NULL, &pcm990_fbinfo);
 #endif
 	platform_device_register(&pcm990_backlight_device);
 

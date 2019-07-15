@@ -36,8 +36,8 @@
 #include "glops.h"
 
 
-void gfs2_page_add_databufs(struct gfs2_inode *ip, struct page *page,
-			    unsigned int from, unsigned int to)
+static void gfs2_page_add_databufs(struct gfs2_inode *ip, struct page *page,
+				   unsigned int from, unsigned int to)
 {
 	struct buffer_head *head = page_buffers(page);
 	unsigned int bsize = head->b_size;
@@ -434,12 +434,12 @@ static int stuffed_readpage(struct gfs2_inode *ip, struct page *page)
 	if (error)
 		return error;
 
-	kaddr = kmap_atomic(page, KM_USER0);
+	kaddr = kmap_atomic(page);
 	if (dsize > (dibh->b_size - sizeof(struct gfs2_dinode)))
 		dsize = (dibh->b_size - sizeof(struct gfs2_dinode));
 	memcpy(kaddr, dibh->b_data + sizeof(struct gfs2_dinode), dsize);
 	memset(kaddr + dsize, 0, PAGE_CACHE_SIZE - dsize);
-	kunmap_atomic(kaddr, KM_USER0);
+	kunmap_atomic(kaddr);
 	flush_dcache_page(page);
 	brelse(dibh);
 	SetPageUptodate(page);
@@ -517,15 +517,14 @@ out:
 /**
  * gfs2_internal_read - read an internal file
  * @ip: The gfs2 inode
- * @ra_state: The readahead state (or NULL for no readahead)
  * @buf: The buffer to fill
  * @pos: The file position
  * @size: The amount to read
  *
  */
 
-int gfs2_internal_read(struct gfs2_inode *ip, struct file_ra_state *ra_state,
-                       char *buf, loff_t *pos, unsigned size)
+int gfs2_internal_read(struct gfs2_inode *ip, char *buf, loff_t *pos,
+                       unsigned size)
 {
 	struct address_space *mapping = ip->i_inode.i_mapping;
 	unsigned long index = *pos / PAGE_CACHE_SIZE;
@@ -542,9 +541,9 @@ int gfs2_internal_read(struct gfs2_inode *ip, struct file_ra_state *ra_state,
 		page = read_cache_page(mapping, index, __gfs2_readpage, NULL);
 		if (IS_ERR(page))
 			return PTR_ERR(page);
-		p = kmap_atomic(page, KM_USER0);
+		p = kmap_atomic(page);
 		memcpy(buf + copied, p + offset, amt);
-		kunmap_atomic(p, KM_USER0);
+		kunmap_atomic(p);
 		mark_page_accessed(page);
 		page_cache_release(page);
 		copied += amt;
@@ -615,7 +614,6 @@ static int gfs2_write_begin(struct file *file, struct address_space *mapping,
 	unsigned int data_blocks = 0, ind_blocks = 0, rblocks;
 	int alloc_required;
 	int error = 0;
-	struct gfs2_alloc *al = NULL;
 	pgoff_t index = pos >> PAGE_CACHE_SHIFT;
 	unsigned from = pos & (PAGE_CACHE_SIZE - 1);
 	struct page *page;
@@ -639,18 +637,11 @@ static int gfs2_write_begin(struct file *file, struct address_space *mapping,
 		gfs2_write_calc_reserv(ip, len, &data_blocks, &ind_blocks);
 
 	if (alloc_required) {
-		al = gfs2_alloc_get(ip);
-		if (!al) {
-			error = -ENOMEM;
-			goto out_unlock;
-		}
-
 		error = gfs2_quota_lock_check(ip);
 		if (error)
-			goto out_alloc_put;
+			goto out_unlock;
 
-		al->al_requested = data_blocks + ind_blocks;
-		error = gfs2_inplace_reserve(ip);
+		error = gfs2_inplace_reserve(ip, data_blocks + ind_blocks);
 		if (error)
 			goto out_qunlock;
 	}
@@ -663,7 +654,7 @@ static int gfs2_write_begin(struct file *file, struct address_space *mapping,
 	if (&ip->i_inode == sdp->sd_rindex)
 		rblocks += 2 * RES_STATFS;
 	if (alloc_required)
-		rblocks += gfs2_rg_blocks(al);
+		rblocks += gfs2_rg_blocks(ip);
 
 	error = gfs2_trans_begin(sdp, rblocks,
 				 PAGE_CACHE_SIZE/sdp->sd_sb.sb_bsize);
@@ -695,6 +686,7 @@ out:
 	if (error == 0)
 		return 0;
 
+	unlock_page(page);
 	page_cache_release(page);
 
 	gfs2_trans_end(sdp);
@@ -709,8 +701,6 @@ out_trans_fail:
 		gfs2_inplace_release(ip);
 out_qunlock:
 		gfs2_quota_unlock(ip);
-out_alloc_put:
-		gfs2_alloc_put(ip);
 	}
 out_unlock:
 	if (&ip->i_inode == sdp->sd_rindex) {
@@ -786,14 +776,13 @@ static int gfs2_stuffed_write_end(struct inode *inode, struct buffer_head *dibh,
 	u64 to = pos + copied;
 	void *kaddr;
 	unsigned char *buf = dibh->b_data + sizeof(struct gfs2_dinode);
-	struct gfs2_dinode *di = (struct gfs2_dinode *)dibh->b_data;
 
 	BUG_ON((pos + len) > (dibh->b_size - sizeof(struct gfs2_dinode)));
-	kaddr = kmap_atomic(page, KM_USER0);
+	kaddr = kmap_atomic(page);
 	memcpy(buf + pos, kaddr + pos, copied);
 	memset(kaddr + pos + copied, 0, len - copied);
 	flush_dcache_page(page);
-	kunmap_atomic(kaddr, KM_USER0);
+	kunmap_atomic(kaddr);
 
 	if (!PageUptodate(page))
 		SetPageUptodate(page);
@@ -803,13 +792,12 @@ static int gfs2_stuffed_write_end(struct inode *inode, struct buffer_head *dibh,
 	if (copied) {
 		if (inode->i_size < to)
 			i_size_write(inode, to);
-		gfs2_dinode_out(ip, di);
 		mark_inode_dirty(inode);
 	}
 
 	if (inode == sdp->sd_rindex) {
 		adjust_fs_space(inode);
-		ip->i_gh.gh_flags |= GL_NOCACHE;
+		sdp->sd_rindex_uptodate = 0;
 	}
 
 	brelse(dibh);
@@ -849,7 +837,6 @@ static int gfs2_write_end(struct file *file, struct address_space *mapping,
 	struct gfs2_sbd *sdp = GFS2_SB(inode);
 	struct gfs2_inode *m_ip = GFS2_I(sdp->sd_statfs_inode);
 	struct buffer_head *dibh;
-	struct gfs2_alloc *al = ip->i_alloc;
 	unsigned int from = pos & (PAGE_CACHE_SIZE - 1);
 	unsigned int to = from + len;
 	int ret;
@@ -872,24 +859,19 @@ static int gfs2_write_end(struct file *file, struct address_space *mapping,
 		gfs2_page_add_databufs(ip, page, from, to);
 
 	ret = generic_write_end(file, mapping, pos, len, copied, page, fsdata);
-	if (ret > 0) {
-		gfs2_dinode_out(ip, dibh->b_data);
-		mark_inode_dirty(inode);
-	}
 
 	if (inode == sdp->sd_rindex) {
 		adjust_fs_space(inode);
-		ip->i_gh.gh_flags |= GL_NOCACHE;
+		sdp->sd_rindex_uptodate = 0;
 	}
 
 	brelse(dibh);
-	gfs2_trans_end(sdp);
 failed:
-	if (al) {
+	gfs2_trans_end(sdp);
+	if (gfs2_mb_reserved(ip))
 		gfs2_inplace_release(ip);
+	if (ip->i_res->rs_qa_qd_num)
 		gfs2_quota_unlock(ip);
-		gfs2_alloc_put(ip);
-	}
 	if (inode == sdp->sd_rindex) {
 		gfs2_glock_dq(&m_ip->i_gh);
 		gfs2_holder_uninit(&m_ip->i_gh);
@@ -948,8 +930,8 @@ static void gfs2_discard(struct gfs2_sbd *sdp, struct buffer_head *bh)
 	clear_buffer_dirty(bh);
 	bd = bh->b_private;
 	if (bd) {
-		if (!list_empty(&bd->bd_le.le_list) && !buffer_pinned(bh))
-			list_del_init(&bd->bd_le.le_list);
+		if (!list_empty(&bd->bd_list) && !buffer_pinned(bh))
+			list_del_init(&bd->bd_list);
 		else
 			gfs2_remove_from_journal(bh, current->journal_info, 0);
 	}
@@ -1068,6 +1050,7 @@ int gfs2_releasepage(struct page *page, gfp_t gfp_mask)
 		return 0;
 
 	gfs2_log_lock(sdp);
+	spin_lock(&sdp->sd_ail_lock);
 	head = bh = page_buffers(page);
 	do {
 		if (atomic_read(&bh->b_count))
@@ -1075,10 +1058,11 @@ int gfs2_releasepage(struct page *page, gfp_t gfp_mask)
 		bd = bh->b_private;
 		if (bd && bd->bd_ail)
 			goto cannot_release;
-		gfs2_assert_warn(sdp, !buffer_pinned(bh));
-		gfs2_assert_warn(sdp, !buffer_dirty(bh));
+		if (buffer_pinned(bh) || buffer_dirty(bh))
+			goto not_possible;
 		bh = bh->b_this_page;
 	} while(bh != head);
+	spin_unlock(&sdp->sd_ail_lock);
 	gfs2_log_unlock(sdp);
 
 	head = bh = page_buffers(page);
@@ -1087,10 +1071,9 @@ int gfs2_releasepage(struct page *page, gfp_t gfp_mask)
 		bd = bh->b_private;
 		if (bd) {
 			gfs2_assert_warn(sdp, bd->bd_bh == bh);
-			gfs2_assert_warn(sdp, list_empty(&bd->bd_list_tr));
-			if (!list_empty(&bd->bd_le.le_list)) {
+			if (!list_empty(&bd->bd_list)) {
 				if (!buffer_pinned(bh))
-					list_del_init(&bd->bd_le.le_list);
+					list_del_init(&bd->bd_list);
 				else
 					bd = NULL;
 			}
@@ -1106,7 +1089,12 @@ int gfs2_releasepage(struct page *page, gfp_t gfp_mask)
 	} while (bh != head);
 
 	return try_to_free_buffers(page);
+
+not_possible: /* Should never happen */
+	WARN_ON(buffer_dirty(bh));
+	WARN_ON(buffer_pinned(bh));
 cannot_release:
+	spin_unlock(&sdp->sd_ail_lock);
 	gfs2_log_unlock(sdp);
 	return 0;
 }
@@ -1116,7 +1104,6 @@ static const struct address_space_operations gfs2_writeback_aops = {
 	.writepages = gfs2_writeback_writepages,
 	.readpage = gfs2_readpage,
 	.readpages = gfs2_readpages,
-	.sync_page = block_sync_page,
 	.write_begin = gfs2_write_begin,
 	.write_end = gfs2_write_end,
 	.bmap = gfs2_bmap,
@@ -1132,7 +1119,6 @@ static const struct address_space_operations gfs2_ordered_aops = {
 	.writepage = gfs2_ordered_writepage,
 	.readpage = gfs2_readpage,
 	.readpages = gfs2_readpages,
-	.sync_page = block_sync_page,
 	.write_begin = gfs2_write_begin,
 	.write_end = gfs2_write_end,
 	.set_page_dirty = gfs2_set_page_dirty,
@@ -1150,7 +1136,6 @@ static const struct address_space_operations gfs2_jdata_aops = {
 	.writepages = gfs2_jdata_writepages,
 	.readpage = gfs2_readpage,
 	.readpages = gfs2_readpages,
-	.sync_page = block_sync_page,
 	.write_begin = gfs2_write_begin,
 	.write_end = gfs2_write_end,
 	.set_page_dirty = gfs2_set_page_dirty,

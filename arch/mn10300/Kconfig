@@ -1,6 +1,13 @@
 config MN10300
 	def_bool y
 	select HAVE_OPROFILE
+	select HAVE_GENERIC_HARDIRQS
+	select GENERIC_IRQ_SHOW
+	select ARCH_WANT_IPC_PARSE_VERSION
+	select HAVE_ARCH_TRACEHOOK
+	select HAVE_ARCH_KGDB
+	select HAVE_NMI_WATCHDOG if MN10300_WD_TIMER
+	select GENERIC_CLOCKEVENTS
 
 config AM33_2
 	def_bool n
@@ -34,41 +41,11 @@ config RWSEM_GENERIC_SPINLOCK
 config RWSEM_XCHGADD_ALGORITHM
 	bool
 
-config GENERIC_HARDIRQS_NO__DO_IRQ
-	def_bool y
-
 config GENERIC_CALIBRATE_DELAY
-	def_bool y
-
-config GENERIC_CMOS_UPDATE
-        def_bool n
-
-config GENERIC_FIND_NEXT_BIT
 	def_bool y
 
 config GENERIC_HWEIGHT
 	def_bool y
-
-config GENERIC_TIME
-	def_bool y
-
-config GENERIC_CLOCKEVENTS
-	def_bool y
-
-config GENERIC_CLOCKEVENTS_BUILD
-	def_bool y
-	depends on GENERIC_CLOCKEVENTS
-
-config GENERIC_CLOCKEVENTS_BROADCAST
-	bool
-
-config CEVT_MN10300
-       def_bool y
-       depends on GENERIC_CLOCKEVENTS
-
-config CSRC_MN10300
-       def_bool y
-       depends on GENERIC_TIME
 
 config GENERIC_BUG
 	def_bool y
@@ -77,10 +54,6 @@ config QUICKLIST
 	def_bool y
 
 config ARCH_HAS_ILOG2_U32
-	def_bool y
-
-# Use the generic interrupt handling code in kernel/irq/
-config GENERIC_HARDIRQS
 	def_bool y
 
 config HOTPLUG_CPU
@@ -203,6 +176,7 @@ endmenu
 config SMP
 	bool "Symmetric multi-processing support"
 	default y
+	select USE_GENERIC_SMP_HELPERS
 	depends on MN10300_PROC_MN2WS0038 || MN10300_PROC_MN2WS0050
 	---help---
 	  This enables support for systems with more than one CPU. If you have
@@ -215,7 +189,7 @@ config SMP
 	  singleprocessor machines. On a singleprocessor machine, the kernel
 	  will run faster if you say N here.
 
-	  See also <file:Documentation/i386/IO-APIC.txt>,
+	  See also <file:Documentation/x86/i386/IO-APIC.txt>,
 	  <file:Documentation/nmi_watchdog.txt> and the SMP-HOWTO available at
 	  <http://www.tldp.org/docs.html#howto>.
 
@@ -225,11 +199,6 @@ config NR_CPUS
 	int
 	depends on SMP
 	default "2"
-
-config USE_GENERIC_SMP_HELPERS
-	bool
-	depends on SMP
-	default y
 
 source "kernel/Kconfig.preempt"
 
@@ -258,7 +227,6 @@ config MN10300_USING_JTAG
 	  single-stepping, which are taken over completely by the JTAG unit.
 
 source "kernel/Kconfig.hz"
-source "kernel/time/Kconfig"
 
 config MN10300_RTC
 	bool "Using MN10300 RTC"
@@ -280,6 +248,7 @@ config PCI
 	bool "Use PCI"
 	depends on MN10300_UNIT_ASB2305
 	default y
+	select GENERIC_PCI_IOMAP
 	help
 	  Some systems (such as the ASB2305) have PCI onboard. If you have one
 	  of these boards and you wish to use the PCI facilities, say Y here.
@@ -425,9 +394,9 @@ comment "[!] NOTE: A lower number/level indicates a higher priority (0 is highes
 comment "____Non-maskable interrupt levels____"
 comment "The following must be set to a higher priority than local_irq_disable() and on-chip serial"
 
-config GDBSTUB_IRQ_LEVEL
-	int "GDBSTUB interrupt priority"
-	depends on GDBSTUB
+config DEBUGGER_IRQ_LEVEL
+	int "DEBUGGER interrupt priority"
+	depends on KERNEL_DEBUGGER
 	range 0 1 if LINUX_CLI_LEVEL = 2
 	range 0 2 if LINUX_CLI_LEVEL = 3
 	range 0 3 if LINUX_CLI_LEVEL = 4
@@ -461,7 +430,7 @@ config LINUX_CLI_LEVEL
 	  EPSW.IM from 7.  Any interrupt is permitted for which the level is
 	  lower than EPSW.IM.
 
-	  Certain interrupts, such as GDBSTUB and virtual MN10300 on-chip
+	  Certain interrupts, such as DEBUGGER and virtual MN10300 on-chip
 	  serial DMA interrupts are allowed to interrupt normal disabled
 	  sections.
 

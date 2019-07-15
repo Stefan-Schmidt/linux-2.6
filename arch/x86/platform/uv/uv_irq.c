@@ -25,7 +25,7 @@ struct uv_irq_2_mmr_pnode{
 	int			irq;
 };
 
-static spinlock_t		uv_irq_lock;
+static DEFINE_SPINLOCK(uv_irq_lock);
 static struct rb_root		uv_irq_root;
 
 static int uv_set_irq_affinity(struct irq_data *, const struct cpumask *, bool);
@@ -131,10 +131,11 @@ arch_enable_uv_irq(char *irq_name, unsigned int irq, int cpu, int mmr_blade,
 		       unsigned long mmr_offset, int limit)
 {
 	const struct cpumask *eligible_cpu = cpumask_of(cpu);
-	struct irq_cfg *cfg = get_irq_chip_data(irq);
+	struct irq_cfg *cfg = irq_get_chip_data(irq);
 	unsigned long mmr_value;
 	struct uv_IO_APIC_route_entry *entry;
 	int mmr_pnode, err;
+	unsigned int dest;
 
 	BUILD_BUG_ON(sizeof(struct uv_IO_APIC_route_entry) !=
 			sizeof(unsigned long));
@@ -143,12 +144,16 @@ arch_enable_uv_irq(char *irq_name, unsigned int irq, int cpu, int mmr_blade,
 	if (err != 0)
 		return err;
 
+	err = apic->cpu_mask_to_apicid_and(eligible_cpu, eligible_cpu, &dest);
+	if (err != 0)
+		return err;
+
 	if (limit == UV_AFFINITY_CPU)
 		irq_set_status_flags(irq, IRQ_NO_BALANCING);
 	else
 		irq_set_status_flags(irq, IRQ_MOVE_PCNTXT);
 
-	set_irq_chip_and_handler_name(irq, &uv_irq_chip, handle_percpu_irq,
+	irq_set_chip_and_handler_name(irq, &uv_irq_chip, handle_percpu_irq,
 				      irq_name);
 
 	mmr_value = 0;
@@ -159,7 +164,7 @@ arch_enable_uv_irq(char *irq_name, unsigned int irq, int cpu, int mmr_blade,
 	entry->polarity		= 0;
 	entry->trigger		= 0;
 	entry->mask		= 0;
-	entry->dest		= apic->cpu_mask_to_apicid(eligible_cpu);
+	entry->dest		= dest;
 
 	mmr_pnode = uv_blade_to_pnode(mmr_blade);
 	uv_write_global_mmr64(mmr_pnode, mmr_offset, mmr_value);
@@ -222,7 +227,7 @@ uv_set_irq_affinity(struct irq_data *data, const struct cpumask *mask,
 	if (cfg->move_in_progress)
 		send_cleanup_vector(cfg);
 
-	return 0;
+	return IRQ_SET_MASK_OK_NOCOPY;
 }
 
 /*

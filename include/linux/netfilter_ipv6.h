@@ -12,6 +12,9 @@
 
 /* only for userspace compatibility */
 #ifndef __KERNEL__
+
+#include <limits.h> /* for INT_MIN, INT_MAX */
+
 /* IP Cache bits. */
 /* Src IP address. */
 #define NFC_IP6_SRC              0x0001
@@ -68,6 +71,7 @@ enum nf_ip6_hook_priorities {
 	NF_IP6_PRI_SECURITY = 50,
 	NF_IP6_PRI_NAT_SRC = 100,
 	NF_IP6_PRI_SELINUX_LAST = 225,
+	NF_IP6_PRI_CONNTRACK_HELPER = 300,
 	NF_IP6_PRI_LAST = INT_MAX,
 };
 

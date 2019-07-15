@@ -13,10 +13,10 @@
 #include <linux/skbuff.h>
 #include <linux/udp.h>
 
-#include <net/netfilter/nf_nat_helper.h>
-#include <net/netfilter/nf_nat_rule.h>
 #include <net/netfilter/nf_conntrack_helper.h>
 #include <net/netfilter/nf_conntrack_expect.h>
+#include <net/netfilter/nf_nat_helper.h>
+#include <net/netfilter/nf_nat_rule.h>
 #include <linux/netfilter/nf_conntrack_amanda.h>
 
 MODULE_AUTHOR("Brian J. Murrell <netfilter@interlinx.bc.ca>");
@@ -44,13 +44,13 @@ static unsigned int help(struct sk_buff *skb,
 
 	/* Try to get same port: if not, try to change it. */
 	for (port = ntohs(exp->saved_proto.tcp.port); port != 0; port++) {
-		int ret;
+		int res;
 
 		exp->tuple.dst.u.tcp.port = htons(port);
-		ret = nf_ct_expect_related(exp);
-		if (ret == 0)
+		res = nf_ct_expect_related(exp);
+		if (res == 0)
 			break;
-		else if (ret != -EBUSY) {
+		else if (res != -EBUSY) {
 			port = 0;
 			break;
 		}
@@ -70,14 +70,14 @@ static unsigned int help(struct sk_buff *skb,
 
 static void __exit nf_nat_amanda_fini(void)
 {
-	rcu_assign_pointer(nf_nat_amanda_hook, NULL);
+	RCU_INIT_POINTER(nf_nat_amanda_hook, NULL);
 	synchronize_rcu();
 }
 
 static int __init nf_nat_amanda_init(void)
 {
 	BUG_ON(nf_nat_amanda_hook != NULL);
-	rcu_assign_pointer(nf_nat_amanda_hook, help);
+	RCU_INIT_POINTER(nf_nat_amanda_hook, help);
 	return 0;
 }
 

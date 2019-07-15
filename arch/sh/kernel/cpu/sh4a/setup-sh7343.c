@@ -13,14 +13,17 @@
 #include <linux/serial_sci.h>
 #include <linux/uio_driver.h>
 #include <linux/sh_timer.h>
+#include <linux/sh_intc.h>
 #include <asm/clock.h>
 
 /* Serial */
 static struct plat_sci_port scif0_platform_data = {
 	.mapbase        = 0xffe00000,
 	.flags          = UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_CKE1,
+	.scbrr_algo_id	= SCBRR_ALGO_2,
 	.type           = PORT_SCIF,
-	.irqs           = { 80, 80, 80, 80 },
+	.irqs           = SCIx_IRQ_MUXED(evt2irq(0xc00)),
 };
 
 static struct platform_device scif0_device = {
@@ -34,8 +37,10 @@ static struct platform_device scif0_device = {
 static struct plat_sci_port scif1_platform_data = {
 	.mapbase        = 0xffe10000,
 	.flags          = UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_CKE1,
+	.scbrr_algo_id	= SCBRR_ALGO_2,
 	.type           = PORT_SCIF,
-	.irqs           = { 81, 81, 81, 81 },
+	.irqs           = SCIx_IRQ_MUXED(evt2irq(0xc20)),
 };
 
 static struct platform_device scif1_device = {
@@ -49,8 +54,10 @@ static struct platform_device scif1_device = {
 static struct plat_sci_port scif2_platform_data = {
 	.mapbase        = 0xffe20000,
 	.flags          = UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_CKE1,
+	.scbrr_algo_id	= SCBRR_ALGO_2,
 	.type           = PORT_SCIF,
-	.irqs           = { 82, 82, 82, 82 },
+	.irqs           = SCIx_IRQ_MUXED(evt2irq(0xc40)),
 };
 
 static struct platform_device scif2_device = {
@@ -64,8 +71,10 @@ static struct platform_device scif2_device = {
 static struct plat_sci_port scif3_platform_data = {
 	.mapbase        = 0xffe30000,
 	.flags          = UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_CKE1,
+	.scbrr_algo_id	= SCBRR_ALGO_2,
 	.type           = PORT_SCIF,
-	.irqs           = { 83, 83, 83, 83 },
+	.irqs           = SCIx_IRQ_MUXED(evt2irq(0xc60)),
 };
 
 static struct platform_device scif3_device = {
@@ -84,8 +93,8 @@ static struct resource iic0_resources[] = {
 		.flags  = IORESOURCE_MEM,
 	},
 	[1] = {
-		.start  = 96,
-		.end    = 99,
+		.start  = evt2irq(0xe00),
+		.end    = evt2irq(0xe60),
 		.flags  = IORESOURCE_IRQ,
        },
 };
@@ -105,8 +114,8 @@ static struct resource iic1_resources[] = {
 		.flags  = IORESOURCE_MEM,
 	},
 	[1] = {
-		.start  = 44,
-		.end    = 47,
+		.start  = evt2irq(0x780),
+		.end    = evt2irq(0x7e0),
 		.flags  = IORESOURCE_IRQ,
        },
 };
@@ -121,7 +130,7 @@ static struct platform_device iic1_device = {
 static struct uio_info vpu_platform_data = {
 	.name = "VPU4",
 	.version = "0",
-	.irq = 60,
+	.irq = evt2irq(0x980),
 };
 
 static struct resource vpu_resources[] = {
@@ -149,7 +158,7 @@ static struct platform_device vpu_device = {
 static struct uio_info veu_platform_data = {
 	.name = "VEU",
 	.version = "0",
-	.irq = 54,
+	.irq = evt2irq(0x8c0),
 };
 
 static struct resource veu_resources[] = {
@@ -177,7 +186,7 @@ static struct platform_device veu_device = {
 static struct uio_info jpu_platform_data = {
 	.name = "JPU",
 	.version = "0",
-	.irq = 27,
+	.irq = evt2irq(0x560),
 };
 
 static struct resource jpu_resources[] = {
@@ -216,7 +225,7 @@ static struct resource cmt_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 104,
+		.start	= evt2irq(0xf00),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -244,7 +253,7 @@ static struct resource tmu0_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 16,
+		.start	= evt2irq(0x400),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -272,7 +281,7 @@ static struct resource tmu1_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 17,
+		.start	= evt2irq(0x420),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -299,7 +308,7 @@ static struct resource tmu2_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 18,
+		.start	= evt2irq(0x440),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -360,6 +369,8 @@ void __init plat_early_device_setup(void)
 
 enum {
 	UNUSED = 0,
+	ENABLED,
+	DISABLED,
 
 	/* interrupt sources */
 	IRQ0, IRQ1, IRQ2, IRQ3, IRQ4, IRQ5, IRQ6, IRQ7,
@@ -375,15 +386,13 @@ enum {
 	I2C0_ALI, I2C0_TACKI, I2C0_WAITI, I2C0_DTEI,
 	I2C1_ALI, I2C1_TACKI, I2C1_WAITI, I2C1_DTEI,
 	SIM_TEI, SIM_TXI, SIM_RXI, SIM_ERI,
-	IRDA,
-	SDHI0, SDHI1, SDHI2, SDHI3,
-	CMT, TSIF, SIU,
+	IRDA, SDHI, CMT, TSIF, SIU,
 	TMU0, TMU1, TMU2,
 	JPU, LCDC,
 
 	/* interrupt groups */
 
-	DMAC0123, VIOVOU, MMC, DMAC45, FLCTL, I2C0, I2C1, SIM, SDHI, USB,
+	DMAC0123, VIOVOU, MMC, DMAC45, FLCTL, I2C0, I2C1, SIM, USB,
 };
 
 static struct intc_vect vectors[] __initdata = {
@@ -412,8 +421,8 @@ static struct intc_vect vectors[] __initdata = {
 	INTC_VECT(FLCTL_FLTREQ0I, 0xdc0), INTC_VECT(FLCTL_FLTREQ1I, 0xde0),
 	INTC_VECT(I2C0_ALI, 0xe00), INTC_VECT(I2C0_TACKI, 0xe20),
 	INTC_VECT(I2C0_WAITI, 0xe40), INTC_VECT(I2C0_DTEI, 0xe60),
-	INTC_VECT(SDHI0, 0xe80), INTC_VECT(SDHI1, 0xea0),
-	INTC_VECT(SDHI2, 0xec0), INTC_VECT(SDHI3, 0xee0),
+	INTC_VECT(SDHI, 0xe80), INTC_VECT(SDHI, 0xea0),
+	INTC_VECT(SDHI, 0xec0), INTC_VECT(SDHI, 0xee0),
 	INTC_VECT(CMT, 0xf00), INTC_VECT(TSIF, 0xf20),
 	INTC_VECT(SIU, 0xf80),
 	INTC_VECT(TMU0, 0x400), INTC_VECT(TMU1, 0x420),
@@ -431,7 +440,6 @@ static struct intc_group groups[] __initdata = {
 	INTC_GROUP(I2C0, I2C0_ALI, I2C0_TACKI, I2C0_WAITI, I2C0_DTEI),
 	INTC_GROUP(I2C1, I2C1_ALI, I2C1_TACKI, I2C1_WAITI, I2C1_DTEI),
 	INTC_GROUP(SIM, SIM_TEI, SIM_TXI, SIM_RXI, SIM_ERI),
-	INTC_GROUP(SDHI, SDHI0, SDHI1, SDHI2, SDHI3),
 	INTC_GROUP(USB, USBI0, USBI1),
 };
 
@@ -452,7 +460,7 @@ static struct intc_mask_reg mask_registers[] __initdata = {
 	  { I2C0_DTEI, I2C0_WAITI, I2C0_TACKI, I2C0_ALI,
 	    FLCTL_FLTREQ1I, FLCTL_FLTREQ0I, FLCTL_FLENDI, FLCTL_FLSTEI } },
 	{ 0xa40800a0, 0xa40800e0, 8, /* IMR8 / IMCR8 */
-	  { SDHI3, SDHI2, SDHI1, SDHI0, 0, 0, 0, SIU } },
+	  { DISABLED, ENABLED, ENABLED, ENABLED, 0, 0, 0, SIU } },
 	{ 0xa40800a4, 0xa40800e4, 8, /* IMR9 / IMCR9 */
 	  { 0, 0, 0, CMT, 0, USBI1, USBI0 } },
 	{ 0xa40800a8, 0xa40800e8, 8, /* IMR10 / IMCR10 */
@@ -488,9 +496,13 @@ static struct intc_mask_reg ack_registers[] __initdata = {
 	  { IRQ0, IRQ1, IRQ2, IRQ3, IRQ4, IRQ5, IRQ6, IRQ7 } },
 };
 
-static DECLARE_INTC_DESC_ACK(intc_desc, "sh7343", vectors, groups,
-			     mask_registers, prio_registers, sense_registers,
-			     ack_registers);
+static struct intc_desc intc_desc __initdata = {
+	.name = "sh7343",
+	.force_enable = ENABLED,
+	.force_disable = DISABLED,
+	.hw = INTC_HW_DESC(vectors, groups, mask_registers,
+			   prio_registers, sense_registers, ack_registers),
+};
 
 void __init plat_irq_setup(void)
 {

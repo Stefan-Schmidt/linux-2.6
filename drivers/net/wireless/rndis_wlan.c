@@ -36,13 +36,11 @@
 #include <linux/mii.h>
 #include <linux/usb.h>
 #include <linux/usb/cdc.h>
-#include <linux/wireless.h>
 #include <linux/ieee80211.h>
 #include <linux/if_arp.h>
 #include <linux/ctype.h>
 #include <linux/spinlock.h>
 #include <linux/slab.h>
-#include <net/iw_handler.h>
 #include <net/cfg80211.h>
 #include <linux/usb/usbnet.h>
 #include <linux/usb/rndis_host.h>
@@ -90,48 +88,6 @@ module_param_named(workaround_interval, modparam_workaround_interval,
 MODULE_PARM_DESC(workaround_interval,
 	"set stall workaround interval in msecs (0=disabled) (default: 0)");
 
-
-/* various RNDIS OID defs */
-#define OID_GEN_LINK_SPEED			cpu_to_le32(0x00010107)
-#define OID_GEN_RNDIS_CONFIG_PARAMETER		cpu_to_le32(0x0001021b)
-
-#define OID_GEN_XMIT_OK				cpu_to_le32(0x00020101)
-#define OID_GEN_RCV_OK				cpu_to_le32(0x00020102)
-#define OID_GEN_XMIT_ERROR			cpu_to_le32(0x00020103)
-#define OID_GEN_RCV_ERROR			cpu_to_le32(0x00020104)
-#define OID_GEN_RCV_NO_BUFFER			cpu_to_le32(0x00020105)
-
-#define OID_802_3_CURRENT_ADDRESS		cpu_to_le32(0x01010102)
-#define OID_802_3_MULTICAST_LIST		cpu_to_le32(0x01010103)
-#define OID_802_3_MAXIMUM_LIST_SIZE		cpu_to_le32(0x01010104)
-
-#define OID_802_11_BSSID			cpu_to_le32(0x0d010101)
-#define OID_802_11_SSID				cpu_to_le32(0x0d010102)
-#define OID_802_11_INFRASTRUCTURE_MODE		cpu_to_le32(0x0d010108)
-#define OID_802_11_ADD_WEP			cpu_to_le32(0x0d010113)
-#define OID_802_11_REMOVE_WEP			cpu_to_le32(0x0d010114)
-#define OID_802_11_DISASSOCIATE			cpu_to_le32(0x0d010115)
-#define OID_802_11_AUTHENTICATION_MODE		cpu_to_le32(0x0d010118)
-#define OID_802_11_PRIVACY_FILTER		cpu_to_le32(0x0d010119)
-#define OID_802_11_BSSID_LIST_SCAN		cpu_to_le32(0x0d01011a)
-#define OID_802_11_ENCRYPTION_STATUS		cpu_to_le32(0x0d01011b)
-#define OID_802_11_ADD_KEY			cpu_to_le32(0x0d01011d)
-#define OID_802_11_REMOVE_KEY			cpu_to_le32(0x0d01011e)
-#define OID_802_11_ASSOCIATION_INFORMATION	cpu_to_le32(0x0d01011f)
-#define OID_802_11_CAPABILITY			cpu_to_le32(0x0d010122)
-#define OID_802_11_PMKID			cpu_to_le32(0x0d010123)
-#define OID_802_11_NETWORK_TYPES_SUPPORTED	cpu_to_le32(0x0d010203)
-#define OID_802_11_NETWORK_TYPE_IN_USE		cpu_to_le32(0x0d010204)
-#define OID_802_11_TX_POWER_LEVEL		cpu_to_le32(0x0d010205)
-#define OID_802_11_RSSI				cpu_to_le32(0x0d010206)
-#define OID_802_11_RSSI_TRIGGER			cpu_to_le32(0x0d010207)
-#define OID_802_11_FRAGMENTATION_THRESHOLD	cpu_to_le32(0x0d010209)
-#define OID_802_11_RTS_THRESHOLD		cpu_to_le32(0x0d01020a)
-#define OID_802_11_SUPPORTED_RATES		cpu_to_le32(0x0d01020e)
-#define OID_802_11_CONFIGURATION		cpu_to_le32(0x0d010211)
-#define OID_802_11_BSSID_LIST			cpu_to_le32(0x0d010217)
-
-
 /* Typical noise/maximum signal level values taken from ndiswrapper iw_ndis.h */
 #define	WL_NOISE	-96	/* typical noise level in dBm */
 #define	WL_SIGMAX	-32	/* typical maximum signal level in dBm */
@@ -150,10 +106,10 @@ MODULE_PARM_DESC(workaround_interval,
 #define BCM4320_DEFAULT_TXPOWER_DBM_50  10
 #define BCM4320_DEFAULT_TXPOWER_DBM_25  7
 
-
-/* codes for "status" field of completion messages */
-#define RNDIS_STATUS_ADAPTER_NOT_READY		cpu_to_le32(0xc0010011)
-#define RNDIS_STATUS_ADAPTER_NOT_OPEN		cpu_to_le32(0xc0010012)
+/* Known device types */
+#define RNDIS_UNKNOWN	0
+#define RNDIS_BCM4320A	1
+#define RNDIS_BCM4320B	2
 
 
 /* NDIS data structures. Taken from wpa_supplicant driver_ndis.c
@@ -231,6 +187,16 @@ enum ndis_80211_addkey_bits {
 enum ndis_80211_addwep_bits {
 	NDIS_80211_ADDWEP_PERCLIENT_KEY = cpu_to_le32(1 << 30),
 	NDIS_80211_ADDWEP_TRANSMIT_KEY = cpu_to_le32(1 << 31)
+};
+
+enum ndis_80211_power_mode {
+	NDIS_80211_POWER_MODE_CAM,
+	NDIS_80211_POWER_MODE_MAX_PSP,
+	NDIS_80211_POWER_MODE_FAST_PSP,
+};
+
+enum ndis_80211_pmkid_cand_list_flag_bits {
+	NDIS_80211_PMKID_CAND_PREAUTH = cpu_to_le32(1 << 0)
 };
 
 struct ndis_80211_auth_request {
@@ -376,19 +342,17 @@ struct ndis_80211_capability {
 struct ndis_80211_bssid_info {
 	u8 bssid[6];
 	u8 pmkid[16];
-};
+} __packed;
 
 struct ndis_80211_pmkid {
 	__le32 length;
 	__le32 bssid_info_count;
 	struct ndis_80211_bssid_info bssid_info[0];
-};
+} __packed;
 
 /*
  *  private data
  */
-#define NET_TYPE_11FB	0
-
 #define CAP_MODE_80211A		1
 #define CAP_MODE_80211B		2
 #define CAP_MODE_80211G		4
@@ -403,6 +367,7 @@ struct ndis_80211_pmkid {
 #define RNDIS_WLAN_ALG_TKIP	(1<<1)
 #define RNDIS_WLAN_ALG_CCMP	(1<<2)
 
+#define RNDIS_WLAN_NUM_KEYS		4
 #define RNDIS_WLAN_KEY_MGMT_NONE	0
 #define RNDIS_WLAN_KEY_MGMT_802_1X	(1<<0)
 #define RNDIS_WLAN_KEY_MGMT_PSK		(1<<1)
@@ -472,12 +437,16 @@ struct rndis_wlan_private {
 	struct mutex command_lock;
 	unsigned long work_pending;
 	int last_qual;
+	s32 cqm_rssi_thold;
+	u32 cqm_rssi_hyst;
+	int last_cqm_event_rssi;
 
 	struct ieee80211_supported_band band;
 	struct ieee80211_channel channels[ARRAY_SIZE(rndis_channels)];
 	struct ieee80211_rate rates[ARRAY_SIZE(rndis_rates)];
 	u32 cipher_suites[ARRAY_SIZE(rndis_cipher_suites)];
 
+	int device_type;
 	int caps;
 	int multicast_size;
 
@@ -493,15 +462,15 @@ struct rndis_wlan_private {
 
 	/* hardware state */
 	bool radio_on;
+	int power_mode;
 	int infra_mode;
 	bool connected;
 	u8 bssid[ETH_ALEN];
-	struct ndis_80211_ssid essid;
-	__le32 current_command_oid;
+	u32 current_command_oid;
 
 	/* encryption stuff */
-	int  encr_tx_key_index;
-	struct rndis_wlan_encr_key encr_keys[4];
+	u8 encr_tx_key_index;
+	struct rndis_wlan_encr_key encr_keys[RNDIS_WLAN_NUM_KEYS];
 	int  wpa_version;
 
 	u8 command_buffer[COMMAND_BUFFER_SIZE];
@@ -515,7 +484,7 @@ static int rndis_change_virtual_intf(struct wiphy *wiphy,
 					enum nl80211_iftype type, u32 *flags,
 					struct vif_params *params);
 
-static int rndis_scan(struct wiphy *wiphy, struct net_device *dev,
+static int rndis_scan(struct wiphy *wiphy,
 			struct cfg80211_scan_request *request);
 
 static int rndis_set_wiphy_params(struct wiphy *wiphy, u32 changed);
@@ -536,9 +505,6 @@ static int rndis_join_ibss(struct wiphy *wiphy, struct net_device *dev,
 
 static int rndis_leave_ibss(struct wiphy *wiphy, struct net_device *dev);
 
-static int rndis_set_channel(struct wiphy *wiphy, struct net_device *dev,
-	struct ieee80211_channel *chan, enum nl80211_channel_type channel_type);
-
 static int rndis_add_key(struct wiphy *wiphy, struct net_device *netdev,
 			 u8 key_index, bool pairwise, const u8 *mac_addr,
 			 struct key_params *params);
@@ -547,7 +513,7 @@ static int rndis_del_key(struct wiphy *wiphy, struct net_device *netdev,
 			 u8 key_index, bool pairwise, const u8 *mac_addr);
 
 static int rndis_set_default_key(struct wiphy *wiphy, struct net_device *netdev,
-								u8 key_index);
+				 u8 key_index, bool unicast, bool multicast);
 
 static int rndis_get_station(struct wiphy *wiphy, struct net_device *dev,
 					u8 *mac, struct station_info *sinfo);
@@ -563,7 +529,14 @@ static int rndis_del_pmksa(struct wiphy *wiphy, struct net_device *netdev,
 
 static int rndis_flush_pmksa(struct wiphy *wiphy, struct net_device *netdev);
 
-static struct cfg80211_ops rndis_config_ops = {
+static int rndis_set_power_mgmt(struct wiphy *wiphy, struct net_device *dev,
+				bool enabled, int timeout);
+
+static int rndis_set_cqm_rssi_config(struct wiphy *wiphy,
+					struct net_device *dev,
+					s32 rssi_thold, u32 rssi_hyst);
+
+static const struct cfg80211_ops rndis_config_ops = {
 	.change_virtual_intf = rndis_change_virtual_intf,
 	.scan = rndis_scan,
 	.set_wiphy_params = rndis_set_wiphy_params,
@@ -573,7 +546,6 @@ static struct cfg80211_ops rndis_config_ops = {
 	.disconnect = rndis_disconnect,
 	.join_ibss = rndis_join_ibss,
 	.leave_ibss = rndis_leave_ibss,
-	.set_channel = rndis_set_channel,
 	.add_key = rndis_add_key,
 	.del_key = rndis_del_key,
 	.set_default_key = rndis_set_default_key,
@@ -582,6 +554,8 @@ static struct cfg80211_ops rndis_config_ops = {
 	.set_pmksa = rndis_set_pmksa,
 	.del_pmksa = rndis_del_pmksa,
 	.flush_pmksa = rndis_flush_pmksa,
+	.set_power_mgmt = rndis_set_power_mgmt,
+	.set_cqm_rssi_config = rndis_set_cqm_rssi_config,
 };
 
 static void *rndis_wiphy_privid = &rndis_wiphy_privid;
@@ -607,7 +581,7 @@ static u32 get_bcm4320_power_dbm(struct rndis_wlan_private *priv)
 	}
 }
 
-static bool is_wpa_key(struct rndis_wlan_private *priv, int idx)
+static bool is_wpa_key(struct rndis_wlan_private *priv, u8 idx)
 {
 	int cipher = priv->encr_keys[idx].cipher;
 
@@ -643,61 +617,63 @@ static int rndis_akm_suite_to_key_mgmt(u32 akm_suite)
 }
 
 #ifdef DEBUG
-static const char *oid_to_string(__le32 oid)
+static const char *oid_to_string(u32 oid)
 {
 	switch (oid) {
 #define OID_STR(oid) case oid: return(#oid)
 		/* from rndis_host.h */
-		OID_STR(OID_802_3_PERMANENT_ADDRESS);
-		OID_STR(OID_GEN_MAXIMUM_FRAME_SIZE);
-		OID_STR(OID_GEN_CURRENT_PACKET_FILTER);
-		OID_STR(OID_GEN_PHYSICAL_MEDIUM);
+		OID_STR(RNDIS_OID_802_3_PERMANENT_ADDRESS);
+		OID_STR(RNDIS_OID_GEN_MAXIMUM_FRAME_SIZE);
+		OID_STR(RNDIS_OID_GEN_CURRENT_PACKET_FILTER);
+		OID_STR(RNDIS_OID_GEN_PHYSICAL_MEDIUM);
 
 		/* from rndis_wlan.c */
-		OID_STR(OID_GEN_LINK_SPEED);
-		OID_STR(OID_GEN_RNDIS_CONFIG_PARAMETER);
+		OID_STR(RNDIS_OID_GEN_LINK_SPEED);
+		OID_STR(RNDIS_OID_GEN_RNDIS_CONFIG_PARAMETER);
 
-		OID_STR(OID_GEN_XMIT_OK);
-		OID_STR(OID_GEN_RCV_OK);
-		OID_STR(OID_GEN_XMIT_ERROR);
-		OID_STR(OID_GEN_RCV_ERROR);
-		OID_STR(OID_GEN_RCV_NO_BUFFER);
+		OID_STR(RNDIS_OID_GEN_XMIT_OK);
+		OID_STR(RNDIS_OID_GEN_RCV_OK);
+		OID_STR(RNDIS_OID_GEN_XMIT_ERROR);
+		OID_STR(RNDIS_OID_GEN_RCV_ERROR);
+		OID_STR(RNDIS_OID_GEN_RCV_NO_BUFFER);
 
-		OID_STR(OID_802_3_CURRENT_ADDRESS);
-		OID_STR(OID_802_3_MULTICAST_LIST);
-		OID_STR(OID_802_3_MAXIMUM_LIST_SIZE);
+		OID_STR(RNDIS_OID_802_3_CURRENT_ADDRESS);
+		OID_STR(RNDIS_OID_802_3_MULTICAST_LIST);
+		OID_STR(RNDIS_OID_802_3_MAXIMUM_LIST_SIZE);
 
-		OID_STR(OID_802_11_BSSID);
-		OID_STR(OID_802_11_SSID);
-		OID_STR(OID_802_11_INFRASTRUCTURE_MODE);
-		OID_STR(OID_802_11_ADD_WEP);
-		OID_STR(OID_802_11_REMOVE_WEP);
-		OID_STR(OID_802_11_DISASSOCIATE);
-		OID_STR(OID_802_11_AUTHENTICATION_MODE);
-		OID_STR(OID_802_11_PRIVACY_FILTER);
-		OID_STR(OID_802_11_BSSID_LIST_SCAN);
-		OID_STR(OID_802_11_ENCRYPTION_STATUS);
-		OID_STR(OID_802_11_ADD_KEY);
-		OID_STR(OID_802_11_REMOVE_KEY);
-		OID_STR(OID_802_11_ASSOCIATION_INFORMATION);
-		OID_STR(OID_802_11_PMKID);
-		OID_STR(OID_802_11_NETWORK_TYPES_SUPPORTED);
-		OID_STR(OID_802_11_NETWORK_TYPE_IN_USE);
-		OID_STR(OID_802_11_TX_POWER_LEVEL);
-		OID_STR(OID_802_11_RSSI);
-		OID_STR(OID_802_11_RSSI_TRIGGER);
-		OID_STR(OID_802_11_FRAGMENTATION_THRESHOLD);
-		OID_STR(OID_802_11_RTS_THRESHOLD);
-		OID_STR(OID_802_11_SUPPORTED_RATES);
-		OID_STR(OID_802_11_CONFIGURATION);
-		OID_STR(OID_802_11_BSSID_LIST);
+		OID_STR(RNDIS_OID_802_11_BSSID);
+		OID_STR(RNDIS_OID_802_11_SSID);
+		OID_STR(RNDIS_OID_802_11_INFRASTRUCTURE_MODE);
+		OID_STR(RNDIS_OID_802_11_ADD_WEP);
+		OID_STR(RNDIS_OID_802_11_REMOVE_WEP);
+		OID_STR(RNDIS_OID_802_11_DISASSOCIATE);
+		OID_STR(RNDIS_OID_802_11_AUTHENTICATION_MODE);
+		OID_STR(RNDIS_OID_802_11_PRIVACY_FILTER);
+		OID_STR(RNDIS_OID_802_11_BSSID_LIST_SCAN);
+		OID_STR(RNDIS_OID_802_11_ENCRYPTION_STATUS);
+		OID_STR(RNDIS_OID_802_11_ADD_KEY);
+		OID_STR(RNDIS_OID_802_11_REMOVE_KEY);
+		OID_STR(RNDIS_OID_802_11_ASSOCIATION_INFORMATION);
+		OID_STR(RNDIS_OID_802_11_CAPABILITY);
+		OID_STR(RNDIS_OID_802_11_PMKID);
+		OID_STR(RNDIS_OID_802_11_NETWORK_TYPES_SUPPORTED);
+		OID_STR(RNDIS_OID_802_11_NETWORK_TYPE_IN_USE);
+		OID_STR(RNDIS_OID_802_11_TX_POWER_LEVEL);
+		OID_STR(RNDIS_OID_802_11_RSSI);
+		OID_STR(RNDIS_OID_802_11_RSSI_TRIGGER);
+		OID_STR(RNDIS_OID_802_11_FRAGMENTATION_THRESHOLD);
+		OID_STR(RNDIS_OID_802_11_RTS_THRESHOLD);
+		OID_STR(RNDIS_OID_802_11_SUPPORTED_RATES);
+		OID_STR(RNDIS_OID_802_11_CONFIGURATION);
+		OID_STR(RNDIS_OID_802_11_POWER_MODE);
+		OID_STR(RNDIS_OID_802_11_BSSID_LIST);
 #undef OID_STR
 	}
 
 	return "?";
 }
 #else
-static const char *oid_to_string(__le32 oid)
+static const char *oid_to_string(u32 oid)
 {
 	return "?";
 }
@@ -707,7 +683,7 @@ static const char *oid_to_string(__le32 oid)
 static int rndis_error_status(__le32 rndis_status)
 {
 	int ret = -EINVAL;
-	switch (rndis_status) {
+	switch (le32_to_cpu(rndis_status)) {
 	case RNDIS_STATUS_SUCCESS:
 		ret = 0;
 		break;
@@ -726,7 +702,7 @@ static int rndis_error_status(__le32 rndis_status)
 	return ret;
 }
 
-static int rndis_query_oid(struct usbnet *dev, __le32 oid, void *data, int *len)
+static int rndis_query_oid(struct usbnet *dev, u32 oid, void *data, int *len)
 {
 	struct rndis_wlan_private *priv = get_rndis_wlan_priv(dev);
 	union {
@@ -753,9 +729,9 @@ static int rndis_query_oid(struct usbnet *dev, __le32 oid, void *data, int *len)
 	mutex_lock(&priv->command_lock);
 
 	memset(u.get, 0, sizeof *u.get);
-	u.get->msg_type = RNDIS_MSG_QUERY;
+	u.get->msg_type = cpu_to_le32(RNDIS_MSG_QUERY);
 	u.get->msg_len = cpu_to_le32(sizeof *u.get);
-	u.get->oid = oid;
+	u.get->oid = cpu_to_le32(oid);
 
 	priv->current_command_oid = oid;
 	ret = rndis_command(dev, u.header, buflen);
@@ -810,7 +786,8 @@ exit_unlock:
 	return ret;
 }
 
-static int rndis_set_oid(struct usbnet *dev, __le32 oid, void *data, int len)
+static int rndis_set_oid(struct usbnet *dev, u32 oid, const void *data,
+			 int len)
 {
 	struct rndis_wlan_private *priv = get_rndis_wlan_priv(dev);
 	union {
@@ -836,9 +813,9 @@ static int rndis_set_oid(struct usbnet *dev, __le32 oid, void *data, int len)
 	mutex_lock(&priv->command_lock);
 
 	memset(u.set, 0, sizeof *u.set);
-	u.set->msg_type = RNDIS_MSG_SET;
+	u.set->msg_type = cpu_to_le32(RNDIS_MSG_SET);
 	u.set->msg_len = cpu_to_le32(sizeof(*u.set) + len);
-	u.set->oid = oid;
+	u.set->oid = cpu_to_le32(oid);
 	u.set->len = cpu_to_le32(len);
 	u.set->offset = cpu_to_le32(sizeof(*u.set) - 8);
 	u.set->handle = cpu_to_le32(0);
@@ -878,7 +855,7 @@ static int rndis_reset(struct usbnet *usbdev)
 
 	reset = (void *)priv->command_buffer;
 	memset(reset, 0, sizeof(*reset));
-	reset->msg_type = RNDIS_MSG_RESET;
+	reset->msg_type = cpu_to_le32(RNDIS_MSG_RESET);
 	reset->msg_len = cpu_to_le32(sizeof(*reset));
 	priv->current_command_oid = 0;
 	ret = rndis_command(usbdev, (void *)reset, CONTROL_BUFFER_SIZE);
@@ -964,7 +941,7 @@ static int rndis_set_config_parameter(struct usbnet *dev, char *param,
 	}
 #endif
 
-	ret = rndis_set_oid(dev, OID_GEN_RNDIS_CONFIG_PARAMETER,
+	ret = rndis_set_oid(dev, RNDIS_OID_GEN_RNDIS_CONFIG_PARAMETER,
 							infobuf, info_len);
 	if (ret != 0)
 		netdev_dbg(dev->net, "setting rndis config parameter failed, %d\n",
@@ -994,20 +971,31 @@ static int level_to_qual(int level)
  */
 static int set_infra_mode(struct usbnet *usbdev, int mode);
 static void restore_keys(struct usbnet *usbdev);
-static int rndis_check_bssid_list(struct usbnet *usbdev);
+static int rndis_check_bssid_list(struct usbnet *usbdev, u8 *match_bssid,
+					bool *matched);
+
+static int rndis_start_bssid_list_scan(struct usbnet *usbdev)
+{
+	__le32 tmp;
+
+	/* Note: RNDIS_OID_802_11_BSSID_LIST_SCAN clears internal BSS list. */
+	tmp = cpu_to_le32(1);
+	return rndis_set_oid(usbdev, RNDIS_OID_802_11_BSSID_LIST_SCAN, &tmp,
+							sizeof(tmp));
+}
 
 static int set_essid(struct usbnet *usbdev, struct ndis_80211_ssid *ssid)
 {
 	struct rndis_wlan_private *priv = get_rndis_wlan_priv(usbdev);
 	int ret;
 
-	ret = rndis_set_oid(usbdev, OID_802_11_SSID, ssid, sizeof(*ssid));
+	ret = rndis_set_oid(usbdev, RNDIS_OID_802_11_SSID,
+			    ssid, sizeof(*ssid));
 	if (ret < 0) {
 		netdev_warn(usbdev->net, "setting SSID failed (%08X)\n", ret);
 		return ret;
 	}
 	if (ret == 0) {
-		memcpy(&priv->essid, ssid, sizeof(priv->essid));
 		priv->radio_on = true;
 		netdev_dbg(usbdev->net, "%s(): radio_on = true\n", __func__);
 	}
@@ -1015,11 +1003,12 @@ static int set_essid(struct usbnet *usbdev, struct ndis_80211_ssid *ssid)
 	return ret;
 }
 
-static int set_bssid(struct usbnet *usbdev, u8 bssid[ETH_ALEN])
+static int set_bssid(struct usbnet *usbdev, const u8 *bssid)
 {
 	int ret;
 
-	ret = rndis_set_oid(usbdev, OID_802_11_BSSID, bssid, ETH_ALEN);
+	ret = rndis_set_oid(usbdev, RNDIS_OID_802_11_BSSID,
+			    bssid, ETH_ALEN);
 	if (ret < 0) {
 		netdev_warn(usbdev->net, "setting BSSID[%pM] failed (%08X)\n",
 			    bssid, ret);
@@ -1031,7 +1020,9 @@ static int set_bssid(struct usbnet *usbdev, u8 bssid[ETH_ALEN])
 
 static int clear_bssid(struct usbnet *usbdev)
 {
-	u8 broadcast_mac[ETH_ALEN] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+	static const u8 broadcast_mac[ETH_ALEN] = {
+		0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+	};
 
 	return set_bssid(usbdev, broadcast_mac);
 }
@@ -1041,7 +1032,8 @@ static int get_bssid(struct usbnet *usbdev, u8 bssid[ETH_ALEN])
 	int ret, len;
 
 	len = ETH_ALEN;
-	ret = rndis_query_oid(usbdev, OID_802_11_BSSID, bssid, &len);
+	ret = rndis_query_oid(usbdev, RNDIS_OID_802_11_BSSID,
+			      bssid, &len);
 
 	if (ret != 0)
 		memset(bssid, 0, ETH_ALEN);
@@ -1052,8 +1044,9 @@ static int get_bssid(struct usbnet *usbdev, u8 bssid[ETH_ALEN])
 static int get_association_info(struct usbnet *usbdev,
 			struct ndis_80211_assoc_info *info, int len)
 {
-	return rndis_query_oid(usbdev, OID_802_11_ASSOCIATION_INFORMATION,
-				info, &len);
+	return rndis_query_oid(usbdev,
+			RNDIS_OID_802_11_ASSOCIATION_INFORMATION,
+			info, &len);
 }
 
 static bool is_associated(struct usbnet *usbdev)
@@ -1077,7 +1070,9 @@ static int disassociate(struct usbnet *usbdev, bool reset_ssid)
 	int i, ret = 0;
 
 	if (priv->radio_on) {
-		ret = rndis_set_oid(usbdev, OID_802_11_DISASSOCIATE, NULL, 0);
+		ret = rndis_set_oid(usbdev,
+				RNDIS_OID_802_11_DISASSOCIATE,
+				NULL, 0);
 		if (ret == 0) {
 			priv->radio_on = false;
 			netdev_dbg(usbdev->net, "%s(): radio_on = false\n",
@@ -1139,8 +1134,9 @@ static int set_auth_mode(struct usbnet *usbdev, u32 wpa_version,
 		return -ENOTSUPP;
 
 	tmp = cpu_to_le32(auth_mode);
-	ret = rndis_set_oid(usbdev, OID_802_11_AUTHENTICATION_MODE, &tmp,
-								sizeof(tmp));
+	ret = rndis_set_oid(usbdev,
+			    RNDIS_OID_802_11_AUTHENTICATION_MODE,
+			    &tmp, sizeof(tmp));
 	if (ret != 0) {
 		netdev_warn(usbdev->net, "setting auth mode failed (%08X)\n",
 			    ret);
@@ -1166,8 +1162,9 @@ static int set_priv_filter(struct usbnet *usbdev)
 	else
 		tmp = cpu_to_le32(NDIS_80211_PRIV_ACCEPT_ALL);
 
-	return rndis_set_oid(usbdev, OID_802_11_PRIVACY_FILTER, &tmp,
-								sizeof(tmp));
+	return rndis_set_oid(usbdev,
+			     RNDIS_OID_802_11_PRIVACY_FILTER, &tmp,
+			     sizeof(tmp));
 }
 
 static int set_encr_mode(struct usbnet *usbdev, int pairwise, int groupwise)
@@ -1192,8 +1189,9 @@ static int set_encr_mode(struct usbnet *usbdev, int pairwise, int groupwise)
 		encr_mode = NDIS_80211_ENCR_DISABLED;
 
 	tmp = cpu_to_le32(encr_mode);
-	ret = rndis_set_oid(usbdev, OID_802_11_ENCRYPTION_STATUS, &tmp,
-								sizeof(tmp));
+	ret = rndis_set_oid(usbdev,
+			RNDIS_OID_802_11_ENCRYPTION_STATUS, &tmp,
+			sizeof(tmp));
 	if (ret != 0) {
 		netdev_warn(usbdev->net, "setting encr mode failed (%08X)\n",
 			    ret);
@@ -1213,8 +1211,9 @@ static int set_infra_mode(struct usbnet *usbdev, int mode)
 		   __func__, priv->infra_mode);
 
 	tmp = cpu_to_le32(mode);
-	ret = rndis_set_oid(usbdev, OID_802_11_INFRASTRUCTURE_MODE, &tmp,
-								sizeof(tmp));
+	ret = rndis_set_oid(usbdev,
+			    RNDIS_OID_802_11_INFRASTRUCTURE_MODE,
+			    &tmp, sizeof(tmp));
 	if (ret != 0) {
 		netdev_warn(usbdev->net, "setting infra mode failed (%08X)\n",
 			    ret);
@@ -1240,8 +1239,9 @@ static int set_rts_threshold(struct usbnet *usbdev, u32 rts_threshold)
 		rts_threshold = 2347;
 
 	tmp = cpu_to_le32(rts_threshold);
-	return rndis_set_oid(usbdev, OID_802_11_RTS_THRESHOLD, &tmp,
-								sizeof(tmp));
+	return rndis_set_oid(usbdev,
+			     RNDIS_OID_802_11_RTS_THRESHOLD,
+			     &tmp, sizeof(tmp));
 }
 
 static int set_frag_threshold(struct usbnet *usbdev, u32 frag_threshold)
@@ -1254,8 +1254,9 @@ static int set_frag_threshold(struct usbnet *usbdev, u32 frag_threshold)
 		frag_threshold = 2346;
 
 	tmp = cpu_to_le32(frag_threshold);
-	return rndis_set_oid(usbdev, OID_802_11_FRAGMENTATION_THRESHOLD, &tmp,
-								sizeof(tmp));
+	return rndis_set_oid(usbdev,
+			RNDIS_OID_802_11_FRAGMENTATION_THRESHOLD,
+			&tmp, sizeof(tmp));
 }
 
 static void set_default_iw_params(struct usbnet *usbdev)
@@ -1291,7 +1292,9 @@ static int set_channel(struct usbnet *usbdev, int channel)
 	dsconfig = ieee80211_dsss_chan_to_freq(channel) * 1000;
 
 	len = sizeof(config);
-	ret = rndis_query_oid(usbdev, OID_802_11_CONFIGURATION, &config, &len);
+	ret = rndis_query_oid(usbdev,
+			RNDIS_OID_802_11_CONFIGURATION,
+			&config, &len);
 	if (ret < 0) {
 		netdev_dbg(usbdev->net, "%s(): querying configuration failed\n",
 			   __func__);
@@ -1299,17 +1302,46 @@ static int set_channel(struct usbnet *usbdev, int channel)
 	}
 
 	config.ds_config = cpu_to_le32(dsconfig);
-	ret = rndis_set_oid(usbdev, OID_802_11_CONFIGURATION, &config,
-								sizeof(config));
+	ret = rndis_set_oid(usbdev,
+			RNDIS_OID_802_11_CONFIGURATION,
+			&config, sizeof(config));
 
 	netdev_dbg(usbdev->net, "%s(): %d -> %d\n", __func__, channel, ret);
 
 	return ret;
 }
 
+static struct ieee80211_channel *get_current_channel(struct usbnet *usbdev,
+						     u32 *beacon_period)
+{
+	struct rndis_wlan_private *priv = get_rndis_wlan_priv(usbdev);
+	struct ieee80211_channel *channel;
+	struct ndis_80211_conf config;
+	int len, ret;
+
+	/* Get channel and beacon interval */
+	len = sizeof(config);
+	ret = rndis_query_oid(usbdev,
+			RNDIS_OID_802_11_CONFIGURATION,
+			&config, &len);
+	netdev_dbg(usbdev->net, "%s(): RNDIS_OID_802_11_CONFIGURATION -> %d\n",
+				__func__, ret);
+	if (ret < 0)
+		return NULL;
+
+	channel = ieee80211_get_channel(priv->wdev.wiphy,
+				KHZ_TO_MHZ(le32_to_cpu(config.ds_config)));
+	if (!channel)
+		return NULL;
+
+	if (beacon_period)
+		*beacon_period = le32_to_cpu(config.beacon_period);
+	return channel;
+}
+
 /* index must be 0 - N, as per NDIS  */
 static int add_wep_key(struct usbnet *usbdev, const u8 *key, int key_len,
-								int index)
+								u8 index)
 {
 	struct rndis_wlan_private *priv = get_rndis_wlan_priv(usbdev);
 	struct ndis_80211_wep_key ndis_key;
@@ -1319,13 +1351,15 @@ static int add_wep_key(struct usbnet *usbdev, const u8 *key, int key_len,
 	netdev_dbg(usbdev->net, "%s(idx: %d, len: %d)\n",
 		   __func__, index, key_len);
 
-	if ((key_len != 5 && key_len != 13) || index < 0 || index > 3)
+	if (index >= RNDIS_WLAN_NUM_KEYS)
 		return -EINVAL;
 
 	if (key_len == 5)
 		cipher = WLAN_CIPHER_SUITE_WEP40;
-	else
+	else if (key_len == 13)
 		cipher = WLAN_CIPHER_SUITE_WEP104;
+	else
+		return -EINVAL;
 
 	memset(&ndis_key, 0, sizeof(ndis_key));
 
@@ -1343,8 +1377,9 @@ static int add_wep_key(struct usbnet *usbdev, const u8 *key, int key_len,
 				    ret);
 	}
 
-	ret = rndis_set_oid(usbdev, OID_802_11_ADD_WEP, &ndis_key,
-							sizeof(ndis_key));
+	ret = rndis_set_oid(usbdev,
+			RNDIS_OID_802_11_ADD_WEP, &ndis_key,
+			sizeof(ndis_key));
 	if (ret != 0) {
 		netdev_warn(usbdev->net, "adding encryption key %d failed (%08X)\n",
 			    index + 1, ret);
@@ -1360,7 +1395,7 @@ static int add_wep_key(struct usbnet *usbdev, const u8 *key, int key_len,
 }
 
 static int add_wpa_key(struct usbnet *usbdev, const u8 *key, int key_len,
-			int index, const u8 *addr, const u8 *rx_seq,
+			u8 index, const u8 *addr, const u8 *rx_seq,
 			int seq_len, u32 cipher, __le32 flags)
 {
 	struct rndis_wlan_private *priv = get_rndis_wlan_priv(usbdev);
@@ -1368,7 +1403,7 @@ static int add_wpa_key(struct usbnet *usbdev, const u8 *key, int key_len,
 	bool is_addr_ok;
 	int ret;
 
-	if (index < 0 || index >= 4) {
+	if (index >= RNDIS_WLAN_NUM_KEYS) {
 		netdev_dbg(usbdev->net, "%s(): index out of range (%i)\n",
 			   __func__, index);
 		return -EINVAL;
@@ -1434,9 +1469,10 @@ static int add_wpa_key(struct usbnet *usbdev, const u8 *key, int key_len,
 			get_bssid(usbdev, ndis_key.bssid);
 	}
 
-	ret = rndis_set_oid(usbdev, OID_802_11_ADD_KEY, &ndis_key,
-					le32_to_cpu(ndis_key.size));
-	netdev_dbg(usbdev->net, "%s(): OID_802_11_ADD_KEY -> %08X\n",
+	ret = rndis_set_oid(usbdev,
+			RNDIS_OID_802_11_ADD_KEY, &ndis_key,
+			le32_to_cpu(ndis_key.size));
+	netdev_dbg(usbdev->net, "%s(): RNDIS_OID_802_11_ADD_KEY -> %08X\n",
 		   __func__, ret);
 	if (ret != 0)
 		return ret;
@@ -1456,7 +1492,7 @@ static int add_wpa_key(struct usbnet *usbdev, const u8 *key, int key_len,
 	return 0;
 }
 
-static int restore_key(struct usbnet *usbdev, int key_idx)
+static int restore_key(struct usbnet *usbdev, u8 key_idx)
 {
 	struct rndis_wlan_private *priv = get_rndis_wlan_priv(usbdev);
 	struct rndis_wlan_encr_key key;
@@ -1482,19 +1518,22 @@ static void restore_keys(struct usbnet *usbdev)
 		restore_key(usbdev, i);
 }
 
-static void clear_key(struct rndis_wlan_private *priv, int idx)
+static void clear_key(struct rndis_wlan_private *priv, u8 idx)
 {
 	memset(&priv->encr_keys[idx], 0, sizeof(priv->encr_keys[idx]));
 }
 
 /* remove_key is for both wep and wpa */
-static int remove_key(struct usbnet *usbdev, int index, const u8 *bssid)
+static int remove_key(struct usbnet *usbdev, u8 index, const u8 *bssid)
 {
 	struct rndis_wlan_private *priv = get_rndis_wlan_priv(usbdev);
 	struct ndis_80211_remove_key remove_key;
 	__le32 keyindex;
 	bool is_wpa;
 	int ret;
+
+	if (index >= RNDIS_WLAN_NUM_KEYS)
+		return -ENOENT;
 
 	if (priv->encr_keys[index].len == 0)
 		return 0;
@@ -1521,14 +1560,16 @@ static int remove_key(struct usbnet *usbdev, int index, const u8 *bssid)
 			memset(remove_key.bssid, 0xff,
 						sizeof(remove_key.bssid));
 
-		ret = rndis_set_oid(usbdev, OID_802_11_REMOVE_KEY, &remove_key,
-							sizeof(remove_key));
+		ret = rndis_set_oid(usbdev,
+				RNDIS_OID_802_11_REMOVE_KEY,
+				&remove_key, sizeof(remove_key));
 		if (ret != 0)
 			return ret;
 	} else {
 		keyindex = cpu_to_le32(index);
-		ret = rndis_set_oid(usbdev, OID_802_11_REMOVE_WEP, &keyindex,
-							sizeof(keyindex));
+		ret = rndis_set_oid(usbdev,
+				RNDIS_OID_802_11_REMOVE_WEP,
+				&keyindex, sizeof(keyindex));
 		if (ret != 0) {
 			netdev_warn(usbdev->net,
 				    "removing encryption key %d failed (%08X)\n",
@@ -1553,14 +1594,14 @@ static void set_multicast_list(struct usbnet *usbdev)
 	char *mc_addrs = NULL;
 	int mc_count;
 
-	basefilter = filter = RNDIS_PACKET_TYPE_DIRECTED |
-			      RNDIS_PACKET_TYPE_BROADCAST;
+	basefilter = filter = cpu_to_le32(RNDIS_PACKET_TYPE_DIRECTED |
+					  RNDIS_PACKET_TYPE_BROADCAST);
 
 	if (usbdev->net->flags & IFF_PROMISC) {
-		filter |= RNDIS_PACKET_TYPE_PROMISCUOUS |
-			RNDIS_PACKET_TYPE_ALL_LOCAL;
+		filter |= cpu_to_le32(RNDIS_PACKET_TYPE_PROMISCUOUS |
+				      RNDIS_PACKET_TYPE_ALL_LOCAL);
 	} else if (usbdev->net->flags & IFF_ALLMULTI) {
-		filter |= RNDIS_PACKET_TYPE_ALL_MULTICAST;
+		filter |= cpu_to_le32(RNDIS_PACKET_TYPE_ALL_MULTICAST);
 	}
 
 	if (filter != basefilter)
@@ -1573,7 +1614,7 @@ static void set_multicast_list(struct usbnet *usbdev)
 	netif_addr_lock_bh(usbdev->net);
 	mc_count = netdev_mc_count(usbdev->net);
 	if (mc_count > priv->multicast_size) {
-		filter |= RNDIS_PACKET_TYPE_ALL_MULTICAST;
+		filter |= cpu_to_le32(RNDIS_PACKET_TYPE_ALL_MULTICAST);
 	} else if (mc_count) {
 		int i = 0;
 
@@ -1596,27 +1637,28 @@ static void set_multicast_list(struct usbnet *usbdev)
 		goto set_filter;
 
 	if (mc_count) {
-		ret = rndis_set_oid(usbdev, OID_802_3_MULTICAST_LIST, mc_addrs,
-				    mc_count * ETH_ALEN);
+		ret = rndis_set_oid(usbdev,
+				RNDIS_OID_802_3_MULTICAST_LIST,
+				mc_addrs, mc_count * ETH_ALEN);
 		kfree(mc_addrs);
 		if (ret == 0)
-			filter |= RNDIS_PACKET_TYPE_MULTICAST;
+			filter |= cpu_to_le32(RNDIS_PACKET_TYPE_MULTICAST);
 		else
-			filter |= RNDIS_PACKET_TYPE_ALL_MULTICAST;
+			filter |= cpu_to_le32(RNDIS_PACKET_TYPE_ALL_MULTICAST);
 
-		netdev_dbg(usbdev->net, "OID_802_3_MULTICAST_LIST(%d, max: %d) -> %d\n",
+		netdev_dbg(usbdev->net, "RNDIS_OID_802_3_MULTICAST_LIST(%d, max: %d) -> %d\n",
 			   mc_count, priv->multicast_size, ret);
 	}
 
 set_filter:
-	ret = rndis_set_oid(usbdev, OID_GEN_CURRENT_PACKET_FILTER, &filter,
+	ret = rndis_set_oid(usbdev, RNDIS_OID_GEN_CURRENT_PACKET_FILTER, &filter,
 							sizeof(filter));
 	if (ret < 0) {
 		netdev_warn(usbdev->net, "couldn't set packet filter: %08x\n",
 			    le32_to_cpu(filter));
 	}
 
-	netdev_dbg(usbdev->net, "OID_GEN_CURRENT_PACKET_FILTER(%08x) -> %d\n",
+	netdev_dbg(usbdev->net, "RNDIS_OID_GEN_CURRENT_PACKET_FILTER(%08x) -> %d\n",
 		   le32_to_cpu(filter), ret);
 }
 
@@ -1675,9 +1717,10 @@ static struct ndis_80211_pmkid *get_device_pmkids(struct usbnet *usbdev)
 	pmkids->length = cpu_to_le32(len);
 	pmkids->bssid_info_count = cpu_to_le32(max_pmkids);
 
-	ret = rndis_query_oid(usbdev, OID_802_11_PMKID, pmkids, &len);
+	ret = rndis_query_oid(usbdev, RNDIS_OID_802_11_PMKID,
+			pmkids, &len);
 	if (ret < 0) {
-		netdev_dbg(usbdev->net, "%s(): OID_802_11_PMKID(%d, %d)"
+		netdev_dbg(usbdev->net, "%s(): RNDIS_OID_802_11_PMKID(%d, %d)"
 				" -> %d\n", __func__, len, max_pmkids, ret);
 
 		kfree(pmkids);
@@ -1703,10 +1746,10 @@ static int set_device_pmkids(struct usbnet *usbdev,
 
 	debug_print_pmkids(usbdev, pmkids, __func__);
 
-	ret = rndis_set_oid(usbdev, OID_802_11_PMKID, pmkids,
-						le32_to_cpu(pmkids->length));
+	ret = rndis_set_oid(usbdev, RNDIS_OID_802_11_PMKID, pmkids,
+			    le32_to_cpu(pmkids->length));
 	if (ret < 0) {
-		netdev_dbg(usbdev->net, "%s(): OID_802_11_PMKID(%d, %d) -> %d"
+		netdev_dbg(usbdev->net, "%s(): RNDIS_OID_802_11_PMKID(%d, %d) -> %d"
 				"\n", __func__, len, num_pmkids, ret);
 	}
 
@@ -1719,17 +1762,17 @@ static struct ndis_80211_pmkid *remove_pmkid(struct usbnet *usbdev,
 						struct cfg80211_pmksa *pmksa,
 						int max_pmkids)
 {
-	int i, len, count, newlen, err;
+	int i, newlen, err;
+	unsigned int count;
 
-	len = le32_to_cpu(pmkids->length);
 	count = le32_to_cpu(pmkids->bssid_info_count);
 
 	if (count > max_pmkids)
 		count = max_pmkids;
 
 	for (i = 0; i < count; i++)
-		if (!compare_ether_addr(pmkids->bssid_info[i].bssid,
-							pmksa->bssid))
+		if (ether_addr_equal(pmkids->bssid_info[i].bssid,
+				     pmksa->bssid))
 			break;
 
 	/* pmkid not found */
@@ -1760,9 +1803,10 @@ static struct ndis_80211_pmkid *update_pmkid(struct usbnet *usbdev,
 						struct cfg80211_pmksa *pmksa,
 						int max_pmkids)
 {
-	int i, err, len, count, newlen;
+	struct ndis_80211_pmkid *new_pmkids;
+	int i, err, newlen;
+	unsigned int count;
 
-	len = le32_to_cpu(pmkids->length);
 	count = le32_to_cpu(pmkids->bssid_info_count);
 
 	if (count > max_pmkids)
@@ -1770,8 +1814,8 @@ static struct ndis_80211_pmkid *update_pmkid(struct usbnet *usbdev,
 
 	/* update with new pmkid */
 	for (i = 0; i < count; i++) {
-		if (compare_ether_addr(pmkids->bssid_info[i].bssid,
-							pmksa->bssid))
+		if (!ether_addr_equal(pmkids->bssid_info[i].bssid,
+				      pmksa->bssid))
 			continue;
 
 		memcpy(pmkids->bssid_info[i].pmkid, pmksa->pmkid,
@@ -1790,11 +1834,12 @@ static struct ndis_80211_pmkid *update_pmkid(struct usbnet *usbdev,
 	/* add new pmkid */
 	newlen = sizeof(*pmkids) + (count + 1) * sizeof(pmkids->bssid_info[0]);
 
-	pmkids = krealloc(pmkids, newlen, GFP_KERNEL);
-	if (!pmkids) {
+	new_pmkids = krealloc(pmkids, newlen, GFP_KERNEL);
+	if (!new_pmkids) {
 		err = -ENOMEM;
 		goto error;
 	}
+	pmkids = new_pmkids;
 
 	pmkids->length = cpu_to_le32(newlen);
 	pmkids->bssid_info_count = cpu_to_le32(count + 1);
@@ -1898,20 +1943,21 @@ static int rndis_get_tx_power(struct wiphy *wiphy, int *dbm)
 }
 
 #define SCAN_DELAY_JIFFIES (6 * HZ)
-static int rndis_scan(struct wiphy *wiphy, struct net_device *dev,
+static int rndis_scan(struct wiphy *wiphy,
 			struct cfg80211_scan_request *request)
 {
+	struct net_device *dev = request->wdev->netdev;
 	struct usbnet *usbdev = netdev_priv(dev);
 	struct rndis_wlan_private *priv = get_rndis_wlan_priv(usbdev);
 	int ret;
-	__le32 tmp;
+	int delay = SCAN_DELAY_JIFFIES;
 
 	netdev_dbg(usbdev->net, "cfg80211.scan\n");
 
 	/* Get current bssid list from device before new scan, as new scan
 	 * clears internal bssid list.
 	 */
-	rndis_check_bssid_list(usbdev);
+	rndis_check_bssid_list(usbdev, NULL, NULL);
 
 	if (!request)
 		return -EINVAL;
@@ -1921,23 +1967,24 @@ static int rndis_scan(struct wiphy *wiphy, struct net_device *dev,
 
 	priv->scan_request = request;
 
-	tmp = cpu_to_le32(1);
-	ret = rndis_set_oid(usbdev, OID_802_11_BSSID_LIST_SCAN, &tmp,
-							sizeof(tmp));
+	ret = rndis_start_bssid_list_scan(usbdev);
 	if (ret == 0) {
+		if (priv->device_type == RNDIS_BCM4320A)
+			delay = HZ;
+
 		/* Wait before retrieving scan results from device */
-		queue_delayed_work(priv->workqueue, &priv->scan_work,
-			SCAN_DELAY_JIFFIES);
+		queue_delayed_work(priv->workqueue, &priv->scan_work, delay);
 	}
 
 	return ret;
 }
 
-static struct cfg80211_bss *rndis_bss_info_update(struct usbnet *usbdev,
-					struct ndis_80211_bssid_ex *bssid)
+static bool rndis_bss_info_update(struct usbnet *usbdev,
+				  struct ndis_80211_bssid_ex *bssid)
 {
 	struct rndis_wlan_private *priv = get_rndis_wlan_priv(usbdev);
 	struct ieee80211_channel *channel;
+	struct cfg80211_bss *bss;
 	s32 signal;
 	u64 timestamp;
 	u16 capability;
@@ -1946,8 +1993,8 @@ static struct cfg80211_bss *rndis_bss_info_update(struct usbnet *usbdev,
 	int ie_len, bssid_len;
 	u8 *ie;
 
-	netdev_dbg(usbdev->net, " found bssid: '%.32s' [%pM]\n",
-		   bssid->ssid.essid, bssid->mac);
+	netdev_dbg(usbdev->net, " found bssid: '%.32s' [%pM], len: %d\n",
+		   bssid->ssid.essid, bssid->mac, le32_to_cpu(bssid->length));
 
 	/* parse bssid structure */
 	bssid_len = le32_to_cpu(bssid->length);
@@ -1976,53 +2023,106 @@ static struct cfg80211_bss *rndis_bss_info_update(struct usbnet *usbdev,
 	capability = le16_to_cpu(fixed->capabilities);
 	beacon_interval = le16_to_cpu(fixed->beacon_interval);
 
-	return cfg80211_inform_bss(priv->wdev.wiphy, channel, bssid->mac,
+	bss = cfg80211_inform_bss(priv->wdev.wiphy, channel, bssid->mac,
 		timestamp, capability, beacon_interval, ie, ie_len, signal,
 		GFP_KERNEL);
+	cfg80211_put_bss(bss);
+
+	return (bss != NULL);
 }
 
-static int rndis_check_bssid_list(struct usbnet *usbdev)
+static struct ndis_80211_bssid_ex *next_bssid_list_item(
+					struct ndis_80211_bssid_ex *bssid,
+					int *bssid_len, void *buf, int len)
+{
+	void *buf_end, *bssid_end;
+
+	buf_end = (char *)buf + len;
+	bssid_end = (char *)bssid + *bssid_len;
+
+	if ((int)(buf_end - bssid_end) < sizeof(bssid->length)) {
+		*bssid_len = 0;
+		return NULL;
+	} else {
+		bssid = (void *)((char *)bssid + *bssid_len);
+		*bssid_len = le32_to_cpu(bssid->length);
+		return bssid;
+	}
+}
+
+static bool check_bssid_list_item(struct ndis_80211_bssid_ex *bssid,
+				  int bssid_len, void *buf, int len)
+{
+	void *buf_end, *bssid_end;
+
+	if (!bssid || bssid_len <= 0 || bssid_len > len)
+		return false;
+
+	buf_end = (char *)buf + len;
+	bssid_end = (char *)bssid + bssid_len;
+
+	return (int)(buf_end - bssid_end) >= 0 && (int)(bssid_end - buf) >= 0;
+}
+
+static int rndis_check_bssid_list(struct usbnet *usbdev, u8 *match_bssid,
+					bool *matched)
 {
 	void *buf = NULL;
 	struct ndis_80211_bssid_list_ex *bssid_list;
 	struct ndis_80211_bssid_ex *bssid;
-	int ret = -EINVAL, len, count, bssid_len;
-	bool resized = false;
+	int ret = -EINVAL, len, count, bssid_len, real_count, new_len;
 
-	netdev_dbg(usbdev->net, "check_bssid_list\n");
+	netdev_dbg(usbdev->net, "%s()\n", __func__);
 
 	len = CONTROL_BUFFER_SIZE;
 resize_buf:
-	buf = kmalloc(len, GFP_KERNEL);
+	buf = kzalloc(len, GFP_KERNEL);
 	if (!buf) {
 		ret = -ENOMEM;
 		goto out;
 	}
 
-	ret = rndis_query_oid(usbdev, OID_802_11_BSSID_LIST, buf, &len);
-	if (ret != 0)
+	/* BSSID-list might have got bigger last time we checked, keep
+	 * resizing until it won't get any bigger.
+	 */
+	new_len = len;
+	ret = rndis_query_oid(usbdev, RNDIS_OID_802_11_BSSID_LIST,
+			      buf, &new_len);
+	if (ret != 0 || new_len < sizeof(struct ndis_80211_bssid_list_ex))
 		goto out;
 
-	if (!resized && len > CONTROL_BUFFER_SIZE) {
-		resized = true;
+	if (new_len > len) {
+		len = new_len;
 		kfree(buf);
 		goto resize_buf;
 	}
 
+	len = new_len;
+
 	bssid_list = buf;
-	bssid = bssid_list->bssid;
-	bssid_len = le32_to_cpu(bssid->length);
 	count = le32_to_cpu(bssid_list->num_items);
-	netdev_dbg(usbdev->net, "check_bssid_list: %d BSSIDs found (buflen: %d)\n",
-		   count, len);
+	real_count = 0;
+	netdev_dbg(usbdev->net, "%s(): buflen: %d\n", __func__, len);
 
-	while (count && ((void *)bssid + bssid_len) <= (buf + len)) {
-		rndis_bss_info_update(usbdev, bssid);
+	bssid_len = 0;
+	bssid = next_bssid_list_item(bssid_list->bssid, &bssid_len, buf, len);
 
-		bssid = (void *)bssid + bssid_len;
-		bssid_len = le32_to_cpu(bssid->length);
-		count--;
+	/* Device returns incorrect 'num_items'. Workaround by ignoring the
+	 * received 'num_items' and walking through full bssid buffer instead.
+	 */
+	while (check_bssid_list_item(bssid, bssid_len, buf, len)) {
+		if (rndis_bss_info_update(usbdev, bssid) && match_bssid &&
+		    matched) {
+			if (ether_addr_equal(bssid->mac, match_bssid))
+				*matched = true;
+		}
+
+		real_count++;
+		bssid = next_bssid_list_item(bssid, &bssid_len, buf, len);
 	}
+
+	netdev_dbg(usbdev->net, "%s(): num_items from device: %d, really found:"
+				" %d\n", __func__, count, real_count);
 
 out:
 	kfree(buf);
@@ -2041,7 +2141,7 @@ static void rndis_get_scan_results(struct work_struct *work)
 	if (!priv->scan_request)
 		return;
 
-	ret = rndis_check_bssid_list(usbdev);
+	ret = rndis_check_bssid_list(usbdev, NULL, NULL);
 
 	cfg80211_scan_done(priv->scan_request, ret < 0);
 
@@ -2297,16 +2397,6 @@ static int rndis_leave_ibss(struct wiphy *wiphy, struct net_device *dev)
 	return deauthenticate(usbdev);
 }
 
-static int rndis_set_channel(struct wiphy *wiphy, struct net_device *netdev,
-	struct ieee80211_channel *chan, enum nl80211_channel_type channel_type)
-{
-	struct rndis_wlan_private *priv = wiphy_priv(wiphy);
-	struct usbnet *usbdev = priv->usbdev;
-
-	return set_channel(usbdev,
-			ieee80211_frequency_to_channel(chan->center_freq));
-}
-
 static int rndis_add_key(struct wiphy *wiphy, struct net_device *netdev,
 			 u8 key_index, bool pairwise, const u8 *mac_addr,
 			 struct key_params *params)
@@ -2355,7 +2445,7 @@ static int rndis_del_key(struct wiphy *wiphy, struct net_device *netdev,
 }
 
 static int rndis_set_default_key(struct wiphy *wiphy, struct net_device *netdev,
-								u8 key_index)
+				 u8 key_index, bool unicast, bool multicast)
 {
 	struct rndis_wlan_private *priv = wiphy_priv(wiphy);
 	struct usbnet *usbdev = priv->usbdev;
@@ -2363,7 +2453,13 @@ static int rndis_set_default_key(struct wiphy *wiphy, struct net_device *netdev,
 
 	netdev_dbg(usbdev->net, "%s(%i)\n", __func__, key_index);
 
+	if (key_index >= RNDIS_WLAN_NUM_KEYS)
+		return -ENOENT;
+
 	priv->encr_tx_key_index = key_index;
+
+	if (is_wpa_key(priv, key_index))
+		return 0;
 
 	key = priv->encr_keys[key_index];
 
@@ -2379,14 +2475,15 @@ static void rndis_fill_station_info(struct usbnet *usbdev,
 	memset(sinfo, 0, sizeof(*sinfo));
 
 	len = sizeof(linkspeed);
-	ret = rndis_query_oid(usbdev, OID_GEN_LINK_SPEED, &linkspeed, &len);
+	ret = rndis_query_oid(usbdev, RNDIS_OID_GEN_LINK_SPEED, &linkspeed, &len);
 	if (ret == 0) {
 		sinfo->txrate.legacy = le32_to_cpu(linkspeed) / 1000;
 		sinfo->filled |= STATION_INFO_TX_BITRATE;
 	}
 
 	len = sizeof(rssi);
-	ret = rndis_query_oid(usbdev, OID_802_11_RSSI, &rssi, &len);
+	ret = rndis_query_oid(usbdev, RNDIS_OID_802_11_RSSI,
+			      &rssi, &len);
 	if (ret == 0) {
 		sinfo->signal = level_to_qual(le32_to_cpu(rssi));
 		sinfo->filled |= STATION_INFO_SIGNAL;
@@ -2399,7 +2496,7 @@ static int rndis_get_station(struct wiphy *wiphy, struct net_device *dev,
 	struct rndis_wlan_private *priv = wiphy_priv(wiphy);
 	struct usbnet *usbdev = priv->usbdev;
 
-	if (compare_ether_addr(priv->bssid, mac))
+	if (!ether_addr_equal(priv->bssid, mac))
 		return -ENOENT;
 
 	rndis_fill_station_info(usbdev, sinfo);
@@ -2492,7 +2589,133 @@ static int rndis_flush_pmksa(struct wiphy *wiphy, struct net_device *netdev)
 	pmkid.length = cpu_to_le32(sizeof(pmkid));
 	pmkid.bssid_info_count = cpu_to_le32(0);
 
-	return rndis_set_oid(usbdev, OID_802_11_PMKID, &pmkid, sizeof(pmkid));
+	return rndis_set_oid(usbdev, RNDIS_OID_802_11_PMKID,
+			     &pmkid, sizeof(pmkid));
+}
+
+static int rndis_set_power_mgmt(struct wiphy *wiphy, struct net_device *dev,
+				bool enabled, int timeout)
+{
+	struct rndis_wlan_private *priv = wiphy_priv(wiphy);
+	struct usbnet *usbdev = priv->usbdev;
+	int power_mode;
+	__le32 mode;
+	int ret;
+
+	if (priv->device_type != RNDIS_BCM4320B)
+		return -ENOTSUPP;
+
+	netdev_dbg(usbdev->net, "%s(): %s, %d\n", __func__,
+				enabled ? "enabled" : "disabled",
+				timeout);
+
+	if (enabled)
+		power_mode = NDIS_80211_POWER_MODE_FAST_PSP;
+	else
+		power_mode = NDIS_80211_POWER_MODE_CAM;
+
+	if (power_mode == priv->power_mode)
+		return 0;
+
+	priv->power_mode = power_mode;
+
+	mode = cpu_to_le32(power_mode);
+	ret = rndis_set_oid(usbdev, RNDIS_OID_802_11_POWER_MODE,
+			    &mode, sizeof(mode));
+
+	netdev_dbg(usbdev->net, "%s(): RNDIS_OID_802_11_POWER_MODE -> %d\n",
+				__func__, ret);
+
+	return ret;
+}
+
+static int rndis_set_cqm_rssi_config(struct wiphy *wiphy,
+					struct net_device *dev,
+					s32 rssi_thold, u32 rssi_hyst)
+{
+	struct rndis_wlan_private *priv = wiphy_priv(wiphy);
+
+	priv->cqm_rssi_thold = rssi_thold;
+	priv->cqm_rssi_hyst = rssi_hyst;
+	priv->last_cqm_event_rssi = 0;
+
+	return 0;
+}
+
+static void rndis_wlan_craft_connected_bss(struct usbnet *usbdev, u8 *bssid,
+					   struct ndis_80211_assoc_info *info)
+{
+	struct rndis_wlan_private *priv = get_rndis_wlan_priv(usbdev);
+	struct ieee80211_channel *channel;
+	struct ndis_80211_ssid ssid;
+	struct cfg80211_bss *bss;
+	s32 signal;
+	u64 timestamp;
+	u16 capability;
+	u32 beacon_period = 0;
+	__le32 rssi;
+	u8 ie_buf[34];
+	int len, ret, ie_len;
+
+	/* Get signal quality, in case of error use rssi=0 and ignore error. */
+	len = sizeof(rssi);
+	rssi = 0;
+	ret = rndis_query_oid(usbdev, RNDIS_OID_802_11_RSSI,
+			      &rssi, &len);
+	signal = level_to_qual(le32_to_cpu(rssi));
+
+	netdev_dbg(usbdev->net, "%s(): RNDIS_OID_802_11_RSSI -> %d, "
+		   "rssi:%d, qual: %d\n", __func__, ret, le32_to_cpu(rssi),
+		   level_to_qual(le32_to_cpu(rssi)));
+
+	/* Get AP capabilities */
+	if (info) {
+		capability = le16_to_cpu(info->resp_ie.capa);
+	} else {
+		/* Set atleast ESS/IBSS capability */
+		capability = (priv->infra_mode == NDIS_80211_INFRA_INFRA) ?
+				WLAN_CAPABILITY_ESS : WLAN_CAPABILITY_IBSS;
+	}
+
+	/* Get channel and beacon interval */
+	channel = get_current_channel(usbdev, &beacon_period);
+	if (!channel) {
+		netdev_warn(usbdev->net, "%s(): could not get channel.\n",
+					__func__);
+		return;
+	}
+
+	/* Get SSID, in case of error, use zero length SSID and ignore error. */
+	len = sizeof(ssid);
+	memset(&ssid, 0, sizeof(ssid));
+	ret = rndis_query_oid(usbdev, RNDIS_OID_802_11_SSID,
+			      &ssid, &len);
+	netdev_dbg(usbdev->net, "%s(): RNDIS_OID_802_11_SSID -> %d, len: %d, ssid: "
+				"'%.32s'\n", __func__, ret,
+				le32_to_cpu(ssid.length), ssid.essid);
+
+	if (le32_to_cpu(ssid.length) > 32)
+		ssid.length = cpu_to_le32(32);
+
+	ie_buf[0] = WLAN_EID_SSID;
+	ie_buf[1] = le32_to_cpu(ssid.length);
+	memcpy(&ie_buf[2], ssid.essid, le32_to_cpu(ssid.length));
+
+	ie_len = le32_to_cpu(ssid.length) + 2;
+
+	/* no tsf */
+	timestamp = 0;
+
+	netdev_dbg(usbdev->net, "%s(): channel:%d(freq), bssid:[%pM], tsf:%d, "
+		"capa:%x, beacon int:%d, resp_ie(len:%d, essid:'%.32s'), "
+		"signal:%d\n", __func__, (channel ? channel->center_freq : -1),
+		bssid, (u32)timestamp, capability, beacon_period, ie_len,
+		ssid.essid, signal);
+
+	bss = cfg80211_inform_bss(priv->wdev.wiphy, channel, bssid,
+		timestamp, capability, beacon_period, ie_buf, ie_len,
+		signal, GFP_KERNEL);
+	cfg80211_put_bss(bss);
 }
 
 /*
@@ -2503,10 +2726,12 @@ static void rndis_wlan_do_link_up_work(struct usbnet *usbdev)
 	struct rndis_wlan_private *priv = get_rndis_wlan_priv(usbdev);
 	struct ndis_80211_assoc_info *info = NULL;
 	u8 bssid[ETH_ALEN];
-	int resp_ie_len, req_ie_len;
+	unsigned int resp_ie_len, req_ie_len;
+	unsigned int offset;
 	u8 *req_ie, *resp_ie;
-	int ret, offset;
+	int ret;
 	bool roamed = false;
+	bool match_bss;
 
 	if (priv->infra_mode == NDIS_80211_INFRA_INFRA && priv->connected) {
 		/* received media connect indication while connected, either
@@ -2532,7 +2757,9 @@ static void rndis_wlan_do_link_up_work(struct usbnet *usbdev)
 		ret = get_association_info(usbdev, info, CONTROL_BUFFER_SIZE);
 		if (!ret) {
 			req_ie_len = le32_to_cpu(info->req_ie_length);
-			if (req_ie_len > 0) {
+			if (req_ie_len > CONTROL_BUFFER_SIZE)
+				req_ie_len = CONTROL_BUFFER_SIZE;
+			if (req_ie_len != 0) {
 				offset = le32_to_cpu(info->offset_req_ies);
 
 				if (offset > CONTROL_BUFFER_SIZE)
@@ -2546,7 +2773,9 @@ static void rndis_wlan_do_link_up_work(struct usbnet *usbdev)
 			}
 
 			resp_ie_len = le32_to_cpu(info->resp_ie_length);
-			if (resp_ie_len > 0) {
+			if (resp_ie_len > CONTROL_BUFFER_SIZE)
+				resp_ie_len = CONTROL_BUFFER_SIZE;
+			if (resp_ie_len != 0) {
 				offset = le32_to_cpu(info->offset_resp_ies);
 
 				if (offset > CONTROL_BUFFER_SIZE)
@@ -2558,6 +2787,13 @@ static void rndis_wlan_do_link_up_work(struct usbnet *usbdev)
 					resp_ie_len =
 						CONTROL_BUFFER_SIZE - offset;
 			}
+		} else {
+			/* Since rndis_wlan_craft_connected_bss() might use info
+			 * later and expects info to contain valid data if
+			 * non-null, free info and set NULL here.
+			 */
+			kfree(info);
+			info = NULL;
 		}
 	} else if (WARN_ON(priv->infra_mode != NDIS_80211_INFRA_ADHOC))
 		return;
@@ -2569,13 +2805,26 @@ static void rndis_wlan_do_link_up_work(struct usbnet *usbdev)
 	netdev_dbg(usbdev->net, "link up work: [%pM]%s\n",
 		   bssid, roamed ? " roamed" : "");
 
-	/* Internal bss list in device always contains at least the currently
+	/* Internal bss list in device should contain at least the currently
 	 * connected bss and we can get it to cfg80211 with
 	 * rndis_check_bssid_list().
-	 * NOTE: This is true for Broadcom chip, but not mentioned in RNDIS
-	 * spec.
+	 *
+	 * NDIS spec says: "If the device is associated, but the associated
+	 *  BSSID is not in its BSSID scan list, then the driver must add an
+	 *  entry for the BSSID at the end of the data that it returns in
+	 *  response to query of RNDIS_OID_802_11_BSSID_LIST."
+	 *
+	 * NOTE: Seems to be true for BCM4320b variant, but not BCM4320a.
 	 */
-	rndis_check_bssid_list(usbdev);
+	match_bss = false;
+	rndis_check_bssid_list(usbdev, bssid, &match_bss);
+
+	if (!is_zero_ether_addr(bssid) && !match_bss) {
+		/* Couldn't get bss from device, we need to manually craft bss
+		 * for cfg80211.
+		 */
+		rndis_wlan_craft_connected_bss(usbdev, bssid, info);
+	}
 
 	if (priv->infra_mode == NDIS_80211_INFRA_INFRA) {
 		if (!roamed)
@@ -2583,7 +2832,9 @@ static void rndis_wlan_do_link_up_work(struct usbnet *usbdev)
 						req_ie_len, resp_ie,
 						resp_ie_len, 0, GFP_KERNEL);
 		else
-			cfg80211_roamed(usbdev->net, bssid, req_ie, req_ie_len,
+			cfg80211_roamed(usbdev->net,
+					get_current_channel(usbdev, NULL),
+					bssid, req_ie, req_ie_len,
 					resp_ie, resp_ie_len, GFP_KERNEL);
 	} else if (priv->infra_mode == NDIS_80211_INFRA_ADHOC)
 		cfg80211_ibss_joined(usbdev->net, bssid, GFP_KERNEL);
@@ -2749,25 +3000,13 @@ static void rndis_wlan_pmkid_cand_list_indication(struct usbnet *usbdev,
 	for (i = 0; i < le32_to_cpu(cand_list->num_candidates); i++) {
 		struct ndis_80211_pmkid_candidate *cand =
 						&cand_list->candidate_list[i];
+		bool preauth = !!(cand->flags & NDIS_80211_PMKID_CAND_PREAUTH);
 
-		netdev_dbg(usbdev->net, "cand[%i]: flags: 0x%08x, bssid: %pM\n",
-			   i, le32_to_cpu(cand->flags), cand->bssid);
+		netdev_dbg(usbdev->net, "cand[%i]: flags: 0x%08x, preauth: %d, bssid: %pM\n",
+			   i, le32_to_cpu(cand->flags), preauth, cand->bssid);
 
-#if 0
-		struct iw_pmkid_cand pcand;
-		union iwreq_data wrqu;
-
-		memset(&pcand, 0, sizeof(pcand));
-		if (le32_to_cpu(cand->flags) & 0x01)
-			pcand.flags |= IW_PMKID_CAND_PREAUTH;
-		pcand.index = i;
-		memcpy(pcand.bssid.sa_data, cand->bssid, ETH_ALEN);
-
-		memset(&wrqu, 0, sizeof(wrqu));
-		wrqu.data.length = sizeof(pcand);
-		wireless_send_event(usbdev->net, IWEVPMKIDCAND, &wrqu,
-								(u8 *)&pcand);
-#endif
+		cfg80211_pmksa_candidate_notify(usbdev->net, i, cand->bssid,
+						preauth, GFP_ATOMIC);
 	}
 }
 
@@ -2775,7 +3014,7 @@ static void rndis_wlan_media_specific_indication(struct usbnet *usbdev,
 			struct rndis_indicate *msg, int buflen)
 {
 	struct ndis_80211_status_indication *indication;
-	int len, offset;
+	unsigned int len, offset;
 
 	offset = offsetof(struct rndis_indicate, status) +
 			le32_to_cpu(msg->offset);
@@ -2787,7 +3026,7 @@ static void rndis_wlan_media_specific_indication(struct usbnet *usbdev,
 		return;
 	}
 
-	if (offset + len > buflen) {
+	if (len > buflen || offset > buflen || offset + len > buflen) {
 		netdev_info(usbdev->net, "media specific indication, too large to fit to buffer (%i > %i)\n",
 			    offset + len, buflen);
 		return;
@@ -2825,15 +3064,15 @@ static void rndis_wlan_indication(struct usbnet *usbdev, void *ind, int buflen)
 	struct rndis_wlan_private *priv = get_rndis_wlan_priv(usbdev);
 	struct rndis_indicate *msg = ind;
 
-	switch (msg->status) {
+	switch (le32_to_cpu(msg->status)) {
 	case RNDIS_STATUS_MEDIA_CONNECT:
-		if (priv->current_command_oid == OID_802_11_ADD_KEY) {
-			/* OID_802_11_ADD_KEY causes sometimes extra
+		if (priv->current_command_oid == RNDIS_OID_802_11_ADD_KEY) {
+			/* RNDIS_OID_802_11_ADD_KEY causes sometimes extra
 			 * "media connect" indications which confuses driver
 			 * and userspace to think that device is
 			 * roaming/reassociating when it isn't.
 			 */
-			netdev_dbg(usbdev->net, "ignored OID_802_11_ADD_KEY triggered 'media connect'\n");
+			netdev_dbg(usbdev->net, "ignored RNDIS_OID_802_11_ADD_KEY triggered 'media connect'\n");
 			return;
 		}
 
@@ -2878,8 +3117,9 @@ static int rndis_wlan_get_caps(struct usbnet *usbdev, struct wiphy *wiphy)
 
 	/* determine supported modes */
 	len = sizeof(networks_supported);
-	retval = rndis_query_oid(usbdev, OID_802_11_NETWORK_TYPES_SUPPORTED,
-						&networks_supported, &len);
+	retval = rndis_query_oid(usbdev,
+				 RNDIS_OID_802_11_NETWORK_TYPES_SUPPORTED,
+				 &networks_supported, &len);
 	if (retval >= 0) {
 		n = le32_to_cpu(networks_supported.num_items);
 		if (n > 8)
@@ -2903,9 +3143,11 @@ static int rndis_wlan_get_caps(struct usbnet *usbdev, struct wiphy *wiphy)
 	/* get device 802.11 capabilities, number of PMKIDs */
 	caps = (struct ndis_80211_capability *)caps_buf;
 	len = sizeof(caps_buf);
-	retval = rndis_query_oid(usbdev, OID_802_11_CAPABILITY, caps, &len);
+	retval = rndis_query_oid(usbdev,
+				 RNDIS_OID_802_11_CAPABILITY,
+				 caps, &len);
 	if (retval >= 0) {
-		netdev_dbg(usbdev->net, "OID_802_11_CAPABILITY -> len %d, "
+		netdev_dbg(usbdev->net, "RNDIS_OID_802_11_CAPABILITY -> len %d, "
 				"ver %d, pmkids %d, auth-encr-pairs %d\n",
 				le32_to_cpu(caps->length),
 				le32_to_cpu(caps->version),
@@ -2916,6 +3158,32 @@ static int rndis_wlan_get_caps(struct usbnet *usbdev, struct wiphy *wiphy)
 		wiphy->max_num_pmkids = 0;
 
 	return retval;
+}
+
+static void rndis_do_cqm(struct usbnet *usbdev, s32 rssi)
+{
+	struct rndis_wlan_private *priv = get_rndis_wlan_priv(usbdev);
+	enum nl80211_cqm_rssi_threshold_event event;
+	int thold, hyst, last_event;
+
+	if (priv->cqm_rssi_thold >= 0 || rssi >= 0)
+		return;
+	if (priv->infra_mode != NDIS_80211_INFRA_INFRA)
+		return;
+
+	last_event = priv->last_cqm_event_rssi;
+	thold = priv->cqm_rssi_thold;
+	hyst = priv->cqm_rssi_hyst;
+
+	if (rssi < thold && (last_event == 0 || rssi < last_event - hyst))
+		event = NL80211_CQM_RSSI_THRESHOLD_EVENT_LOW;
+	else if (rssi > thold && (last_event == 0 || rssi > last_event + hyst))
+		event = NL80211_CQM_RSSI_THRESHOLD_EVENT_HIGH;
+	else
+		return;
+
+	priv->last_cqm_event_rssi = rssi;
+	cfg80211_cqm_rssi_notify(usbdev->net, event, GFP_KERNEL);
 }
 
 #define DEVICE_POLLER_JIFFIES (HZ)
@@ -2934,15 +3202,31 @@ static void rndis_device_poller(struct work_struct *work)
 	 * also polls device with rndis_command() and catches for media link
 	 * indications.
 	 */
-	if (!is_associated(usbdev))
+	if (!is_associated(usbdev)) {
+		/* Workaround bad scanning in BCM4320a devices with active
+		 * background scanning when not associated.
+		 */
+		if (priv->device_type == RNDIS_BCM4320A && priv->radio_on &&
+		    !priv->scan_request) {
+			/* Get previous scan results */
+			rndis_check_bssid_list(usbdev, NULL, NULL);
+
+			/* Initiate new scan */
+			rndis_start_bssid_list_scan(usbdev);
+		}
+
 		goto end;
+	}
 
 	len = sizeof(rssi);
-	ret = rndis_query_oid(usbdev, OID_802_11_RSSI, &rssi, &len);
-	if (ret == 0)
+	ret = rndis_query_oid(usbdev, RNDIS_OID_802_11_RSSI,
+			      &rssi, &len);
+	if (ret == 0) {
 		priv->last_qual = level_to_qual(le32_to_cpu(rssi));
+		rndis_do_cqm(usbdev, le32_to_cpu(rssi));
+	}
 
-	netdev_dbg(usbdev->net, "dev-poller: OID_802_11_RSSI -> %d, rssi:%d, qual: %d\n",
+	netdev_dbg(usbdev->net, "dev-poller: RNDIS_OID_802_11_RSSI -> %d, rssi:%d, qual: %d\n",
 		   ret, le32_to_cpu(rssi), level_to_qual(le32_to_cpu(rssi)));
 
 	/* Workaround transfer stalls on poor quality links.
@@ -2964,15 +3248,18 @@ static void rndis_device_poller(struct work_struct *work)
 		 * working.
 		 */
 		tmp = cpu_to_le32(1);
-		rndis_set_oid(usbdev, OID_802_11_BSSID_LIST_SCAN, &tmp,
-								sizeof(tmp));
+		rndis_set_oid(usbdev,
+			      RNDIS_OID_802_11_BSSID_LIST_SCAN,
+			      &tmp, sizeof(tmp));
 
 		len = CONTROL_BUFFER_SIZE;
 		buf = kmalloc(len, GFP_KERNEL);
 		if (!buf)
 			goto end;
 
-		rndis_query_oid(usbdev, OID_802_11_BSSID_LIST, buf, &len);
+		rndis_query_oid(usbdev,
+				RNDIS_OID_802_11_BSSID_LIST,
+				buf, &len);
 		kfree(buf);
 	}
 
@@ -2992,9 +3279,11 @@ end:
 /*
  * driver/device initialization
  */
-static void rndis_copy_module_params(struct usbnet *usbdev)
+static void rndis_copy_module_params(struct usbnet *usbdev, int device_type)
 {
 	struct rndis_wlan_private *priv = get_rndis_wlan_priv(usbdev);
+
+	priv->device_type = device_type;
 
 	priv->param_country[0] = modparam_country[0];
 	priv->param_country[1] = modparam_country[1];
@@ -3038,12 +3327,25 @@ static void rndis_copy_module_params(struct usbnet *usbdev)
 		priv->param_workaround_interval = modparam_workaround_interval;
 }
 
+static int unknown_early_init(struct usbnet *usbdev)
+{
+	/* copy module parameters for unknown so that iwconfig reports txpower
+	 * and workaround parameter is copied to private structure correctly.
+	 */
+	rndis_copy_module_params(usbdev, RNDIS_UNKNOWN);
+
+	/* This is unknown device, so do not try set configuration parameters.
+	 */
+
+	return 0;
+}
+
 static int bcm4320a_early_init(struct usbnet *usbdev)
 {
 	/* copy module parameters for bcm4320a so that iwconfig reports txpower
 	 * and workaround parameter is copied to private structure correctly.
 	 */
-	rndis_copy_module_params(usbdev);
+	rndis_copy_module_params(usbdev, RNDIS_BCM4320A);
 
 	/* bcm4320a doesn't handle configuration parameters well. Try
 	 * set any and you get partially zeroed mac and broken device.
@@ -3057,7 +3359,7 @@ static int bcm4320b_early_init(struct usbnet *usbdev)
 	struct rndis_wlan_private *priv = get_rndis_wlan_priv(usbdev);
 	char buf[8];
 
-	rndis_copy_module_params(usbdev);
+	rndis_copy_module_params(usbdev, RNDIS_BCM4320B);
 
 	/* Early initialization settings, setting these won't have effect
 	 * if called after generic_rndis_bind().
@@ -3088,7 +3390,7 @@ static const struct net_device_ops rndis_wlan_netdev_ops = {
 	.ndo_tx_timeout		= usbnet_tx_timeout,
 	.ndo_set_mac_address 	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_set_multicast_list	= rndis_wlan_set_multicast_list,
+	.ndo_set_rx_mode	= rndis_wlan_set_multicast_list,
 };
 
 static int rndis_wlan_bind(struct usbnet *usbdev, struct usb_interface *intf)
@@ -3139,13 +3441,15 @@ static int rndis_wlan_bind(struct usbnet *usbdev, struct usb_interface *intf)
 	 */
 	usbdev->net->netdev_ops = &rndis_wlan_netdev_ops;
 
-	tmp = RNDIS_PACKET_TYPE_DIRECTED | RNDIS_PACKET_TYPE_BROADCAST;
-	retval = rndis_set_oid(usbdev, OID_GEN_CURRENT_PACKET_FILTER, &tmp,
-								sizeof(tmp));
+	tmp = cpu_to_le32(RNDIS_PACKET_TYPE_DIRECTED | RNDIS_PACKET_TYPE_BROADCAST);
+	retval = rndis_set_oid(usbdev,
+			       RNDIS_OID_GEN_CURRENT_PACKET_FILTER,
+			       &tmp, sizeof(tmp));
 
 	len = sizeof(tmp);
-	retval = rndis_query_oid(usbdev, OID_802_3_MAXIMUM_LIST_SIZE, &tmp,
-								&len);
+	retval = rndis_query_oid(usbdev,
+				 RNDIS_OID_802_3_MAXIMUM_LIST_SIZE,
+				 &tmp, &len);
 	priv->multicast_size = le32_to_cpu(tmp);
 	if (retval < 0 || priv->multicast_size < 0)
 		priv->multicast_size = 0;
@@ -3187,13 +3491,15 @@ static int rndis_wlan_bind(struct usbnet *usbdev, struct usb_interface *intf)
 
 	set_default_iw_params(usbdev);
 
+	priv->power_mode = -1;
+
 	/* set default rts/frag */
 	rndis_set_wiphy_params(wiphy,
 			WIPHY_PARAM_FRAG_THRESHOLD | WIPHY_PARAM_RTS_THRESHOLD);
 
-	/* turn radio on */
-	priv->radio_on = true;
-	disassociate(usbdev, true);
+	/* turn radio off on init */
+	priv->radio_on = false;
+	disassociate(usbdev, false);
 	netif_carrier_off(usbdev->net);
 
 	return 0;
@@ -3273,7 +3579,7 @@ static int rndis_wlan_stop(struct usbnet *usbdev)
 	/* Set current packet filter zero to block receiving data packets from
 	   device. */
 	filter = 0;
-	rndis_set_oid(usbdev, OID_GEN_CURRENT_PACKET_FILTER, &filter,
+	rndis_set_oid(usbdev, RNDIS_OID_GEN_CURRENT_PACKET_FILTER, &filter,
 								sizeof(filter));
 
 	return retval;
@@ -3320,7 +3626,7 @@ static const struct driver_info rndis_wlan_info = {
 	.tx_fixup =	rndis_tx_fixup,
 	.reset =	rndis_wlan_reset,
 	.stop =		rndis_wlan_stop,
-	.early_init =	bcm4320a_early_init,
+	.early_init =	unknown_early_init,
 	.indication =	rndis_wlan_indication,
 };
 
@@ -3448,19 +3754,10 @@ static struct usb_driver rndis_wlan_driver = {
 	.disconnect =	usbnet_disconnect,
 	.suspend =	usbnet_suspend,
 	.resume =	usbnet_resume,
+	.disable_hub_initiated_lpm = 1,
 };
 
-static int __init rndis_wlan_init(void)
-{
-	return usb_register(&rndis_wlan_driver);
-}
-module_init(rndis_wlan_init);
-
-static void __exit rndis_wlan_exit(void)
-{
-	usb_deregister(&rndis_wlan_driver);
-}
-module_exit(rndis_wlan_exit);
+module_usb_driver(rndis_wlan_driver);
 
 MODULE_AUTHOR("Bjorge Dijkstra");
 MODULE_AUTHOR("Jussi Kivilinna");

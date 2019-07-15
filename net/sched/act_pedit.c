@@ -70,11 +70,14 @@ static int tcf_pedit_init(struct nlattr *nla, struct nlattr *est,
 		pc = tcf_hash_create(parm->index, est, a, sizeof(*p), bind,
 				     &pedit_idx_gen, &pedit_hash_info);
 		if (IS_ERR(pc))
-		    return PTR_ERR(pc);
+			return PTR_ERR(pc);
 		p = to_pedit(pc);
 		keys = kmalloc(ksize, GFP_KERNEL);
 		if (keys == NULL) {
-			kfree(pc);
+			if (est)
+				gen_kill_estimator(&pc->tcfc_bstats,
+						   &pc->tcfc_rate_est);
+			kfree_rcu(pc, tcfc_rcu);
 			return -ENOMEM;
 		}
 		ret = ACT_P_CREATED;
@@ -120,18 +123,16 @@ static int tcf_pedit_cleanup(struct tc_action *a, int bind)
 	return 0;
 }
 
-static int tcf_pedit(struct sk_buff *skb, struct tc_action *a,
+static int tcf_pedit(struct sk_buff *skb, const struct tc_action *a,
 		     struct tcf_result *res)
 {
 	struct tcf_pedit *p = a->priv;
 	int i, munged = 0;
 	unsigned int off;
 
-	if (skb_cloned(skb)) {
-		if (pskb_expand_head(skb, 0, 0, GFP_ATOMIC)) {
-			return p->tcf_action;
-		}
-	}
+	if (skb_cloned(skb) &&
+	    pskb_expand_head(skb, 0, 0, GFP_ATOMIC))
+		return p->tcf_action;
 
 	off = skb_network_offset(skb);
 
@@ -163,7 +164,7 @@ static int tcf_pedit(struct sk_buff *skb, struct tc_action *a,
 			}
 			if (offset > 0 && offset > skb->len) {
 				pr_info("tc filter pedit"
-					" offset %d cant exceed pkt length %d\n",
+					" offset %d can't exceed pkt length %d\n",
 				       offset, skb->len);
 				goto bad;
 			}
@@ -187,8 +188,7 @@ static int tcf_pedit(struct sk_buff *skb, struct tc_action *a,
 bad:
 	p->tcf_qstats.overlimits++;
 done:
-	p->tcf_bstats.bytes += qdisc_pkt_len(skb);
-	p->tcf_bstats.packets++;
+	bstats_update(&p->tcf_bstats, skb);
 	spin_unlock(&p->tcf_lock);
 	return p->tcf_action;
 }
@@ -218,11 +218,13 @@ static int tcf_pedit_dump(struct sk_buff *skb, struct tc_action *a,
 	opt->refcnt = p->tcf_refcnt - ref;
 	opt->bindcnt = p->tcf_bindcnt - bind;
 
-	NLA_PUT(skb, TCA_PEDIT_PARMS, s, opt);
+	if (nla_put(skb, TCA_PEDIT_PARMS, s, opt))
+		goto nla_put_failure;
 	t.install = jiffies_to_clock_t(jiffies - p->tcf_tm.install);
 	t.lastuse = jiffies_to_clock_t(jiffies - p->tcf_tm.lastuse);
 	t.expires = jiffies_to_clock_t(p->tcf_tm.expires);
-	NLA_PUT(skb, TCA_PEDIT_TM, sizeof(t), &t);
+	if (nla_put(skb, TCA_PEDIT_TM, sizeof(t), &t))
+		goto nla_put_failure;
 	kfree(opt);
 	return skb->len;
 

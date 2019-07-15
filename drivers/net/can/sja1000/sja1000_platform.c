@@ -109,7 +109,9 @@ static int sp_probe(struct platform_device *pdev)
 	priv = netdev_priv(dev);
 
 	dev->irq = res_irq->start;
-	priv->irq_flags = res_irq->flags & (IRQF_TRIGGER_MASK | IRQF_SHARED);
+	priv->irq_flags = res_irq->flags & IRQF_TRIGGER_MASK;
+	if (res_irq->flags & IORESOURCE_IRQ_SHAREABLE)
+		priv->irq_flags |= IRQF_SHARED;
 	priv->reg_base = addr;
 	/* The CAN clock frequency is half the oscillator clock frequency */
 	priv->can.clock.freq = pdata->osc_freq / 2;
@@ -185,15 +187,4 @@ static struct platform_driver sp_driver = {
 	},
 };
 
-static int __init sp_init(void)
-{
-	return platform_driver_register(&sp_driver);
-}
-
-static void __exit sp_exit(void)
-{
-	platform_driver_unregister(&sp_driver);
-}
-
-module_init(sp_init);
-module_exit(sp_exit);
+module_platform_driver(sp_driver);

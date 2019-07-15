@@ -13,8 +13,9 @@
 #ifndef _LINUX_SUNRPC_CACHE_H_
 #define _LINUX_SUNRPC_CACHE_H_
 
+#include <linux/kref.h>
 #include <linux/slab.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <linux/proc_fs.h>
 
 /*
@@ -34,10 +35,10 @@
  * Each cache must be registered so that it can be cleaned regularly.
  * When the cache is unregistered, it is flushed completely.
  *
- * Entries have a ref count and a 'hashed' flag which counts the existance
+ * Entries have a ref count and a 'hashed' flag which counts the existence
  * in the hash table.
  * We only expire entries when refcount is zero.
- * Existance in the cache is counted  the refcount.
+ * Existence in the cache is counted  the refcount.
  */
 
 /* Every cache item has a common header that is used
@@ -116,6 +117,7 @@ struct cache_detail {
 		struct cache_detail_procfs procfs;
 		struct cache_detail_pipefs pipefs;
 	} u;
+	struct net		*net;
 };
 
 
@@ -196,13 +198,16 @@ extern void cache_flush(void);
 extern void cache_purge(struct cache_detail *detail);
 #define NEVER (0x7FFFFFFF)
 extern void __init cache_initialize(void);
-extern int cache_register(struct cache_detail *cd);
 extern int cache_register_net(struct cache_detail *cd, struct net *net);
-extern void cache_unregister(struct cache_detail *cd);
 extern void cache_unregister_net(struct cache_detail *cd, struct net *net);
 
+extern struct cache_detail *cache_create_net(struct cache_detail *tmpl, struct net *net);
+extern void cache_destroy_net(struct cache_detail *cd, struct net *net);
+
+extern void sunrpc_init_cache_detail(struct cache_detail *cd);
+extern void sunrpc_destroy_cache_detail(struct cache_detail *cd);
 extern int sunrpc_cache_register_pipefs(struct dentry *parent, const char *,
-					mode_t, struct cache_detail *);
+					umode_t, struct cache_detail *);
 extern void sunrpc_cache_unregister_pipefs(struct cache_detail *);
 
 extern void qword_add(char **bpp, int *lp, char *str);
@@ -212,14 +217,32 @@ extern int qword_get(char **bpp, char *dest, int bufsize);
 static inline int get_int(char **bpp, int *anint)
 {
 	char buf[50];
-	char *ep;
-	int rv;
-	int len = qword_get(bpp, buf, 50);
-	if (len < 0) return -EINVAL;
-	if (len ==0) return -ENOENT;
-	rv = simple_strtol(buf, &ep, 0);
-	if (*ep) return -EINVAL;
-	*anint = rv;
+	int len = qword_get(bpp, buf, sizeof(buf));
+
+	if (len < 0)
+		return -EINVAL;
+	if (len == 0)
+		return -ENOENT;
+
+	if (kstrtoint(buf, 0, anint))
+		return -EINVAL;
+
+	return 0;
+}
+
+static inline int get_uint(char **bpp, unsigned int *anint)
+{
+	char buf[50];
+	int len = qword_get(bpp, buf, sizeof(buf));
+
+	if (len < 0)
+		return -EINVAL;
+	if (len == 0)
+		return -ENOENT;
+
+	if (kstrtouint(buf, 0, anint))
+		return -EINVAL;
+
 	return 0;
 }
 
@@ -255,10 +278,4 @@ static inline time_t get_expiry(char **bpp)
 	return rv - boot.tv_sec;
 }
 
-static inline void sunrpc_invalidate(struct cache_head *h,
-				     struct cache_detail *detail)
-{
-	h->expiry_time = seconds_since_boot() - 1;
-	detail->nextcheck = seconds_since_boot();
-}
 #endif /*  _LINUX_SUNRPC_CACHE_H_ */

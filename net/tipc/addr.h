@@ -37,34 +37,38 @@
 #ifndef _TIPC_ADDR_H
 #define _TIPC_ADDR_H
 
-static inline u32 own_node(void)
+#define TIPC_ZONE_MASK		0xff000000u
+#define TIPC_CLUSTER_MASK	0xfffff000u
+
+static inline u32 tipc_zone_mask(u32 addr)
 {
-	return tipc_node(tipc_own_addr);
+	return addr & TIPC_ZONE_MASK;
 }
 
-static inline u32 own_cluster(void)
+static inline u32 tipc_cluster_mask(u32 addr)
 {
-	return tipc_cluster(tipc_own_addr);
+	return addr & TIPC_CLUSTER_MASK;
 }
 
-static inline u32 own_zone(void)
-{
-	return tipc_zone(tipc_own_addr);
-}
-
-static inline int in_own_cluster(u32 addr)
+static inline int in_own_cluster_exact(u32 addr)
 {
 	return !((addr ^ tipc_own_addr) >> 12);
 }
 
-static inline int is_slave(u32 addr)
+/**
+ * in_own_node - test for node inclusion; <0.0.0> always matches
+ */
+static inline int in_own_node(u32 addr)
 {
-	return addr & 0x800;
+	return (addr == tipc_own_addr) || !addr;
 }
 
-static inline int may_route(u32 addr)
+/**
+ * in_own_cluster - test for cluster inclusion; <0.0.0> always matches
+ */
+static inline int in_own_cluster(u32 addr)
 {
-	return(addr ^ tipc_own_addr) >> 11;
+	return in_own_cluster_exact(addr) || !addr;
 }
 
 /**
@@ -73,15 +77,13 @@ static inline int may_route(u32 addr)
  * Needed when address of a named message must be looked up a second time
  * after a network hop.
  */
-
-static inline int addr_domain(int sc)
+static inline u32 addr_domain(u32 sc)
 {
 	if (likely(sc == TIPC_NODE_SCOPE))
 		return tipc_own_addr;
 	if (sc == TIPC_CLUSTER_SCOPE)
-		return tipc_addr(tipc_zone(tipc_own_addr),
-				 tipc_cluster(tipc_own_addr), 0);
-	return tipc_addr(tipc_zone(tipc_own_addr), 0, 0);
+		return tipc_cluster_mask(tipc_own_addr);
+	return tipc_zone_mask(tipc_own_addr);
 }
 
 int tipc_addr_domain_valid(u32);

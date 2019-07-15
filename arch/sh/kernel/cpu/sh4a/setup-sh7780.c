@@ -14,14 +14,17 @@
 #include <linux/serial_sci.h>
 #include <linux/sh_dma.h>
 #include <linux/sh_timer.h>
-
+#include <linux/sh_intc.h>
 #include <cpu/dma-register.h>
 
 static struct plat_sci_port scif0_platform_data = {
 	.mapbase	= 0xffe00000,
 	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE | SCSCR_CKE1,
+	.scbrr_algo_id	= SCBRR_ALGO_1,
 	.type		= PORT_SCIF,
-	.irqs		= { 40, 40, 40, 40 },
+	.irqs		= SCIx_IRQ_MUXED(evt2irq(0x700)),
+	.regtype	= SCIx_SH4_SCIF_FIFODATA_REGTYPE,
 };
 
 static struct platform_device scif0_device = {
@@ -35,8 +38,11 @@ static struct platform_device scif0_device = {
 static struct plat_sci_port scif1_platform_data = {
 	.mapbase	= 0xffe10000,
 	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE | SCSCR_CKE1,
+	.scbrr_algo_id	= SCBRR_ALGO_1,
 	.type		= PORT_SCIF,
-	.irqs		= { 76, 76, 76, 76 },
+	.irqs		= SCIx_IRQ_MUXED(evt2irq(0xb80)),
+	.regtype	= SCIx_SH4_SCIF_FIFODATA_REGTYPE,
 };
 
 static struct platform_device scif1_device = {
@@ -60,7 +66,7 @@ static struct resource tmu0_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 28,
+		.start	= evt2irq(0x580),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -88,7 +94,7 @@ static struct resource tmu1_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 29,
+		.start	= evt2irq(0x5a0),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -115,7 +121,7 @@ static struct resource tmu2_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 30,
+		.start	= evt2irq(0x5c0),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -142,7 +148,7 @@ static struct resource tmu3_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 96,
+		.start	= evt2irq(0xe00),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -169,7 +175,7 @@ static struct resource tmu4_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 97,
+		.start	= evt2irq(0xe20),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -196,7 +202,7 @@ static struct resource tmu5_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 98,
+		.start	= evt2irq(0xe40),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -219,7 +225,7 @@ static struct resource rtc_resources[] = {
 	},
 	[1] = {
 		/* Shared Period/Carry/Alarm IRQ */
-		.start	= 20,
+		.start	= evt2irq(0x480),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -316,9 +322,13 @@ static struct resource sh7780_dmae0_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		/* Real DMA error IRQ is 38, and channel IRQs are 34-37, 44-45 */
-		.start	= 34,
-		.end	= 34,
+		/*
+		 * Real DMA error vector is 0x6c0, and channel
+		 * vectors are 0x640-0x6a0, 0x780-0x7a0
+		 */
+		.name	= "error_irq",
+		.start	= evt2irq(0x640),
+		.end	= evt2irq(0x640),
 		.flags	= IORESOURCE_IRQ | IORESOURCE_IRQ_SHAREABLE,
 	},
 };
@@ -332,9 +342,13 @@ static struct resource sh7780_dmae1_resources[] = {
 	},
 	/* DMAC1 has no DMARS */
 	{
-		/* Real DMA error IRQ is 38, and channel IRQs are 46-47, 92-95 */
-		.start	= 46,
-		.end	= 46,
+		/*
+		 * Real DMA error vector is 0x6c0, and channel
+		 * vectors are 0x7c0-0x7e0, 0xd80-0xde0
+		 */
+		.name	= "error_irq",
+		.start	= evt2irq(0x7c0),
+		.end	= evt2irq(0x7c0),
 		.flags	= IORESOURCE_IRQ | IORESOURCE_IRQ_SHAREABLE,
 	},
 };
@@ -379,6 +393,7 @@ static int __init sh7780_devices_setup(void)
 				    ARRAY_SIZE(sh7780_devices));
 }
 arch_initcall(sh7780_devices_setup);
+
 static struct platform_device *sh7780_early_devices[] __initdata = {
 	&scif0_device,
 	&scif1_device,
@@ -392,6 +407,13 @@ static struct platform_device *sh7780_early_devices[] __initdata = {
 
 void __init plat_early_device_setup(void)
 {
+	if (mach_is_sh2007()) {
+		scif0_platform_data.scscr &= ~SCSCR_CKE1;
+		scif0_platform_data.scbrr_algo_id = SCBRR_ALGO_2;
+		scif1_platform_data.scscr &= ~SCSCR_CKE1;
+		scif1_platform_data.scbrr_algo_id = SCBRR_ALGO_2;
+	}
+
 	early_platform_add_devices(sh7780_early_devices,
 				   ARRAY_SIZE(sh7780_early_devices));
 }

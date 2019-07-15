@@ -12,7 +12,6 @@
 #include <asm/fpu.h>
 #include <asm/elf.h>
 #include <asm/exceptions.h>
-#include <asm/system.h>
 
 #ifdef CONFIG_LAZY_SAVE_FPU
 struct task_struct *fpu_state_owner;
@@ -67,24 +66,6 @@ asmlinkage void fpu_exception(struct pt_regs *regs, enum exception_code code)
 		info.si_code = FPE_FLTRES;
 
 	force_sig_info(SIGFPE, &info, tsk);
-}
-
-/*
- * handle an FPU invalid_op exception
- * - Derived from DO_EINFO() macro in arch/mn10300/kernel/traps.c
- */
-asmlinkage void fpu_invalid_op(struct pt_regs *regs, enum exception_code code)
-{
-	siginfo_t info;
-
-	if (!user_mode(regs))
-		die_if_no_fixup("FPU invalid opcode", regs, code);
-
-	info.si_signo = SIGILL;
-	info.si_errno = 0;
-	info.si_code = ILL_COPROC;
-	info.si_addr = (void *) regs->pc;
-	force_sig_info(info.si_signo, &info, current);
 }
 
 /*

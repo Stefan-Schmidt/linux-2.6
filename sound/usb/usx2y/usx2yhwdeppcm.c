@@ -20,7 +20,7 @@
  at standard samplerates,
  what led to this part of the usx2y module: 
  It provides the alsa kernel half of the usx2y-alsa-jack driver pair.
- The pair uses a hardware dependant alsa-device for mmaped pcm transport.
+ The pair uses a hardware dependent alsa-device for mmaped pcm transport.
  Advantage achieved:
          The usb_hc moves pcm data from/into memory via DMA.
          That memory is mmaped by jack's usx2y driver.
@@ -38,7 +38,7 @@
          2periods works but is useless cause of crackling).
 
  This is a first "proof of concept" implementation.
- Later, functionalities should migrate to more apropriate places:
+ Later, functionalities should migrate to more appropriate places:
  Userland:
  - The jackd could mmap its float-pcm buffers directly from alsa-lib.
  - alsa-lib could provide power of 2 period sized shaping combined with int/float
@@ -74,7 +74,7 @@ static int usX2Y_usbpcm_urb_capt_retire(struct snd_usX2Y_substream *subs)
 	}
 	for (i = 0; i < nr_of_packs(); i++) {
 		if (urb->iso_frame_desc[i].status) { /* active? hmm, skip this */
-			snd_printk(KERN_ERR "activ frame status %i. Most propably some hardware problem.\n", urb->iso_frame_desc[i].status);
+			snd_printk(KERN_ERR "active frame status %i. Most probably some hardware problem.\n", urb->iso_frame_desc[i].status);
 			return urb->iso_frame_desc[i].status;
 		}
 		lens += urb->iso_frame_desc[i].actual_length / usX2Y->stride;

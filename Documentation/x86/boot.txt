@@ -54,6 +54,9 @@ Protocol 2.10:	(Kernel 2.6.31) Added a protocol for relaxed alignment
 		beyond the kernel_alignment added, new init_size and
 		pref_address fields.  Added extended boot loader IDs.
 
+Protocol 2.11:	(Kernel 3.6) Added a field for offset of EFI handover
+		protocol entry point.
+
 **** MEMORY LAYOUT
 
 The traditional memory map for the kernel loader, used for Image or
@@ -189,6 +192,7 @@ Offset	Proto	Name		Meaning
 				of struct setup_data
 0258/8	2.10+	pref_address	Preferred loading address
 0260/4	2.10+	init_size	Linear memory required during initialization
+0264/4	2.11+	handover_offset	Offset of handover entry point
 
 (1) For backwards compatibility, if the setup_sects field contains 0, the
     real value is 4.
@@ -363,7 +367,8 @@ Protocol:	2.00+
   ext_loader_type <- 0x05
   ext_loader_ver  <- 0x23
 
-  Assigned boot loader ids:
+  Assigned boot loader ids (hexadecimal):
+
 	0  LILO			(0x00 reserved for pre-2.00 bootloader)
 	1  Loadlin
 	2  bootsect-loader	(0x20, all other values reserved)
@@ -378,6 +383,8 @@ Protocol:	2.00+
 	C  Arcturus Networks uCbootloader
 	E  Extended		(see ext_loader_type)
 	F  Special		(0xFF = undefined)
+       10  Reserved
+       11  Minimal Linux Bootloader <http://sebastian-plotz.blogspot.de>
 
   Please contact <hpa@zytor.com> if you need a bootloader ID
   value assigned.
@@ -600,6 +607,7 @@ Protocol:	2.07+
   0x00000001	lguest
   0x00000002	Xen
   0x00000003	Moorestown MID
+  0x00000004	CE4100 TV Platform
 
 Field name:	hardware_subarch_data
 Type:		write (subarch-dependent)
@@ -621,9 +629,9 @@ Protocol:	2.08+
   The payload may be compressed. The format of both the compressed and
   uncompressed data should be determined using the standard magic
   numbers.  The currently supported compression formats are gzip
-  (magic numbers 1F 8B or 1F 9E), bzip2 (magic number 42 5A) and LZMA
-  (magic number 5D 00).  The uncompressed payload is currently always ELF
-  (magic number 7F 45 4C 46).
+  (magic numbers 1F 8B or 1F 9E), bzip2 (magic number 42 5A), LZMA
+  (magic number 5D 00), and XZ (magic number FD 37).  The uncompressed
+  payload is currently always ELF (magic number 7F 45 4C 46).
   
 Field name:	payload_length
 Type:		read
@@ -673,7 +681,7 @@ Protocol:	2.10+
 
 Field name:	init_size
 Type:		read
-Offset/size:	0x25c/4
+Offset/size:	0x260/4
 
   This field indicates the amount of linear contiguous memory starting
   at the kernel runtime start address that the kernel needs before it
@@ -688,6 +696,16 @@ Offset/size:	0x25c/4
 	runtime_start = align_up(load_address, kernel_alignment)
   else
 	runtime_start = pref_address
+
+Field name:	handover_offset
+Type:		read
+Offset/size:	0x264/4
+
+  This field is the offset from the beginning of the kernel image to
+  the EFI handover protocol entry point. Boot loaders using the EFI
+  handover protocol to boot the kernel should jump to this offset.
+
+  See EFI HANDOVER PROTOCOL below for more details.
 
 
 **** THE IMAGE CHECKSUM
@@ -1009,3 +1027,30 @@ segment; __BOOS_CS must have execute/read permission, and __BOOT_DS
 must have read/write permission; CS must be __BOOT_CS and DS, ES, SS
 must be __BOOT_DS; interrupt must be disabled; %esi must hold the base
 address of the struct boot_params; %ebp, %edi and %ebx must be zero.
+
+**** EFI HANDOVER PROTOCOL
+
+This protocol allows boot loaders to defer initialisation to the EFI
+boot stub. The boot loader is required to load the kernel/initrd(s)
+from the boot media and jump to the EFI handover protocol entry point
+which is hdr->handover_offset bytes from the beginning of
+startup_{32,64}.
+
+The function prototype for the handover entry point looks like this,
+
+    efi_main(void *handle, efi_system_table_t *table, struct boot_params *bp)
+
+'handle' is the EFI image handle passed to the boot loader by the EFI
+firmware, 'table' is the EFI system table - these are the first two
+arguments of the "handoff state" as described in section 2.3 of the
+UEFI specification. 'bp' is the boot loader-allocated boot params.
+
+The boot loader *must* fill out the following fields in bp,
+
+    o hdr.code32_start
+    o hdr.cmd_line_ptr
+    o hdr.cmdline_size
+    o hdr.ramdisk_image (if applicable)
+    o hdr.ramdisk_size  (if applicable)
+
+All other fields should be zero.

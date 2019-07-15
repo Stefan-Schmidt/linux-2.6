@@ -15,7 +15,8 @@
 
 #define PAGE_CACHE_BITS	(PAGE_CACHE_SIZE * 8)
 
-int hfsplus_block_allocate(struct super_block *sb, u32 size, u32 offset, u32 *max)
+int hfsplus_block_allocate(struct super_block *sb, u32 size,
+		u32 offset, u32 *max)
 {
 	struct hfsplus_sb_info *sbi = HFSPLUS_SB(sb);
 	struct page *page;
@@ -152,7 +153,7 @@ done:
 	kunmap(page);
 	*max = offset + (curr - pptr) * 32 + i - start;
 	sbi->free_blocks -= *max;
-	sb->s_dirt = 1;
+	hfsplus_mark_mdb_dirty(sb);
 	dprint(DBG_BITMAP, "-> %u,%u\n", start, *max);
 out:
 	mutex_unlock(&sbi->alloc_mutex);
@@ -227,7 +228,7 @@ out:
 	set_page_dirty(page);
 	kunmap(page);
 	sbi->free_blocks += len;
-	sb->s_dirt = 1;
+	hfsplus_mark_mdb_dirty(sb);
 	mutex_unlock(&sbi->alloc_mutex);
 
 	return 0;

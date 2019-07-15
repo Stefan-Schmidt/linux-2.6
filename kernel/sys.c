@@ -4,15 +4,15 @@
  *  Copyright (C) 1991, 1992  Linus Torvalds
  */
 
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/mm.h>
 #include <linux/utsname.h>
 #include <linux/mman.h>
-#include <linux/notifier.h>
 #include <linux/reboot.h>
 #include <linux/prctl.h>
 #include <linux/highuid.h>
 #include <linux/fs.h>
+#include <linux/kmod.h>
 #include <linux/perf_event.h>
 #include <linux/resource.h>
 #include <linux/kernel.h>
@@ -36,12 +36,21 @@
 #include <linux/personality.h>
 #include <linux/ptrace.h>
 #include <linux/fs_struct.h>
+#include <linux/file.h>
+#include <linux/mount.h>
 #include <linux/gfp.h>
+#include <linux/syscore_ops.h>
+#include <linux/version.h>
+#include <linux/ctype.h>
 
 #include <linux/compat.h>
 #include <linux/syscalls.h>
 #include <linux/kprobes.h>
 #include <linux/user_namespace.h>
+
+#include <linux/kmsg_dump.h>
+/* Move somewhere else to avoid recompiling? */
+#include <generated/utsrelease.h>
 
 #include <asm/uaccess.h>
 #include <asm/io.h>
@@ -86,10 +95,8 @@
 int overflowuid = DEFAULT_OVERFLOWUID;
 int overflowgid = DEFAULT_OVERFLOWGID;
 
-#ifdef CONFIG_UID16
 EXPORT_SYMBOL(overflowuid);
 EXPORT_SYMBOL(overflowgid);
-#endif
 
 /*
  * the same as above, but for filesystems which can only store a 16-bit
@@ -117,16 +124,32 @@ EXPORT_SYMBOL(cad_pid);
 void (*pm_power_off_prepare)(void);
 
 /*
+ * Returns true if current's euid is same as p's uid or euid,
+ * or has CAP_SYS_NICE to p's user_ns.
+ *
+ * Called with rcu_read_lock, creds are safe
+ */
+static bool set_one_prio_perm(struct task_struct *p)
+{
+	const struct cred *cred = current_cred(), *pcred = __task_cred(p);
+
+	if (uid_eq(pcred->uid,  cred->euid) ||
+	    uid_eq(pcred->euid, cred->euid))
+		return true;
+	if (ns_capable(pcred->user_ns, CAP_SYS_NICE))
+		return true;
+	return false;
+}
+
+/*
  * set the priority of a task
  * - the caller must hold the RCU read lock
  */
 static int set_one_prio(struct task_struct *p, int niceval, int error)
 {
-	const struct cred *cred = current_cred(), *pcred = __task_cred(p);
 	int no_nice;
 
-	if (pcred->uid  != cred->euid &&
-	    pcred->euid != cred->euid && !capable(CAP_SYS_NICE)) {
+	if (!set_one_prio_perm(p)) {
 		error = -EPERM;
 		goto out;
 	}
@@ -153,6 +176,7 @@ SYSCALL_DEFINE3(setpriority, int, which, int, who, int, niceval)
 	const struct cred *cred = current_cred();
 	int error = -EINVAL;
 	struct pid *pgrp;
+	kuid_t uid;
 
 	if (which > PRIO_USER || which < PRIO_PROCESS)
 		goto out;
@@ -185,18 +209,19 @@ SYSCALL_DEFINE3(setpriority, int, which, int, who, int, niceval)
 			} while_each_pid_thread(pgrp, PIDTYPE_PGID, p);
 			break;
 		case PRIO_USER:
-			user = (struct user_struct *) cred->user;
+			uid = make_kuid(cred->user_ns, who);
+			user = cred->user;
 			if (!who)
-				who = cred->uid;
-			else if ((who != cred->uid) &&
-				 !(user = find_user(who)))
+				uid = cred->uid;
+			else if (!uid_eq(uid, cred->uid) &&
+				 !(user = find_user(uid)))
 				goto out_unlock;	/* No processes for this user */
 
 			do_each_thread(g, p) {
-				if (__task_cred(p)->uid == who)
+				if (uid_eq(task_uid(p), uid))
 					error = set_one_prio(p, niceval, error);
 			} while_each_thread(g, p);
-			if (who != cred->uid)
+			if (!uid_eq(uid, cred->uid))
 				free_uid(user);		/* For find_user() */
 			break;
 	}
@@ -220,6 +245,7 @@ SYSCALL_DEFINE2(getpriority, int, which, int, who)
 	const struct cred *cred = current_cred();
 	long niceval, retval = -ESRCH;
 	struct pid *pgrp;
+	kuid_t uid;
 
 	if (which > PRIO_USER || which < PRIO_PROCESS)
 		return -EINVAL;
@@ -250,21 +276,22 @@ SYSCALL_DEFINE2(getpriority, int, which, int, who)
 			} while_each_pid_thread(pgrp, PIDTYPE_PGID, p);
 			break;
 		case PRIO_USER:
-			user = (struct user_struct *) cred->user;
+			uid = make_kuid(cred->user_ns, who);
+			user = cred->user;
 			if (!who)
-				who = cred->uid;
-			else if ((who != cred->uid) &&
-				 !(user = find_user(who)))
+				uid = cred->uid;
+			else if (!uid_eq(uid, cred->uid) &&
+				 !(user = find_user(uid)))
 				goto out_unlock;	/* No processes for this user */
 
 			do_each_thread(g, p) {
-				if (__task_cred(p)->uid == who) {
+				if (uid_eq(task_uid(p), uid)) {
 					niceval = 20 - task_nice(p);
 					if (niceval > retval)
 						retval = niceval;
 				}
 			} while_each_thread(g, p);
-			if (who != cred->uid)
+			if (!uid_eq(uid, cred->uid))
 				free_uid(user);		/* for find_user() */
 			break;
 	}
@@ -285,6 +312,7 @@ out_unlock:
  */
 void emergency_restart(void)
 {
+	kmsg_dump(KMSG_DUMP_EMERG);
 	machine_emergency_restart();
 }
 EXPORT_SYMBOL_GPL(emergency_restart);
@@ -293,9 +321,41 @@ void kernel_restart_prepare(char *cmd)
 {
 	blocking_notifier_call_chain(&reboot_notifier_list, SYS_RESTART, cmd);
 	system_state = SYSTEM_RESTART;
+	usermodehelper_disable();
 	device_shutdown();
-	sysdev_shutdown();
+	syscore_shutdown();
 }
+
+/**
+ *	register_reboot_notifier - Register function to be called at reboot time
+ *	@nb: Info about notifier function to be called
+ *
+ *	Registers a function with the list of functions
+ *	to be called at reboot time.
+ *
+ *	Currently always returns zero, as blocking_notifier_chain_register()
+ *	always returns zero.
+ */
+int register_reboot_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_register(&reboot_notifier_list, nb);
+}
+EXPORT_SYMBOL(register_reboot_notifier);
+
+/**
+ *	unregister_reboot_notifier - Unregister previously registered reboot notifier
+ *	@nb: Hook to be unregistered
+ *
+ *	Unregisters a previously registered reboot
+ *	notifier function.
+ *
+ *	Returns zero on success, or %-ENOENT on failure.
+ */
+int unregister_reboot_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_unregister(&reboot_notifier_list, nb);
+}
+EXPORT_SYMBOL(unregister_reboot_notifier);
 
 /**
  *	kernel_restart - reboot the system
@@ -312,6 +372,7 @@ void kernel_restart(char *cmd)
 		printk(KERN_EMERG "Restarting system.\n");
 	else
 		printk(KERN_EMERG "Restarting system with command '%s'.\n", cmd);
+	kmsg_dump(KMSG_DUMP_RESTART);
 	machine_restart(cmd);
 }
 EXPORT_SYMBOL_GPL(kernel_restart);
@@ -321,6 +382,7 @@ static void kernel_shutdown_prepare(enum system_states state)
 	blocking_notifier_call_chain(&reboot_notifier_list,
 		(state == SYSTEM_HALT)?SYS_HALT:SYS_POWER_OFF, NULL);
 	system_state = state;
+	usermodehelper_disable();
 	device_shutdown();
 }
 /**
@@ -331,8 +393,9 @@ static void kernel_shutdown_prepare(enum system_states state)
 void kernel_halt(void)
 {
 	kernel_shutdown_prepare(SYSTEM_HALT);
-	sysdev_shutdown();
+	syscore_shutdown();
 	printk(KERN_EMERG "System halted.\n");
+	kmsg_dump(KMSG_DUMP_HALT);
 	machine_halt();
 }
 
@@ -349,8 +412,9 @@ void kernel_power_off(void)
 	if (pm_power_off_prepare)
 		pm_power_off_prepare();
 	disable_nonboot_cpus();
-	sysdev_shutdown();
+	syscore_shutdown();
 	printk(KERN_EMERG "Power down.\n");
+	kmsg_dump(KMSG_DUMP_POWEROFF);
 	machine_power_off();
 }
 EXPORT_SYMBOL_GPL(kernel_power_off);
@@ -382,6 +446,15 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
 			magic2 != LINUX_REBOOT_MAGIC2B &&
 	                magic2 != LINUX_REBOOT_MAGIC2C))
 		return -EINVAL;
+
+	/*
+	 * If pid namespaces are enabled and the current task is in a child
+	 * pid_namespace, the command is handled by reboot_pid_ns() which will
+	 * call do_exit().
+	 */
+	ret = reboot_pid_ns(task_active_pid_ns(current), cmd);
+	if (ret)
+		return ret;
 
 	/* Instead of trying to make the power_off code look like
 	 * halt when pm_power_off is not set do it the easy way.
@@ -483,9 +556,19 @@ void ctrl_alt_del(void)
  */
 SYSCALL_DEFINE2(setregid, gid_t, rgid, gid_t, egid)
 {
+	struct user_namespace *ns = current_user_ns();
 	const struct cred *old;
 	struct cred *new;
 	int retval;
+	kgid_t krgid, kegid;
+
+	krgid = make_kgid(ns, rgid);
+	kegid = make_kgid(ns, egid);
+
+	if ((rgid != (gid_t) -1) && !gid_valid(krgid))
+		return -EINVAL;
+	if ((egid != (gid_t) -1) && !gid_valid(kegid))
+		return -EINVAL;
 
 	new = prepare_creds();
 	if (!new)
@@ -494,25 +577,25 @@ SYSCALL_DEFINE2(setregid, gid_t, rgid, gid_t, egid)
 
 	retval = -EPERM;
 	if (rgid != (gid_t) -1) {
-		if (old->gid == rgid ||
-		    old->egid == rgid ||
-		    capable(CAP_SETGID))
-			new->gid = rgid;
+		if (gid_eq(old->gid, krgid) ||
+		    gid_eq(old->egid, krgid) ||
+		    nsown_capable(CAP_SETGID))
+			new->gid = krgid;
 		else
 			goto error;
 	}
 	if (egid != (gid_t) -1) {
-		if (old->gid == egid ||
-		    old->egid == egid ||
-		    old->sgid == egid ||
-		    capable(CAP_SETGID))
-			new->egid = egid;
+		if (gid_eq(old->gid, kegid) ||
+		    gid_eq(old->egid, kegid) ||
+		    gid_eq(old->sgid, kegid) ||
+		    nsown_capable(CAP_SETGID))
+			new->egid = kegid;
 		else
 			goto error;
 	}
 
 	if (rgid != (gid_t) -1 ||
-	    (egid != (gid_t) -1 && egid != old->gid))
+	    (egid != (gid_t) -1 && !gid_eq(kegid, old->gid)))
 		new->sgid = new->egid;
 	new->fsgid = new->egid;
 
@@ -530,9 +613,15 @@ error:
  */
 SYSCALL_DEFINE1(setgid, gid_t, gid)
 {
+	struct user_namespace *ns = current_user_ns();
 	const struct cred *old;
 	struct cred *new;
 	int retval;
+	kgid_t kgid;
+
+	kgid = make_kgid(ns, gid);
+	if (!gid_valid(kgid))
+		return -EINVAL;
 
 	new = prepare_creds();
 	if (!new)
@@ -540,10 +629,10 @@ SYSCALL_DEFINE1(setgid, gid_t, gid)
 	old = current_cred();
 
 	retval = -EPERM;
-	if (capable(CAP_SETGID))
-		new->gid = new->egid = new->sgid = new->fsgid = gid;
-	else if (gid == old->gid || gid == old->sgid)
-		new->egid = new->fsgid = gid;
+	if (nsown_capable(CAP_SETGID))
+		new->gid = new->egid = new->sgid = new->fsgid = kgid;
+	else if (gid_eq(kgid, old->gid) || gid_eq(kgid, old->sgid))
+		new->egid = new->fsgid = kgid;
 	else
 		goto error;
 
@@ -561,15 +650,22 @@ static int set_user(struct cred *new)
 {
 	struct user_struct *new_user;
 
-	new_user = alloc_uid(current_user_ns(), new->uid);
+	new_user = alloc_uid(new->uid);
 	if (!new_user)
 		return -EAGAIN;
 
+	/*
+	 * We don't fail in case of NPROC limit excess here because too many
+	 * poorly written programs don't check set*uid() return code, assuming
+	 * it never fails if called by root.  We may still enforce NPROC limit
+	 * for programs doing set*uid()+execve() by harmlessly deferring the
+	 * failure to the execve() stage.
+	 */
 	if (atomic_read(&new_user->processes) >= rlimit(RLIMIT_NPROC) &&
-			new_user != INIT_USER) {
-		free_uid(new_user);
-		return -EAGAIN;
-	}
+			new_user != INIT_USER)
+		current->flags |= PF_NPROC_EXCEEDED;
+	else
+		current->flags &= ~PF_NPROC_EXCEEDED;
 
 	free_uid(new->user);
 	new->user = new_user;
@@ -593,9 +689,19 @@ static int set_user(struct cred *new)
  */
 SYSCALL_DEFINE2(setreuid, uid_t, ruid, uid_t, euid)
 {
+	struct user_namespace *ns = current_user_ns();
 	const struct cred *old;
 	struct cred *new;
 	int retval;
+	kuid_t kruid, keuid;
+
+	kruid = make_kuid(ns, ruid);
+	keuid = make_kuid(ns, euid);
+
+	if ((ruid != (uid_t) -1) && !uid_valid(kruid))
+		return -EINVAL;
+	if ((euid != (uid_t) -1) && !uid_valid(keuid))
+		return -EINVAL;
 
 	new = prepare_creds();
 	if (!new)
@@ -604,29 +710,29 @@ SYSCALL_DEFINE2(setreuid, uid_t, ruid, uid_t, euid)
 
 	retval = -EPERM;
 	if (ruid != (uid_t) -1) {
-		new->uid = ruid;
-		if (old->uid != ruid &&
-		    old->euid != ruid &&
-		    !capable(CAP_SETUID))
+		new->uid = kruid;
+		if (!uid_eq(old->uid, kruid) &&
+		    !uid_eq(old->euid, kruid) &&
+		    !nsown_capable(CAP_SETUID))
 			goto error;
 	}
 
 	if (euid != (uid_t) -1) {
-		new->euid = euid;
-		if (old->uid != euid &&
-		    old->euid != euid &&
-		    old->suid != euid &&
-		    !capable(CAP_SETUID))
+		new->euid = keuid;
+		if (!uid_eq(old->uid, keuid) &&
+		    !uid_eq(old->euid, keuid) &&
+		    !uid_eq(old->suid, keuid) &&
+		    !nsown_capable(CAP_SETUID))
 			goto error;
 	}
 
-	if (new->uid != old->uid) {
+	if (!uid_eq(new->uid, old->uid)) {
 		retval = set_user(new);
 		if (retval < 0)
 			goto error;
 	}
 	if (ruid != (uid_t) -1 ||
-	    (euid != (uid_t) -1 && euid != old->uid))
+	    (euid != (uid_t) -1 && !uid_eq(keuid, old->uid)))
 		new->suid = new->euid;
 	new->fsuid = new->euid;
 
@@ -654,9 +760,15 @@ error:
  */
 SYSCALL_DEFINE1(setuid, uid_t, uid)
 {
+	struct user_namespace *ns = current_user_ns();
 	const struct cred *old;
 	struct cred *new;
 	int retval;
+	kuid_t kuid;
+
+	kuid = make_kuid(ns, uid);
+	if (!uid_valid(kuid))
+		return -EINVAL;
 
 	new = prepare_creds();
 	if (!new)
@@ -664,18 +776,18 @@ SYSCALL_DEFINE1(setuid, uid_t, uid)
 	old = current_cred();
 
 	retval = -EPERM;
-	if (capable(CAP_SETUID)) {
-		new->suid = new->uid = uid;
-		if (uid != old->uid) {
+	if (nsown_capable(CAP_SETUID)) {
+		new->suid = new->uid = kuid;
+		if (!uid_eq(kuid, old->uid)) {
 			retval = set_user(new);
 			if (retval < 0)
 				goto error;
 		}
-	} else if (uid != old->uid && uid != new->suid) {
+	} else if (!uid_eq(kuid, old->uid) && !uid_eq(kuid, new->suid)) {
 		goto error;
 	}
 
-	new->fsuid = new->euid = uid;
+	new->fsuid = new->euid = kuid;
 
 	retval = security_task_fix_setuid(new, old, LSM_SETID_ID);
 	if (retval < 0)
@@ -695,9 +807,24 @@ error:
  */
 SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)
 {
+	struct user_namespace *ns = current_user_ns();
 	const struct cred *old;
 	struct cred *new;
 	int retval;
+	kuid_t kruid, keuid, ksuid;
+
+	kruid = make_kuid(ns, ruid);
+	keuid = make_kuid(ns, euid);
+	ksuid = make_kuid(ns, suid);
+
+	if ((ruid != (uid_t) -1) && !uid_valid(kruid))
+		return -EINVAL;
+
+	if ((euid != (uid_t) -1) && !uid_valid(keuid))
+		return -EINVAL;
+
+	if ((suid != (uid_t) -1) && !uid_valid(ksuid))
+		return -EINVAL;
 
 	new = prepare_creds();
 	if (!new)
@@ -706,30 +833,30 @@ SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)
 	old = current_cred();
 
 	retval = -EPERM;
-	if (!capable(CAP_SETUID)) {
-		if (ruid != (uid_t) -1 && ruid != old->uid &&
-		    ruid != old->euid  && ruid != old->suid)
+	if (!nsown_capable(CAP_SETUID)) {
+		if (ruid != (uid_t) -1        && !uid_eq(kruid, old->uid) &&
+		    !uid_eq(kruid, old->euid) && !uid_eq(kruid, old->suid))
 			goto error;
-		if (euid != (uid_t) -1 && euid != old->uid &&
-		    euid != old->euid  && euid != old->suid)
+		if (euid != (uid_t) -1        && !uid_eq(keuid, old->uid) &&
+		    !uid_eq(keuid, old->euid) && !uid_eq(keuid, old->suid))
 			goto error;
-		if (suid != (uid_t) -1 && suid != old->uid &&
-		    suid != old->euid  && suid != old->suid)
+		if (suid != (uid_t) -1        && !uid_eq(ksuid, old->uid) &&
+		    !uid_eq(ksuid, old->euid) && !uid_eq(ksuid, old->suid))
 			goto error;
 	}
 
 	if (ruid != (uid_t) -1) {
-		new->uid = ruid;
-		if (ruid != old->uid) {
+		new->uid = kruid;
+		if (!uid_eq(kruid, old->uid)) {
 			retval = set_user(new);
 			if (retval < 0)
 				goto error;
 		}
 	}
 	if (euid != (uid_t) -1)
-		new->euid = euid;
+		new->euid = keuid;
 	if (suid != (uid_t) -1)
-		new->suid = suid;
+		new->suid = ksuid;
 	new->fsuid = new->euid;
 
 	retval = security_task_fix_setuid(new, old, LSM_SETID_RES);
@@ -743,14 +870,19 @@ error:
 	return retval;
 }
 
-SYSCALL_DEFINE3(getresuid, uid_t __user *, ruid, uid_t __user *, euid, uid_t __user *, suid)
+SYSCALL_DEFINE3(getresuid, uid_t __user *, ruidp, uid_t __user *, euidp, uid_t __user *, suidp)
 {
 	const struct cred *cred = current_cred();
 	int retval;
+	uid_t ruid, euid, suid;
 
-	if (!(retval   = put_user(cred->uid,  ruid)) &&
-	    !(retval   = put_user(cred->euid, euid)))
-		retval = put_user(cred->suid, suid);
+	ruid = from_kuid_munged(cred->user_ns, cred->uid);
+	euid = from_kuid_munged(cred->user_ns, cred->euid);
+	suid = from_kuid_munged(cred->user_ns, cred->suid);
+
+	if (!(retval   = put_user(ruid, ruidp)) &&
+	    !(retval   = put_user(euid, euidp)))
+		retval = put_user(suid, suidp);
 
 	return retval;
 }
@@ -760,9 +892,22 @@ SYSCALL_DEFINE3(getresuid, uid_t __user *, ruid, uid_t __user *, euid, uid_t __u
  */
 SYSCALL_DEFINE3(setresgid, gid_t, rgid, gid_t, egid, gid_t, sgid)
 {
+	struct user_namespace *ns = current_user_ns();
 	const struct cred *old;
 	struct cred *new;
 	int retval;
+	kgid_t krgid, kegid, ksgid;
+
+	krgid = make_kgid(ns, rgid);
+	kegid = make_kgid(ns, egid);
+	ksgid = make_kgid(ns, sgid);
+
+	if ((rgid != (gid_t) -1) && !gid_valid(krgid))
+		return -EINVAL;
+	if ((egid != (gid_t) -1) && !gid_valid(kegid))
+		return -EINVAL;
+	if ((sgid != (gid_t) -1) && !gid_valid(ksgid))
+		return -EINVAL;
 
 	new = prepare_creds();
 	if (!new)
@@ -770,24 +915,24 @@ SYSCALL_DEFINE3(setresgid, gid_t, rgid, gid_t, egid, gid_t, sgid)
 	old = current_cred();
 
 	retval = -EPERM;
-	if (!capable(CAP_SETGID)) {
-		if (rgid != (gid_t) -1 && rgid != old->gid &&
-		    rgid != old->egid  && rgid != old->sgid)
+	if (!nsown_capable(CAP_SETGID)) {
+		if (rgid != (gid_t) -1        && !gid_eq(krgid, old->gid) &&
+		    !gid_eq(krgid, old->egid) && !gid_eq(krgid, old->sgid))
 			goto error;
-		if (egid != (gid_t) -1 && egid != old->gid &&
-		    egid != old->egid  && egid != old->sgid)
+		if (egid != (gid_t) -1        && !gid_eq(kegid, old->gid) &&
+		    !gid_eq(kegid, old->egid) && !gid_eq(kegid, old->sgid))
 			goto error;
-		if (sgid != (gid_t) -1 && sgid != old->gid &&
-		    sgid != old->egid  && sgid != old->sgid)
+		if (sgid != (gid_t) -1        && !gid_eq(ksgid, old->gid) &&
+		    !gid_eq(ksgid, old->egid) && !gid_eq(ksgid, old->sgid))
 			goto error;
 	}
 
 	if (rgid != (gid_t) -1)
-		new->gid = rgid;
+		new->gid = krgid;
 	if (egid != (gid_t) -1)
-		new->egid = egid;
+		new->egid = kegid;
 	if (sgid != (gid_t) -1)
-		new->sgid = sgid;
+		new->sgid = ksgid;
 	new->fsgid = new->egid;
 
 	return commit_creds(new);
@@ -797,14 +942,19 @@ error:
 	return retval;
 }
 
-SYSCALL_DEFINE3(getresgid, gid_t __user *, rgid, gid_t __user *, egid, gid_t __user *, sgid)
+SYSCALL_DEFINE3(getresgid, gid_t __user *, rgidp, gid_t __user *, egidp, gid_t __user *, sgidp)
 {
 	const struct cred *cred = current_cred();
 	int retval;
+	gid_t rgid, egid, sgid;
 
-	if (!(retval   = put_user(cred->gid,  rgid)) &&
-	    !(retval   = put_user(cred->egid, egid)))
-		retval = put_user(cred->sgid, sgid);
+	rgid = from_kgid_munged(cred->user_ns, cred->gid);
+	egid = from_kgid_munged(cred->user_ns, cred->egid);
+	sgid = from_kgid_munged(cred->user_ns, cred->sgid);
+
+	if (!(retval   = put_user(rgid, rgidp)) &&
+	    !(retval   = put_user(egid, egidp)))
+		retval = put_user(sgid, sgidp);
 
 	return retval;
 }
@@ -821,18 +971,24 @@ SYSCALL_DEFINE1(setfsuid, uid_t, uid)
 	const struct cred *old;
 	struct cred *new;
 	uid_t old_fsuid;
+	kuid_t kuid;
+
+	old = current_cred();
+	old_fsuid = from_kuid_munged(old->user_ns, old->fsuid);
+
+	kuid = make_kuid(old->user_ns, uid);
+	if (!uid_valid(kuid))
+		return old_fsuid;
 
 	new = prepare_creds();
 	if (!new)
-		return current_fsuid();
-	old = current_cred();
-	old_fsuid = old->fsuid;
+		return old_fsuid;
 
-	if (uid == old->uid  || uid == old->euid  ||
-	    uid == old->suid || uid == old->fsuid ||
-	    capable(CAP_SETUID)) {
-		if (uid != old_fsuid) {
-			new->fsuid = uid;
+	if (uid_eq(kuid, old->uid)  || uid_eq(kuid, old->euid)  ||
+	    uid_eq(kuid, old->suid) || uid_eq(kuid, old->fsuid) ||
+	    nsown_capable(CAP_SETUID)) {
+		if (!uid_eq(kuid, old->fsuid)) {
+			new->fsuid = kuid;
 			if (security_task_fix_setuid(new, old, LSM_SETID_FS) == 0)
 				goto change_okay;
 		}
@@ -854,18 +1010,24 @@ SYSCALL_DEFINE1(setfsgid, gid_t, gid)
 	const struct cred *old;
 	struct cred *new;
 	gid_t old_fsgid;
+	kgid_t kgid;
+
+	old = current_cred();
+	old_fsgid = from_kgid_munged(old->user_ns, old->fsgid);
+
+	kgid = make_kgid(old->user_ns, gid);
+	if (!gid_valid(kgid))
+		return old_fsgid;
 
 	new = prepare_creds();
 	if (!new)
-		return current_fsgid();
-	old = current_cred();
-	old_fsgid = old->fsgid;
+		return old_fsgid;
 
-	if (gid == old->gid  || gid == old->egid  ||
-	    gid == old->sgid || gid == old->fsgid ||
-	    capable(CAP_SETGID)) {
-		if (gid != old_fsgid) {
-			new->fsgid = gid;
+	if (gid_eq(kgid, old->gid)  || gid_eq(kgid, old->egid)  ||
+	    gid_eq(kgid, old->sgid) || gid_eq(kgid, old->fsgid) ||
+	    nsown_capable(CAP_SETGID)) {
+		if (!gid_eq(kgid, old->fsgid)) {
+			new->fsgid = kgid;
 			goto change_okay;
 		}
 	}
@@ -1080,8 +1242,10 @@ SYSCALL_DEFINE0(setsid)
 	err = session;
 out:
 	write_unlock_irq(&tasklist_lock);
-	if (err > 0)
+	if (err > 0) {
 		proc_sid_connector(group_leader);
+		sched_autogroup_create_attach(group_leader);
+	}
 	return err;
 }
 
@@ -1096,6 +1260,34 @@ DECLARE_RWSEM(uts_sem);
 #define override_architecture(name)	0
 #endif
 
+/*
+ * Work around broken programs that cannot handle "Linux 3.0".
+ * Instead we map 3.x to 2.6.40+x, so e.g. 3.0 would be 2.6.40
+ */
+static int override_release(char __user *release, int len)
+{
+	int ret = 0;
+	char buf[65];
+
+	if (current->personality & UNAME26) {
+		char *rest = UTS_RELEASE;
+		int ndots = 0;
+		unsigned v;
+
+		while (*rest) {
+			if (*rest == '.' && ++ndots >= 3)
+				break;
+			if (!isdigit(*rest) && *rest != '.')
+				break;
+			rest++;
+		}
+		v = ((LINUX_VERSION_CODE >> 8) & 0xff) + 40;
+		snprintf(buf, len, "2.6.%u%s", v, rest);
+		ret = copy_to_user(release, buf, len);
+	}
+	return ret;
+}
+
 SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
 {
 	int errno = 0;
@@ -1105,6 +1297,8 @@ SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
 		errno = -EFAULT;
 	up_read(&uts_sem);
 
+	if (!errno && override_release(name->release, sizeof(name->release)))
+		errno = -EFAULT;
 	if (!errno && override_architecture(name))
 		errno = -EFAULT;
 	return errno;
@@ -1126,6 +1320,8 @@ SYSCALL_DEFINE1(uname, struct old_utsname __user *, name)
 		error = -EFAULT;
 	up_read(&uts_sem);
 
+	if (!error && override_release(name->release, sizeof(name->release)))
+		error = -EFAULT;
 	if (!error && override_architecture(name))
 		error = -EFAULT;
 	return error;
@@ -1160,6 +1356,8 @@ SYSCALL_DEFINE1(olduname, struct oldold_utsname __user *, name)
 
 	if (!error && override_architecture(name))
 		error = -EFAULT;
+	if (!error && override_release(name->release, sizeof(name->release)))
+		error = -EFAULT;
 	return error ? -EFAULT : 0;
 }
 #endif
@@ -1169,8 +1367,9 @@ SYSCALL_DEFINE2(sethostname, char __user *, name, int, len)
 	int errno;
 	char tmp[__NEW_UTS_LEN];
 
-	if (!capable(CAP_SYS_ADMIN))
+	if (!ns_capable(current->nsproxy->uts_ns->user_ns, CAP_SYS_ADMIN))
 		return -EPERM;
+
 	if (len < 0 || len > __NEW_UTS_LEN)
 		return -EINVAL;
 	down_write(&uts_sem);
@@ -1181,6 +1380,7 @@ SYSCALL_DEFINE2(sethostname, char __user *, name, int, len)
 		memcpy(u->nodename, tmp, len);
 		memset(u->nodename + len, 0, sizeof(u->nodename) - len);
 		errno = 0;
+		uts_proc_notify(UTS_PROC_HOSTNAME);
 	}
 	up_write(&uts_sem);
 	return errno;
@@ -1218,7 +1418,7 @@ SYSCALL_DEFINE2(setdomainname, char __user *, name, int, len)
 	int errno;
 	char tmp[__NEW_UTS_LEN];
 
-	if (!capable(CAP_SYS_ADMIN))
+	if (!ns_capable(current->nsproxy->uts_ns->user_ns, CAP_SYS_ADMIN))
 		return -EPERM;
 	if (len < 0 || len > __NEW_UTS_LEN)
 		return -EINVAL;
@@ -1231,6 +1431,7 @@ SYSCALL_DEFINE2(setdomainname, char __user *, name, int, len)
 		memcpy(u->domainname, tmp, len);
 		memset(u->domainname + len, 0, sizeof(u->domainname) - len);
 		errno = 0;
+		uts_proc_notify(UTS_PROC_DOMAINNAME);
 	}
 	up_write(&uts_sem);
 	return errno;
@@ -1333,6 +1534,8 @@ int do_prlimit(struct task_struct *tsk, unsigned int resource,
 	rlim = tsk->signal->rlim + resource;
 	task_lock(tsk->group_leader);
 	if (new_rlim) {
+		/* Keep the capable check against init_user_ns until
+		   cgroups can contain all limits */
 		if (new_rlim->rlim_max > rlim->rlim_max &&
 				!capable(CAP_SYS_RESOURCE))
 			retval = -EPERM;
@@ -1376,18 +1579,21 @@ static int check_prlimit_permission(struct task_struct *task)
 {
 	const struct cred *cred = current_cred(), *tcred;
 
-	tcred = __task_cred(task);
-	if ((cred->uid != tcred->euid ||
-	     cred->uid != tcred->suid ||
-	     cred->uid != tcred->uid  ||
-	     cred->gid != tcred->egid ||
-	     cred->gid != tcred->sgid ||
-	     cred->gid != tcred->gid) &&
-	     !capable(CAP_SYS_RESOURCE)) {
-		return -EPERM;
-	}
+	if (current == task)
+		return 0;
 
-	return 0;
+	tcred = __task_cred(task);
+	if (uid_eq(cred->uid, tcred->euid) &&
+	    uid_eq(cred->uid, tcred->suid) &&
+	    uid_eq(cred->uid, tcred->uid)  &&
+	    gid_eq(cred->gid, tcred->egid) &&
+	    gid_eq(cred->gid, tcred->sgid) &&
+	    gid_eq(cred->gid, tcred->gid))
+		return 0;
+	if (ns_capable(tcred->user_ns, CAP_SYS_RESOURCE))
+		return 0;
+
+	return -EPERM;
 }
 
 SYSCALL_DEFINE4(prlimit64, pid_t, pid, unsigned int, resource,
@@ -1492,7 +1698,7 @@ static void k_getrusage(struct task_struct *p, int who, struct rusage *r)
 	unsigned long maxrss = 0;
 
 	memset((char *) r, 0, sizeof *r);
-	utime = stime = cputime_zero;
+	utime = stime = 0;
 
 	if (who == RUSAGE_THREAD) {
 		task_times(current, &utime, &stime);
@@ -1522,8 +1728,8 @@ static void k_getrusage(struct task_struct *p, int who, struct rusage *r)
 
 		case RUSAGE_SELF:
 			thread_group_times(p, &tgutime, &tgstime);
-			utime = cputime_add(utime, tgutime);
-			stime = cputime_add(stime, tgstime);
+			utime += tgutime;
+			stime += tgstime;
 			r->ru_nvcsw += p->signal->nvcsw;
 			r->ru_nivcsw += p->signal->nivcsw;
 			r->ru_minflt += p->signal->min_flt;
@@ -1579,6 +1785,217 @@ SYSCALL_DEFINE1(umask, int, mask)
 	return mask;
 }
 
+#ifdef CONFIG_CHECKPOINT_RESTORE
+static int prctl_set_mm_exe_file(struct mm_struct *mm, unsigned int fd)
+{
+	struct file *exe_file;
+	struct dentry *dentry;
+	int err;
+
+	exe_file = fget(fd);
+	if (!exe_file)
+		return -EBADF;
+
+	dentry = exe_file->f_path.dentry;
+
+	/*
+	 * Because the original mm->exe_file points to executable file, make
+	 * sure that this one is executable as well, to avoid breaking an
+	 * overall picture.
+	 */
+	err = -EACCES;
+	if (!S_ISREG(dentry->d_inode->i_mode)	||
+	    exe_file->f_path.mnt->mnt_flags & MNT_NOEXEC)
+		goto exit;
+
+	err = inode_permission(dentry->d_inode, MAY_EXEC);
+	if (err)
+		goto exit;
+
+	down_write(&mm->mmap_sem);
+
+	/*
+	 * Forbid mm->exe_file change if old file still mapped.
+	 */
+	err = -EBUSY;
+	if (mm->exe_file) {
+		struct vm_area_struct *vma;
+
+		for (vma = mm->mmap; vma; vma = vma->vm_next)
+			if (vma->vm_file &&
+			    path_equal(&vma->vm_file->f_path,
+				       &mm->exe_file->f_path))
+				goto exit_unlock;
+	}
+
+	/*
+	 * The symlink can be changed only once, just to disallow arbitrary
+	 * transitions malicious software might bring in. This means one
+	 * could make a snapshot over all processes running and monitor
+	 * /proc/pid/exe changes to notice unusual activity if needed.
+	 */
+	err = -EPERM;
+	if (test_and_set_bit(MMF_EXE_FILE_CHANGED, &mm->flags))
+		goto exit_unlock;
+
+	err = 0;
+	set_mm_exe_file(mm, exe_file);
+exit_unlock:
+	up_write(&mm->mmap_sem);
+
+exit:
+	fput(exe_file);
+	return err;
+}
+
+static int prctl_set_mm(int opt, unsigned long addr,
+			unsigned long arg4, unsigned long arg5)
+{
+	unsigned long rlim = rlimit(RLIMIT_DATA);
+	struct mm_struct *mm = current->mm;
+	struct vm_area_struct *vma;
+	int error;
+
+	if (arg5 || (arg4 && opt != PR_SET_MM_AUXV))
+		return -EINVAL;
+
+	if (!capable(CAP_SYS_RESOURCE))
+		return -EPERM;
+
+	if (opt == PR_SET_MM_EXE_FILE)
+		return prctl_set_mm_exe_file(mm, (unsigned int)addr);
+
+	if (addr >= TASK_SIZE || addr < mmap_min_addr)
+		return -EINVAL;
+
+	error = -EINVAL;
+
+	down_read(&mm->mmap_sem);
+	vma = find_vma(mm, addr);
+
+	switch (opt) {
+	case PR_SET_MM_START_CODE:
+		mm->start_code = addr;
+		break;
+	case PR_SET_MM_END_CODE:
+		mm->end_code = addr;
+		break;
+	case PR_SET_MM_START_DATA:
+		mm->start_data = addr;
+		break;
+	case PR_SET_MM_END_DATA:
+		mm->end_data = addr;
+		break;
+
+	case PR_SET_MM_START_BRK:
+		if (addr <= mm->end_data)
+			goto out;
+
+		if (rlim < RLIM_INFINITY &&
+		    (mm->brk - addr) +
+		    (mm->end_data - mm->start_data) > rlim)
+			goto out;
+
+		mm->start_brk = addr;
+		break;
+
+	case PR_SET_MM_BRK:
+		if (addr <= mm->end_data)
+			goto out;
+
+		if (rlim < RLIM_INFINITY &&
+		    (addr - mm->start_brk) +
+		    (mm->end_data - mm->start_data) > rlim)
+			goto out;
+
+		mm->brk = addr;
+		break;
+
+	/*
+	 * If command line arguments and environment
+	 * are placed somewhere else on stack, we can
+	 * set them up here, ARG_START/END to setup
+	 * command line argumets and ENV_START/END
+	 * for environment.
+	 */
+	case PR_SET_MM_START_STACK:
+	case PR_SET_MM_ARG_START:
+	case PR_SET_MM_ARG_END:
+	case PR_SET_MM_ENV_START:
+	case PR_SET_MM_ENV_END:
+		if (!vma) {
+			error = -EFAULT;
+			goto out;
+		}
+		if (opt == PR_SET_MM_START_STACK)
+			mm->start_stack = addr;
+		else if (opt == PR_SET_MM_ARG_START)
+			mm->arg_start = addr;
+		else if (opt == PR_SET_MM_ARG_END)
+			mm->arg_end = addr;
+		else if (opt == PR_SET_MM_ENV_START)
+			mm->env_start = addr;
+		else if (opt == PR_SET_MM_ENV_END)
+			mm->env_end = addr;
+		break;
+
+	/*
+	 * This doesn't move auxiliary vector itself
+	 * since it's pinned to mm_struct, but allow
+	 * to fill vector with new values. It's up
+	 * to a caller to provide sane values here
+	 * otherwise user space tools which use this
+	 * vector might be unhappy.
+	 */
+	case PR_SET_MM_AUXV: {
+		unsigned long user_auxv[AT_VECTOR_SIZE];
+
+		if (arg4 > sizeof(user_auxv))
+			goto out;
+		up_read(&mm->mmap_sem);
+
+		if (copy_from_user(user_auxv, (const void __user *)addr, arg4))
+			return -EFAULT;
+
+		/* Make sure the last entry is always AT_NULL */
+		user_auxv[AT_VECTOR_SIZE - 2] = 0;
+		user_auxv[AT_VECTOR_SIZE - 1] = 0;
+
+		BUILD_BUG_ON(sizeof(user_auxv) != sizeof(mm->saved_auxv));
+
+		task_lock(current);
+		memcpy(mm->saved_auxv, user_auxv, arg4);
+		task_unlock(current);
+
+		return 0;
+	}
+	default:
+		goto out;
+	}
+
+	error = 0;
+out:
+	up_read(&mm->mmap_sem);
+	return error;
+}
+
+static int prctl_get_tid_address(struct task_struct *me, int __user **tid_addr)
+{
+	return put_user(me->clear_child_tid, tid_addr);
+}
+
+#else /* CONFIG_CHECKPOINT_RESTORE */
+static int prctl_set_mm(int opt, unsigned long addr,
+			unsigned long arg4, unsigned long arg5)
+{
+	return -EINVAL;
+}
+static int prctl_get_tid_address(struct task_struct *me, int __user **tid_addr)
+{
+	return -EINVAL;
+}
+#endif
+
 SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 		unsigned long, arg4, unsigned long, arg5)
 {
@@ -1598,7 +2015,6 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 				break;
 			}
 			me->pdeath_signal = arg2;
-			error = 0;
 			break;
 		case PR_GET_PDEATHSIG:
 			error = put_user(me->pdeath_signal, (int __user *)arg2);
@@ -1612,7 +2028,6 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 				break;
 			}
 			set_dumpable(me->mm, arg2);
-			error = 0;
 			break;
 
 		case PR_SET_UNALIGN:
@@ -1639,35 +2054,32 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 		case PR_SET_TIMING:
 			if (arg2 != PR_TIMING_STATISTICAL)
 				error = -EINVAL;
-			else
-				error = 0;
 			break;
-
 		case PR_SET_NAME:
 			comm[sizeof(me->comm)-1] = 0;
 			if (strncpy_from_user(comm, (char __user *)arg2,
 					      sizeof(me->comm) - 1) < 0)
 				return -EFAULT;
 			set_task_comm(me, comm);
-			return 0;
+			proc_comm_connector(me);
+			break;
 		case PR_GET_NAME:
 			get_task_comm(comm, me);
 			if (copy_to_user((char __user *)arg2, comm,
 					 sizeof(comm)))
 				return -EFAULT;
-			return 0;
+			break;
 		case PR_GET_ENDIAN:
 			error = GET_ENDIAN(me, arg2);
 			break;
 		case PR_SET_ENDIAN:
 			error = SET_ENDIAN(me, arg2);
 			break;
-
 		case PR_GET_SECCOMP:
 			error = prctl_get_seccomp();
 			break;
 		case PR_SET_SECCOMP:
-			error = prctl_set_seccomp(arg2);
+			error = prctl_set_seccomp(arg2, (char __user *)arg3);
 			break;
 		case PR_GET_TSC:
 			error = GET_TSC_CTL(arg2);
@@ -1690,7 +2102,6 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 					current->default_timer_slack_ns;
 			else
 				current->timer_slack_ns = arg2;
-			error = 0;
 			break;
 		case PR_MCE_KILL:
 			if (arg4 | arg5)
@@ -1716,7 +2127,6 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 			default:
 				return -EINVAL;
 			}
-			error = 0;
 			break;
 		case PR_MCE_KILL_GET:
 			if (arg2 | arg3 | arg4 | arg5)
@@ -1727,6 +2137,29 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 			else
 				error = PR_MCE_KILL_DEFAULT;
 			break;
+		case PR_SET_MM:
+			error = prctl_set_mm(arg2, arg3, arg4, arg5);
+			break;
+		case PR_GET_TID_ADDRESS:
+			error = prctl_get_tid_address(me, (int __user **)arg2);
+			break;
+		case PR_SET_CHILD_SUBREAPER:
+			me->signal->is_child_subreaper = !!arg2;
+			break;
+		case PR_GET_CHILD_SUBREAPER:
+			error = put_user(me->signal->is_child_subreaper,
+					 (int __user *) arg2);
+			break;
+		case PR_SET_NO_NEW_PRIVS:
+			if (arg2 != 1 || arg3 || arg4 || arg5)
+				return -EINVAL;
+
+			current->no_new_privs = 1;
+			break;
+		case PR_GET_NO_NEW_PRIVS:
+			if (arg2 || arg3 || arg4 || arg5)
+				return -EINVAL;
+			return current->no_new_privs ? 1 : 0;
 		default:
 			error = -EINVAL;
 			break;
@@ -1753,6 +2186,32 @@ static void argv_cleanup(struct subprocess_info *info)
 	argv_free(info->argv);
 }
 
+static int __orderly_poweroff(void)
+{
+	int argc;
+	char **argv;
+	static char *envp[] = {
+		"HOME=/",
+		"PATH=/sbin:/bin:/usr/sbin:/usr/bin",
+		NULL
+	};
+	int ret;
+
+	argv = argv_split(GFP_ATOMIC, poweroff_cmd, &argc);
+	if (argv == NULL) {
+		printk(KERN_WARNING "%s failed to allocate memory for \"%s\"\n",
+		       __func__, poweroff_cmd);
+		return -ENOMEM;
+	}
+
+	ret = call_usermodehelper_fns(argv[0], argv, envp, UMH_NO_WAIT,
+				      NULL, argv_cleanup, NULL);
+	if (ret == -ENOMEM)
+		argv_free(argv);
+
+	return ret;
+}
+
 /**
  * orderly_poweroff - Trigger an orderly system poweroff
  * @force: force poweroff if command execution fails
@@ -1762,40 +2221,17 @@ static void argv_cleanup(struct subprocess_info *info)
  */
 int orderly_poweroff(bool force)
 {
-	int argc;
-	char **argv = argv_split(GFP_ATOMIC, poweroff_cmd, &argc);
-	static char *envp[] = {
-		"HOME=/",
-		"PATH=/sbin:/bin:/usr/sbin:/usr/bin",
-		NULL
-	};
-	int ret = -ENOMEM;
-	struct subprocess_info *info;
+	int ret = __orderly_poweroff();
 
-	if (argv == NULL) {
-		printk(KERN_WARNING "%s failed to allocate memory for \"%s\"\n",
-		       __func__, poweroff_cmd);
-		goto out;
-	}
-
-	info = call_usermodehelper_setup(argv[0], argv, envp, GFP_ATOMIC);
-	if (info == NULL) {
-		argv_free(argv);
-		goto out;
-	}
-
-	call_usermodehelper_setfns(info, NULL, argv_cleanup, NULL);
-
-	ret = call_usermodehelper_exec(info, UMH_NO_WAIT);
-
-  out:
 	if (ret && force) {
 		printk(KERN_WARNING "Failed to start orderly shutdown: "
 		       "forcing the issue\n");
 
-		/* I guess this should try to kick off some daemon to
-		   sync and poweroff asap.  Or not even bother syncing
-		   if we're doing an emergency shutdown? */
+		/*
+		 * I guess this should try to kick off some daemon to sync and
+		 * poweroff asap.  Or not even bother syncing if we're doing an
+		 * emergency shutdown?
+		 */
 		emergency_sync();
 		kernel_power_off();
 	}

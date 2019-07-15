@@ -16,28 +16,13 @@
 #define _ASM_TILE_KMAP_TYPES_H
 
 /*
- * In TILE Linux each set of four of these uses another 16MB chunk of
- * address space, given 64 tiles and 64KB pages, so we only enable
- * ones that are required by the kernel configuration.
+ * In 32-bit TILE Linux we have to balance the desire to have a lot of
+ * nested atomic mappings with the fact that large page sizes and many
+ * processors chew up address space quickly.  In a typical
+ * 64-processor, 64KB-page layout build, making KM_TYPE_NR one larger
+ * adds 4MB of required address-space.  For now we leave KM_TYPE_NR
+ * set to depth 8.
  */
-enum km_type {
-	KM_BOUNCE_READ,
-	KM_SKB_SUNRPC_DATA,
-	KM_SKB_DATA_SOFTIRQ,
-	KM_USER0,
-	KM_USER1,
-	KM_BIO_SRC_IRQ,
-	KM_IRQ0,
-	KM_IRQ1,
-	KM_SOFTIRQ0,
-	KM_SOFTIRQ1,
-	KM_MEMCPY0,
-	KM_MEMCPY1,
-#if defined(CONFIG_HIGHPTE)
-	KM_PTE0,
-	KM_PTE1,
-#endif
-	KM_TYPE_NR
-};
+#define	KM_TYPE_NR 8
 
 #endif /* _ASM_TILE_KMAP_TYPES_H */

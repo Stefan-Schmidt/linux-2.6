@@ -25,17 +25,17 @@
 
 #include <plat/mcspi.h>
 #include <plat/board.h>
-#include <plat/common.h>
+#include "common.h"
 #include <plat/dma.h>
 #include <plat/gpmc.h>
 #include <plat/usb.h>
 
 #include "mux.h"
 #include "pm.h"
+#include "sdram-nokia.h"
 
 #define RX51_GPIO_SLEEP_IND 162
 
-struct omap_sdrc_params *rx51_get_sdram_timings(void);
 extern void rx51_video_mem_init(void);
 
 static struct gpio_led gpio_leds[] = {
@@ -58,58 +58,25 @@ static struct platform_device leds_gpio = {
 	},
 };
 
-static struct cpuidle_params rx51_cpuidle_params[] = {
-	/* C1 */
-	{1, 110, 162, 5},
-	/* C2 */
-	{1, 106, 180, 309},
-	/* C3 */
-	{0, 107, 410, 46057},
-	/* C4 */
-	{0, 121, 3374, 46057},
-	/* C5 */
-	{1, 855, 1146, 46057},
-	/* C6 */
-	{0, 7580, 4134, 484329},
-	/* C7 */
-	{1, 7505, 15274, 484329},
-};
+/*
+ * cpuidle C-states definition for rx51.
+ *
+ * The 'exit_latency' field is the sum of sleep
+ * and wake-up latencies.
 
-static struct omap_lcd_config rx51_lcd_config = {
-	.ctrl_name	= "internal",
-};
+    ---------------------------------------------
+   | state |  exit_latency  |  target_residency  |
+    ---------------------------------------------
+   |  C1   |    110 + 162   |            5       |
+   |  C2   |    106 + 180   |          309       |
+   |  C3   |    107 + 410   |        46057       |
+   |  C4   |    121 + 3374  |        46057       |
+   |  C5   |    855 + 1146  |        46057       |
+   |  C6   |   7580 + 4134  |       484329       |
+   |  C7   |   7505 + 15274 |       484329       |
+    ---------------------------------------------
 
-static struct omap_fbmem_config rx51_fbmem0_config = {
-	.size = 752 * 1024,
-};
-
-static struct omap_fbmem_config rx51_fbmem1_config = {
-	.size = 752 * 1024,
-};
-
-static struct omap_fbmem_config rx51_fbmem2_config = {
-	.size = 752 * 1024,
-};
-
-static struct omap_board_config_kernel rx51_config[] = {
-	{ OMAP_TAG_FBMEM,	&rx51_fbmem0_config },
-	{ OMAP_TAG_FBMEM,	&rx51_fbmem1_config },
-	{ OMAP_TAG_FBMEM,	&rx51_fbmem2_config },
-	{ OMAP_TAG_LCD,		&rx51_lcd_config },
-};
-
-static void __init rx51_init_irq(void)
-{
-	struct omap_sdrc_params *sdrc_params;
-
-	omap_board_config = rx51_config;
-	omap_board_config_size = ARRAY_SIZE(rx51_config);
-	omap3_pm_init_cpuidle(rx51_cpuidle_params);
-	sdrc_params = rx51_get_sdram_timings();
-	omap2_init_common_hw(sdrc_params, sdrc_params);
-	omap_init_irq();
-	omap_gpio_init();
-}
+*/
 
 extern void __init rx51_peripherals_init(void);
 
@@ -117,8 +84,6 @@ extern void __init rx51_peripherals_init(void);
 static struct omap_board_mux board_mux[] __initdata = {
 	{ .reg_offset = OMAP_MUX_TERMINATOR },
 };
-#else
-#define board_mux	NULL
 #endif
 
 static struct omap_musb_board_data musb_board_data = {
@@ -129,8 +94,14 @@ static struct omap_musb_board_data musb_board_data = {
 
 static void __init rx51_init(void)
 {
+	struct omap_sdrc_params *sdrc_params;
+
 	omap3_mux_init(board_mux, OMAP_PACKAGE_CBB);
 	omap_serial_init();
+
+	sdrc_params = nokia_get_sdram_timings();
+	omap_sdrc_init(sdrc_params, sdrc_params);
+
 	usb_musb_init(&musb_board_data);
 	rx51_peripherals_init();
 
@@ -141,19 +112,22 @@ static void __init rx51_init(void)
 	platform_device_register(&leds_gpio);
 }
 
-static void __init rx51_map_io(void)
+static void __init rx51_reserve(void)
 {
-	omap2_set_globals_3xxx();
 	rx51_video_mem_init();
-	omap34xx_map_common_io();
+	omap_reserve();
 }
 
 MACHINE_START(NOKIA_RX51, "Nokia RX-51 board")
 	/* Maintainer: Lauri Leukkunen <lauri.leukkunen@nokia.com> */
-	.boot_params	= 0x80000100,
-	.map_io		= rx51_map_io,
-	.reserve	= omap_reserve,
-	.init_irq	= rx51_init_irq,
+	.atag_offset	= 0x100,
+	.reserve	= rx51_reserve,
+	.map_io		= omap3_map_io,
+	.init_early	= omap3430_init_early,
+	.init_irq	= omap3_init_irq,
+	.handle_irq	= omap3_intc_handle_irq,
 	.init_machine	= rx51_init,
-	.timer		= &omap_timer,
+	.init_late	= omap3430_init_late,
+	.timer		= &omap3_timer,
+	.restart	= omap_prcm_restart,
 MACHINE_END

@@ -1,5 +1,5 @@
 /*
- * net/sched/ipt.c	iptables target interface
+ * net/sched/ipt.c     iptables target interface
  *
  *TODO: Add other tables. For now we only support the ipv4 table targets
  *
@@ -138,7 +138,7 @@ static int tcf_ipt_init(struct nlattr *nla, struct nlattr *est,
 		pc = tcf_hash_create(index, est, a, sizeof(*ipt), bind,
 				     &ipt_idx_gen, &ipt_hash_info);
 		if (IS_ERR(pc))
-		    return PTR_ERR(pc);
+			return PTR_ERR(pc);
 		ret = ACT_P_CREATED;
 	} else {
 		if (!ovr) {
@@ -162,7 +162,8 @@ static int tcf_ipt_init(struct nlattr *nla, struct nlattr *est,
 	if (unlikely(!t))
 		goto err2;
 
-	if ((err = ipt_init_target(t, tname, hook)) < 0)
+	err = ipt_init_target(t, tname, hook);
+	if (err < 0)
 		goto err3;
 
 	spin_lock_bh(&ipt->tcf_lock);
@@ -184,7 +185,12 @@ err3:
 err2:
 	kfree(tname);
 err1:
-	kfree(pc);
+	if (ret == ACT_P_CREATED) {
+		if (est)
+			gen_kill_estimator(&pc->tcfc_bstats,
+					   &pc->tcfc_rate_est);
+		kfree_rcu(pc, tcfc_rcu);
+	}
 	return err;
 }
 
@@ -194,7 +200,7 @@ static int tcf_ipt_cleanup(struct tc_action *a, int bind)
 	return tcf_ipt_release(ipt, bind);
 }
 
-static int tcf_ipt(struct sk_buff *skb, struct tc_action *a,
+static int tcf_ipt(struct sk_buff *skb, const struct tc_action *a,
 		   struct tcf_result *res)
 {
 	int ret = 0, result = 0;
@@ -209,12 +215,12 @@ static int tcf_ipt(struct sk_buff *skb, struct tc_action *a,
 	spin_lock(&ipt->tcf_lock);
 
 	ipt->tcf_tm.lastuse = jiffies;
-	ipt->tcf_bstats.bytes += qdisc_pkt_len(skb);
-	ipt->tcf_bstats.packets++;
+	bstats_update(&ipt->tcf_bstats, skb);
 
 	/* yes, we have to worry about both in and out dev
-	 worry later - danger - this API seems to have changed
-	 from earlier kernels */
+	 * worry later - danger - this API seems to have changed
+	 * from earlier kernels
+	 */
 	par.in       = skb->dev;
 	par.out      = NULL;
 	par.hooknum  = ipt->tcfi_hook;
@@ -234,9 +240,8 @@ static int tcf_ipt(struct sk_buff *skb, struct tc_action *a,
 		result = TC_ACT_PIPE;
 		break;
 	default:
-		if (net_ratelimit())
-			pr_notice("tc filter: Bogus netfilter code"
-				  " %d assume ACCEPT\n", ret);
+		net_notice_ratelimited("tc filter: Bogus netfilter code %d assume ACCEPT\n",
+				       ret);
 		result = TC_POLICE_OK;
 		break;
 	}
@@ -254,9 +259,9 @@ static int tcf_ipt_dump(struct sk_buff *skb, struct tc_action *a, int bind, int 
 	struct tc_cnt c;
 
 	/* for simple targets kernel size == user size
-	** user name = target name
-	** for foolproof you need to not assume this
-	*/
+	 * user name = target name
+	 * for foolproof you need to not assume this
+	 */
 
 	t = kmemdup(ipt->tcfi_t, ipt->tcfi_t->u.user.target_size, GFP_ATOMIC);
 	if (unlikely(!t))
@@ -266,15 +271,17 @@ static int tcf_ipt_dump(struct sk_buff *skb, struct tc_action *a, int bind, int 
 	c.refcnt = ipt->tcf_refcnt - ref;
 	strcpy(t->u.user.name, ipt->tcfi_t->u.kernel.target->name);
 
-	NLA_PUT(skb, TCA_IPT_TARG, ipt->tcfi_t->u.user.target_size, t);
-	NLA_PUT_U32(skb, TCA_IPT_INDEX, ipt->tcf_index);
-	NLA_PUT_U32(skb, TCA_IPT_HOOK, ipt->tcfi_hook);
-	NLA_PUT(skb, TCA_IPT_CNT, sizeof(struct tc_cnt), &c);
-	NLA_PUT_STRING(skb, TCA_IPT_TABLE, ipt->tcfi_tname);
+	if (nla_put(skb, TCA_IPT_TARG, ipt->tcfi_t->u.user.target_size, t) ||
+	    nla_put_u32(skb, TCA_IPT_INDEX, ipt->tcf_index) ||
+	    nla_put_u32(skb, TCA_IPT_HOOK, ipt->tcfi_hook) ||
+	    nla_put(skb, TCA_IPT_CNT, sizeof(struct tc_cnt), &c) ||
+	    nla_put_string(skb, TCA_IPT_TABLE, ipt->tcfi_tname))
+		goto nla_put_failure;
 	tm.install = jiffies_to_clock_t(jiffies - ipt->tcf_tm.install);
 	tm.lastuse = jiffies_to_clock_t(jiffies - ipt->tcf_tm.lastuse);
 	tm.expires = jiffies_to_clock_t(ipt->tcf_tm.expires);
-	NLA_PUT(skb, TCA_IPT_TM, sizeof (tm), &tm);
+	if (nla_put(skb, TCA_IPT_TM, sizeof (tm), &tm))
+		goto nla_put_failure;
 	kfree(t);
 	return skb->len;
 

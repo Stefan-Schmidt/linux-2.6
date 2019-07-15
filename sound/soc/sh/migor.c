@@ -8,11 +8,11 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/clkdev.h>
 #include <linux/device.h>
 #include <linux/firmware.h>
 #include <linux/module.h>
 
-#include <asm/clkdev.h>
 #include <asm/clock.h>
 
 #include <cpu/sh7722.h>
@@ -20,7 +20,6 @@
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/soc.h>
-#include <sound/soc-dapm.h>
 
 #include "../codecs/wm8978.h"
 #include "siu.h"
@@ -36,7 +35,7 @@ static unsigned long siumckb_recalc(struct clk *clk)
 	return codec_freq;
 }
 
-static struct clk_ops siumckb_clk_ops = {
+static struct sh_clk_ops siumckb_clk_ops = {
 	.recalc = siumckb_recalc,
 };
 
@@ -140,11 +139,12 @@ static const struct snd_soc_dapm_route audio_map[] = {
 static int migor_dai_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_dapm_context *dapm = &codec->dapm;
 
-	snd_soc_dapm_new_controls(codec, migor_dapm_widgets,
+	snd_soc_dapm_new_controls(dapm, migor_dapm_widgets,
 				  ARRAY_SIZE(migor_dapm_widgets));
 
-	snd_soc_dapm_add_routes(codec, audio_map, ARRAY_SIZE(audio_map));
+	snd_soc_dapm_add_routes(dapm, audio_map, ARRAY_SIZE(audio_map));
 
 	return 0;
 }
@@ -164,6 +164,7 @@ static struct snd_soc_dai_link migor_dai = {
 /* migor audio machine driver */
 static struct snd_soc_card snd_soc_migor = {
 	.name = "Migo-R",
+	.owner = THIS_MODULE,
 	.dai_link = &migor_dai,
 	.num_links = 1,
 };

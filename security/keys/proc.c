@@ -1,4 +1,4 @@
-/* proc.c: proc files for key database enumeration
+/* procfs files for key database enumeration
  *
  * Copyright (C) 2004 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
@@ -60,9 +60,8 @@ static const struct file_operations proc_key_users_fops = {
 	.release	= seq_release,
 };
 
-/*****************************************************************************/
 /*
- * declare the /proc files
+ * Declare the /proc files.
  */
 static int __init key_proc_init(void)
 {
@@ -79,14 +78,13 @@ static int __init key_proc_init(void)
 		panic("Cannot create /proc/key-users\n");
 
 	return 0;
-
-} /* end key_proc_init() */
+}
 
 __initcall(key_proc_init);
 
-/*****************************************************************************/
 /*
- * implement "/proc/keys" to provides a list of the keys on the system
+ * Implement "/proc/keys" to provide a list of the keys on the system that
+ * grant View permission to the caller.
  */
 #ifdef CONFIG_KEYS_DEBUG_PROC_KEYS
 
@@ -201,7 +199,7 @@ static int proc_keys_show(struct seq_file *m, void *v)
 	if (key->perm & KEY_POS_VIEW) {
 		skey_ref = search_my_process_keyrings(key->type, key,
 						      lookup_user_key_possessed,
-						      cred);
+						      true, cred);
 		if (!IS_ERR(skey_ref)) {
 			key_ref_put(skey_ref);
 			key_ref = make_key_ref(key, 1);
@@ -244,7 +242,7 @@ static int proc_keys_show(struct seq_file *m, void *v)
 #define showflag(KEY, LETTER, FLAG) \
 	(test_bit(FLAG,	&(KEY)->flags) ? LETTER : '-')
 
-	seq_printf(m, "%08x %c%c%c%c%c%c %5d %4s %08x %5d %5d %-9.9s ",
+	seq_printf(m, "%08x %c%c%c%c%c%c%c %5d %4s %08x %5d %5d %-9.9s ",
 		   key->serial,
 		   showflag(key, 'I', KEY_FLAG_INSTANTIATED),
 		   showflag(key, 'R', KEY_FLAG_REVOKED),
@@ -252,6 +250,7 @@ static int proc_keys_show(struct seq_file *m, void *v)
 		   showflag(key, 'Q', KEY_FLAG_IN_QUOTA),
 		   showflag(key, 'U', KEY_FLAG_USER_CONSTRUCT),
 		   showflag(key, 'N', KEY_FLAG_NEGATIVE),
+		   showflag(key, 'i', KEY_FLAG_INVALIDATED),
 		   atomic_read(&key->usage),
 		   xbuf,
 		   key->perm,
@@ -293,9 +292,9 @@ static struct rb_node *key_user_first(struct rb_root *r)
 	return __key_user_next(n);
 }
 
-/*****************************************************************************/
 /*
- * implement "/proc/key-users" to provides a list of the key users
+ * Implement "/proc/key-users" to provides a list of the key users and their
+ * quotas.
  */
 static int proc_key_users_open(struct inode *inode, struct file *file)
 {
@@ -351,5 +350,4 @@ static int proc_key_users_show(struct seq_file *m, void *v)
 		   maxbytes);
 
 	return 0;
-
 }

@@ -25,13 +25,6 @@
 
 #include <asm/context.S>
 
-#if defined(CONFIG_BFIN_SCRATCH_REG_RETN)
-# define EX_SCRATCH_REG RETN
-#elif defined(CONFIG_BFIN_SCRATCH_REG_RETE)
-# define EX_SCRATCH_REG RETE
-#else
-# define EX_SCRATCH_REG CYCLES
-#endif
 
 #ifdef CONFIG_EXCPT_IRQ_SYSC_L1
 .section .l1.text
@@ -268,7 +261,7 @@ ENTRY(_handle_bad_cplb)
 	/* To get here, we just tried and failed to change a CPLB
 	 * so, handle things in trap_c (C code), by lowering to
 	 * IRQ5, just like we normally do. Since this is not a
-	 * "normal" return path, we have a do alot of stuff to
+	 * "normal" return path, we have a do a lot of stuff to
 	 * the stack to get ready so, we can fall through - we
 	 * need to make a CPLB exception look like a normal exception
 	 */
@@ -615,7 +608,7 @@ ENTRY(_system_call)
 #ifdef CONFIG_IPIPE
 	r0 = sp;
 	SP += -12;
-	call ___ipipe_syscall_root;
+	pseudo_long_call ___ipipe_syscall_root, p0;
 	SP += 12;
 	cc = r0 == 1;
 	if cc jump .Lsyscall_really_exit;
@@ -692,7 +685,7 @@ ENTRY(_system_call)
 	[--sp] = reti;
 	SP += 4; /* don't merge with next insn to keep the pattern obvious */
 	SP += -12;
-	call ___ipipe_sync_root;
+	pseudo_long_call ___ipipe_sync_root, p4;
 	SP += 12;
 	jump .Lresume_userspace_1;
 .Lsyscall_no_irqsync:
@@ -711,8 +704,6 @@ ENTRY(_system_call)
 	jump .Lresume_userspace_1;
 
 .Lsyscall_sigpending:
-	cc = BITTST(r7, TIF_RESTORE_SIGMASK);
-	if cc jump .Lsyscall_do_signals;
 	cc = BITTST(r7, TIF_SIGPENDING);
 	if cc jump .Lsyscall_do_signals;
 	cc = BITTST(r7, TIF_NOTIFY_RESUME);
@@ -817,7 +808,7 @@ _new_old_task:
 	rets = [sp++];
 
 	/*
-	 * When we come out of resume, r0 carries "old" task, becuase we are
+	 * When we come out of resume, r0 carries "old" task, because we are
 	 * in "new" task.
 	 */
 	rts;
@@ -952,8 +943,17 @@ ENDPROC(_evt_up_evt14)
 #ifdef CONFIG_IPIPE
 
 _resume_kernel_from_int:
+	r1 = LO(~0x8000) (Z);
+	r1 = r0 & r1;
+	r0 = 1;
+	r0 = r1 - r0;
+	r2 = r1 & r0;
+	cc = r2 == 0;
+	/* Sync the root stage only from the outer interrupt level. */
+	if !cc jump .Lnosync;
 	r0.l = ___ipipe_sync_root;
 	r0.h = ___ipipe_sync_root;
+	[--sp] = reti;
 	[--sp] = rets;
 	[--sp] = ( r7:4, p5:3 );
 	SP += -12;
@@ -961,6 +961,8 @@ _resume_kernel_from_int:
 	SP += 12;
 	( r7:4, p5:3 ) = [sp++];
 	rets = [sp++];
+	reti = [sp++];
+.Lnosync:
 	rts
 #elif defined(CONFIG_PREEMPT)
 
@@ -1130,7 +1132,8 @@ ENTRY(_schedule_and_signal_from_int)
 	sti r0;
 
 	/* finish the userspace "atomic" functions for it */
-	r1 = FIXED_CODE_END;
+	r1.l = lo(FIXED_CODE_END);
+	r1.h = hi(FIXED_CODE_END);
 	r2 = [sp + PT_PC];
 	cc = r1 <= r2;
 	if cc jump .Lresume_userspace (bp);
@@ -1233,7 +1236,7 @@ ENTRY(_software_trace_buff)
 	.endr
 #endif /* CONFIG_DEBUG_BFIN_HWTRACE_EXPAND */
 
-#if CONFIG_EARLY_PRINTK
+#ifdef CONFIG_EARLY_PRINTK
 __INIT
 ENTRY(_early_trap)
 	SAVE_ALL_SYS
@@ -1365,7 +1368,7 @@ END(_ex_table)
 ENTRY(_sys_call_table)
 	.long _sys_restart_syscall	/* 0 */
 	.long _sys_exit
-	.long _sys_fork
+	.long _sys_ni_syscall	/* fork */
 	.long _sys_read
 	.long _sys_write
 	.long _sys_open		/* 5 */
@@ -1532,7 +1535,7 @@ ENTRY(_sys_call_table)
 	.long _sys_ni_syscall	/* for vm86 */
 	.long _sys_ni_syscall	/* old "query_module" */
 	.long _sys_ni_syscall	/* sys_poll */
-	.long _sys_nfsservctl
+	.long _sys_ni_syscall   /* old nfsservctl */
 	.long _sys_setresgid	/* setresgid16 */	/* 170 */
 	.long _sys_getresgid	/* getresgid16 */
 	.long _sys_prctl
@@ -1738,6 +1741,14 @@ ENTRY(_sys_call_table)
 	.long _sys_fanotify_mark
 	.long _sys_prlimit64
 	.long _sys_cacheflush
+	.long _sys_name_to_handle_at	/* 375 */
+	.long _sys_open_by_handle_at
+	.long _sys_clock_adjtime
+	.long _sys_syncfs
+	.long _sys_setns
+	.long _sys_sendmmsg		/* 380 */
+	.long _sys_process_vm_readv
+	.long _sys_process_vm_writev
 
 	.rept NR_syscalls-(.-_sys_call_table)/4
 	.long _sys_ni_syscall

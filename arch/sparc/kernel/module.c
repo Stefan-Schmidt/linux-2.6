@@ -16,6 +16,9 @@
 
 #include <asm/processor.h>
 #include <asm/spitfire.h>
+#include <asm/cacheflush.h>
+
+#include "entry.h"
 
 #ifdef CONFIG_SPARC64
 
@@ -23,37 +26,16 @@
 
 static void *module_map(unsigned long size)
 {
-	struct vm_struct *area;
-
-	size = PAGE_ALIGN(size);
-	if (!size || size > MODULES_LEN)
+	if (PAGE_ALIGN(size) > MODULES_LEN)
 		return NULL;
-
-	area = __get_vm_area(size, VM_ALLOC, MODULES_VADDR, MODULES_END);
-	if (!area)
-		return NULL;
-
-	return __vmalloc_area(area, GFP_KERNEL, PAGE_KERNEL);
-}
-
-static char *dot2underscore(char *name)
-{
-	return name;
+	return __vmalloc_node_range(size, 1, MODULES_VADDR, MODULES_END,
+				GFP_KERNEL, PAGE_KERNEL, -1,
+				__builtin_return_address(0));
 }
 #else
 static void *module_map(unsigned long size)
 {
 	return vmalloc(size);
-}
-
-/* Replace references to .func with _Func */
-static char *dot2underscore(char *name)
-{
-	if (name[0] == '.') {
-		name[0] = '_';
-                name[1] = toupper(name[1]);
-	}
-	return name;
 }
 #endif /* CONFIG_SPARC64 */
 
@@ -66,18 +48,10 @@ void *module_alloc(unsigned long size)
 		return NULL;
 
 	ret = module_map(size);
-	if (!ret)
-		ret = ERR_PTR(-ENOMEM);
-	else
+	if (ret)
 		memset(ret, 0, size);
 
 	return ret;
-}
-
-/* Free memory returned from module_core_alloc/module_init_alloc */
-void module_free(struct module *mod, void *module_region)
-{
-	vfree(module_region);
 }
 
 /* Make generic code ignore STT_REGISTER dummy undefined symbols.  */
@@ -102,26 +76,11 @@ int module_frob_arch_sections(Elf_Ehdr *hdr,
 
 	for (i = 1; i < sechdrs[symidx].sh_size / sizeof(Elf_Sym); i++) {
 		if (sym[i].st_shndx == SHN_UNDEF) {
-			if (ELF_ST_TYPE(sym[i].st_info) == STT_REGISTER) {
+			if (ELF_ST_TYPE(sym[i].st_info) == STT_REGISTER)
 				sym[i].st_shndx = SHN_ABS;
-			} else {
-				char *name = strtab + sym[i].st_name;
-				dot2underscore(name);
-			}
 		}
 	}
 	return 0;
-}
-
-int apply_relocate(Elf_Shdr *sechdrs,
-		   const char *strtab,
-		   unsigned int symindex,
-		   unsigned int relsec,
-		   struct module *me)
-{
-	printk(KERN_ERR "module %s: non-ADD RELOCATION unsupported\n",
-	       me->name);
-	return -ENOEXEC;
 }
 
 int apply_relocate_add(Elf_Shdr *sechdrs,
@@ -155,6 +114,10 @@ int apply_relocate_add(Elf_Shdr *sechdrs,
 		v = sym->st_value + rel[i].r_addend;
 
 		switch (ELF_R_TYPE(rel[i].r_info) & 0xff) {
+		case R_SPARC_DISP32:
+			v -= (Elf_Addr) location;
+			*loc32 = v;
+			break;
 #ifdef CONFIG_SPARC64
 		case R_SPARC_64:
 			location[0] = v >> 56;
@@ -165,11 +128,6 @@ int apply_relocate_add(Elf_Shdr *sechdrs,
 			location[5] = v >> 16;
 			location[6] = v >>  8;
 			location[7] = v >>  0;
-			break;
-
-		case R_SPARC_DISP32:
-			v -= (Elf_Addr) location;
-			*loc32 = v;
 			break;
 
 		case R_SPARC_WDISP19:
@@ -220,18 +178,43 @@ int apply_relocate_add(Elf_Shdr *sechdrs,
 			       me->name,
 			       (int) (ELF_R_TYPE(rel[i].r_info) & 0xff));
 			return -ENOEXEC;
-		};
+		}
 	}
 	return 0;
 }
 
 #ifdef CONFIG_SPARC64
+static void do_patch_sections(const Elf_Ehdr *hdr,
+			      const Elf_Shdr *sechdrs)
+{
+	const Elf_Shdr *s, *sun4v_1insn = NULL, *sun4v_2insn = NULL;
+	char *secstrings = (void *)hdr + sechdrs[hdr->e_shstrndx].sh_offset;
+
+	for (s = sechdrs; s < sechdrs + hdr->e_shnum; s++) {
+		if (!strcmp(".sun4v_1insn_patch", secstrings + s->sh_name))
+			sun4v_1insn = s;
+		if (!strcmp(".sun4v_2insn_patch", secstrings + s->sh_name))
+			sun4v_2insn = s;
+	}
+
+	if (sun4v_1insn && tlb_type == hypervisor) {
+		void *p = (void *) sun4v_1insn->sh_addr;
+		sun4v_patch_1insn_range(p, p + sun4v_1insn->sh_size);
+	}
+	if (sun4v_2insn && tlb_type == hypervisor) {
+		void *p = (void *) sun4v_2insn->sh_addr;
+		sun4v_patch_2insn_range(p, p + sun4v_2insn->sh_size);
+	}
+}
+
 int module_finalize(const Elf_Ehdr *hdr,
 		    const Elf_Shdr *sechdrs,
 		    struct module *me)
 {
 	/* make jump label nops */
 	jump_label_apply_nops(me);
+
+	do_patch_sections(hdr, sechdrs);
 
 	/* Cheetah's I-cache is fully coherent.  */
 	if (tlb_type == spitfire) {
@@ -245,15 +228,4 @@ int module_finalize(const Elf_Ehdr *hdr,
 
 	return 0;
 }
-#else
-int module_finalize(const Elf_Ehdr *hdr,
-                    const Elf_Shdr *sechdrs,
-                    struct module *me)
-{
-        return 0;
-}
 #endif /* CONFIG_SPARC64 */
-
-void module_arch_cleanup(struct module *mod)
-{
-}

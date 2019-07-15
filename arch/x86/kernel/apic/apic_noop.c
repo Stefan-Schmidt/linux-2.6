@@ -54,11 +54,6 @@ static u64 noop_apic_icr_read(void)
 	return 0;
 }
 
-static int noop_cpu_to_logical_apicid(int cpu)
-{
-	return 0;
-}
-
 static int noop_phys_pkg_id(int cpuid_apic, int index_msb)
 {
 	return 0;
@@ -105,18 +100,12 @@ static unsigned long noop_check_apicid_present(int bit)
 	return physid_isset(bit, phys_cpu_present_map);
 }
 
-static void noop_vector_allocation_domain(int cpu, struct cpumask *retmask)
+static void noop_vector_allocation_domain(int cpu, struct cpumask *retmask,
+					  const struct cpumask *mask)
 {
 	if (cpu != 0)
 		pr_warning("APIC: Vector allocated for non-BSP cpu\n");
-	cpumask_clear(retmask);
-	cpumask_set_cpu(cpu, retmask);
-}
-
-int noop_apicid_to_node(int logical_apicid)
-{
-	/* we're always on node 0 */
-	return 0;
+	cpumask_copy(retmask, cpumask_of(cpu));
 }
 
 static u32 noop_apic_read(u32 reg)
@@ -135,6 +124,7 @@ struct apic apic_noop = {
 	.probe				= noop_probe,
 	.acpi_madt_oem_check		= NULL,
 
+	.apic_id_valid			= default_apic_id_valid,
 	.apic_id_registered		= noop_apic_id_registered,
 
 	.irq_delivery_mode		= dest_LowestPrio,
@@ -153,9 +143,7 @@ struct apic apic_noop = {
 	.ioapic_phys_id_map		= default_ioapic_phys_id_map,
 	.setup_apic_routing		= NULL,
 	.multi_timer_check		= NULL,
-	.apicid_to_node			= noop_apicid_to_node,
 
-	.cpu_to_logical_apicid		= noop_cpu_to_logical_apicid,
 	.cpu_present_to_apicid		= default_cpu_present_to_apicid,
 	.apicid_to_cpu_present		= physid_set_mask_of_physid,
 
@@ -171,8 +159,7 @@ struct apic apic_noop = {
 	.set_apic_id			= NULL,
 	.apic_id_mask			= 0x0F << 24,
 
-	.cpu_mask_to_apicid		= default_cpu_mask_to_apicid,
-	.cpu_mask_to_apicid_and		= default_cpu_mask_to_apicid_and,
+	.cpu_mask_to_apicid_and		= flat_cpu_mask_to_apicid_and,
 
 	.send_IPI_mask			= noop_send_IPI_mask,
 	.send_IPI_mask_allbutself	= noop_send_IPI_mask_allbutself,
@@ -193,8 +180,13 @@ struct apic apic_noop = {
 
 	.read				= noop_apic_read,
 	.write				= noop_apic_write,
+	.eoi_write			= noop_apic_write,
 	.icr_read			= noop_apic_icr_read,
 	.icr_write			= noop_apic_icr_write,
 	.wait_icr_idle			= noop_apic_wait_icr_idle,
 	.safe_wait_icr_idle		= noop_safe_apic_wait_icr_idle,
+
+#ifdef CONFIG_X86_32
+	.x86_32_early_logical_apicid	= noop_x86_32_early_logical_apicid,
+#endif
 };

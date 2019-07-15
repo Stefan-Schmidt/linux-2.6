@@ -24,6 +24,7 @@
  *     Alex Deucher <alexander.deucher@amd.com>
  */
 
+#include <linux/bug.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 
@@ -311,11 +312,19 @@ const u32 evergreen_vs[] =
 	0x00000000,
 	0x3c000000,
 	0x67961001,
+#ifdef __BIG_ENDIAN
+	0x000a0000,
+#else
 	0x00080000,
+#endif
 	0x00000000,
 	0x1c000000,
 	0x67961000,
+#ifdef __BIG_ENDIAN
+	0x00020008,
+#else
 	0x00000008,
+#endif
 	0x00000000,
 };
 

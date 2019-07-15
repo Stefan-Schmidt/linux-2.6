@@ -89,7 +89,7 @@ extern int proc_auto_start(struct cfg_devnode *dev_node_obj,
  *  Returns:
  *      0     :       SUCCESS
  *      -EFAULT :       Invalid processor handle.
- *      -ETIME:       A Timeout Occured before the Control information
+ *      -ETIME:       A Timeout Occurred before the Control information
  *			  could be sent.
  *      -EPERM   :       General Failure.
  *  Requires:
@@ -169,7 +169,7 @@ extern int proc_enum_nodes(void *hprocessor,
  *      0     :       Success.
  *      -EFAULT :       Invalid processor handle.
  *      -EBADR:    The processor is not in the PROC_RUNNING state.
- *      -ETIME:       A timeout occured before the DSP responded to the
+ *      -ETIME:       A timeout occurred before the DSP responded to the
  *			  querry.
  *      -EPERM   :       Unable to get Resource Information
  *  Requires:
@@ -187,20 +187,6 @@ extern int proc_get_resource_info(void *hprocessor,
 					 struct dsp_resourceinfo
 					 *resource_info,
 					 u32 resource_info_size);
-
-/*
- *  ======== proc_exit ========
- *  Purpose:
- *      Decrement reference count, and free resources when reference count is
- *      0.
- *  Parameters:
- *  Returns:
- *  Requires:
- *      PROC is initialized.
- *  Ensures:
- *      When reference count == 0, PROC's private resources are freed.
- */
-extern void proc_exit(void);
 
 /*
  * ======== proc_get_dev_object =========
@@ -221,20 +207,6 @@ extern void proc_exit(void);
  */
 extern int proc_get_dev_object(void *hprocessor,
 				      struct dev_object **device_obj);
-
-/*
- *  ======== proc_init ========
- *  Purpose:
- *      Initialize PROC's private state, keeping a reference count on each
- *      call.
- *  Parameters:
- *  Returns:
- *      TRUE if initialized; FALSE if error occured.
- *  Requires:
- *  Ensures:
- *      TRUE: A requirement for the other public PROC functions.
- */
-extern bool proc_init(void);
 
 /*
  *  ======== proc_get_state ========
@@ -551,6 +523,29 @@ extern int proc_map(void *hprocessor,
 			   struct process_context *pr_ctxt);
 
 /*
+ *  ======== proc_reserve_memory ========
+ *  Purpose:
+ *      Reserve a virtually contiguous region of DSP address space.
+ *  Parameters:
+ *      hprocessor      :   The processor handle.
+ *      ul_size	  :   Size of the address space to reserve.
+ *      pp_rsv_addr       :   Ptr to DSP side reserved u8 address.
+ *  Returns:
+ *      0	 :   Success.
+ *      -EFAULT     :   Invalid processor handle.
+ *      -EPERM       :   General failure.
+ *      -ENOMEM     :   Cannot reserve chunk of this size.
+ *  Requires:
+ *      pp_rsv_addr is not NULL
+ *      PROC Initialized.
+ *  Ensures:
+ *  Details:
+ */
+extern int proc_reserve_memory(void *hprocessor,
+				      u32 ul_size, void **pp_rsv_addr,
+				      struct process_context *pr_ctxt);
+
+/*
  *  ======== proc_un_map ========
  *  Purpose:
  *      Removes a MPU buffer mapping from the DSP address space.
@@ -571,5 +566,28 @@ extern int proc_map(void *hprocessor,
  */
 extern int proc_un_map(void *hprocessor, void *map_addr,
 			      struct process_context *pr_ctxt);
+
+/*
+ *  ======== proc_un_reserve_memory ========
+ *  Purpose:
+ *      Frees a previously reserved region of DSP address space.
+ *  Parameters:
+ *      hprocessor      :   The processor handle.
+ *      prsv_addr	:   Ptr to DSP side reservedBYTE address.
+ *  Returns:
+ *      0	 :   Success.
+ *      -EFAULT     :   Invalid processor handle.
+ *      -EPERM       :   General failure.
+ *      -ENOENT   :   Cannot find a reserved region starting with this
+ *		      :   address.
+ *  Requires:
+ *      prsv_addr is not NULL
+ *      PROC Initialized.
+ *  Ensures:
+ *  Details:
+ */
+extern int proc_un_reserve_memory(void *hprocessor,
+					 void *prsv_addr,
+					 struct process_context *pr_ctxt);
 
 #endif /* PROC_ */

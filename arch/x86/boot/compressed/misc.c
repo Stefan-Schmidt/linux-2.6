@@ -108,8 +108,6 @@ static void error(char *m);
  * This is set up by the setup-routine at boot-time
  */
 struct boot_params *real_mode;		/* Pointer to real-mode data */
-static int quiet;
-static int debug;
 
 void *memset(void *s, int c, size_t n);
 void *memcpy(void *dest, const void *src, size_t n);
@@ -139,6 +137,10 @@ static int lines, cols;
 #include "../../../../lib/decompress_unlzma.c"
 #endif
 
+#ifdef CONFIG_KERNEL_XZ
+#include "../../../../lib/decompress_unxz.c"
+#endif
+
 #ifdef CONFIG_KERNEL_LZO
 #include "../../../../lib/decompress_unlzo.c"
 #endif
@@ -166,15 +168,11 @@ static void serial_putchar(int ch)
 	outb(ch, early_serial_base + TXR);
 }
 
-void __putstr(int error, const char *s)
+void __putstr(const char *s)
 {
 	int x, y, pos;
 	char c;
 
-#ifndef CONFIG_X86_VERBOSE_BOOTUP
-	if (!error)
-		return;
-#endif
 	if (early_serial_base) {
 		const char *str = s;
 		while (*str) {
@@ -261,9 +259,9 @@ void *memcpy(void *dest, const void *src, size_t n)
 
 static void error(char *x)
 {
-	__putstr(1, "\n\n");
-	__putstr(1, x);
-	__putstr(1, "\n\n -- System halted");
+	error_putstr("\n\n");
+	error_putstr(x);
+	error_putstr("\n\n -- System halted");
 
 	while (1)
 		asm("hlt");
@@ -290,8 +288,7 @@ static void parse_elf(void *output)
 		return;
 	}
 
-	if (!quiet)
-		putstr("Parsing ELF... ");
+	debug_putstr("Parsing ELF... ");
 
 	phdrs = malloc(sizeof(*phdrs) * ehdr.e_phnum);
 	if (!phdrs)
@@ -317,6 +314,8 @@ static void parse_elf(void *output)
 		default: /* Ignore other PT_* */ break;
 		}
 	}
+
+	free(phdrs);
 }
 
 asmlinkage void decompress_kernel(void *rmode, memptr heap,
@@ -325,11 +324,6 @@ asmlinkage void decompress_kernel(void *rmode, memptr heap,
 				  unsigned char *output)
 {
 	real_mode = rmode;
-
-	if (cmdline_find_option_bool("quiet"))
-		quiet = 1;
-	if (cmdline_find_option_bool("debug"))
-		debug = 1;
 
 	if (real_mode->screen_info.orig_video_mode == 7) {
 		vidmem = (char *) 0xb0000;
@@ -343,8 +337,7 @@ asmlinkage void decompress_kernel(void *rmode, memptr heap,
 	cols = real_mode->screen_info.orig_video_cols;
 
 	console_init();
-	if (debug)
-		putstr("early console in decompress_kernel\n");
+	debug_putstr("early console in decompress_kernel\n");
 
 	free_mem_ptr     = heap;	/* Heap */
 	free_mem_end_ptr = heap + BOOT_HEAP_SIZE;
@@ -355,7 +348,7 @@ asmlinkage void decompress_kernel(void *rmode, memptr heap,
 	if (heap > 0x3fffffffffffUL)
 		error("Destination address too large");
 #else
-	if (heap > ((-__PAGE_OFFSET-(512<<20)-1) & 0x7fffffff))
+	if (heap > ((-__PAGE_OFFSET-(128<<20)-1) & 0x7fffffff))
 		error("Destination address too large");
 #endif
 #ifndef CONFIG_RELOCATABLE
@@ -363,11 +356,9 @@ asmlinkage void decompress_kernel(void *rmode, memptr heap,
 		error("Wrong destination address");
 #endif
 
-	if (!quiet)
-		putstr("\nDecompressing Linux... ");
+	debug_putstr("\nDecompressing Linux... ");
 	decompress(input_data, input_len, NULL, NULL, output, NULL, error);
 	parse_elf(output);
-	if (!quiet)
-		putstr("done.\nBooting the kernel.\n");
+	debug_putstr("done.\nBooting the kernel.\n");
 	return;
 }

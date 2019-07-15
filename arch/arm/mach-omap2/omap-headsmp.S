@@ -18,11 +18,28 @@
 #include <linux/linkage.h>
 #include <linux/init.h>
 
+	__CPUINIT
+
 /* Physical address needed since MMU not enabled yet on secondary core */
-#define OMAP4_AUX_CORE_BOOT1_PA			0x48281804
+#define AUX_CORE_BOOT0_PA			0x48281800
 
-	__INIT
-
+/*
+ * OMAP5 specific entry point for secondary CPU to jump from ROM
+ * code.  This routine also provides a holding flag into which
+ * secondary core is held until we're ready for it to initialise.
+ * The primary core will update this flag using a hardware
++ * register AuxCoreBoot0.
+ */
+ENTRY(omap5_secondary_startup)
+wait:	ldr	r2, =AUX_CORE_BOOT0_PA	@ read from AuxCoreBoot0
+	ldr	r0, [r2]
+	mov	r0, r0, lsr #5
+	mrc	p15, 0, r4, c0, c0, 5
+	and	r4, r4, #0x0f
+	cmp	r0, r4
+	bne	wait
+	b	secondary_startup
+END(omap5_secondary_startup)
 /*
  * OMAP4 specific entry point for secondary CPU to jump from ROM
  * code.  This routine also provides a holding flag into which
@@ -45,5 +62,5 @@ hold:	ldr	r12,=0x103
 	 * should now contain the SVC stack for this core
 	 */
 	b	secondary_startup
-END(omap_secondary_startup)
+ENDPROC(omap_secondary_startup)
 

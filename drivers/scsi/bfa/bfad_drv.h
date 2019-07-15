@@ -26,7 +26,24 @@
 #ifndef __BFAD_DRV_H__
 #define __BFAD_DRV_H__
 
-#include "bfa_os_inc.h"
+#include <linux/types.h>
+#include <linux/pci.h>
+#include <linux/dma-mapping.h>
+#include <linux/idr.h>
+#include <linux/interrupt.h>
+#include <linux/cdev.h>
+#include <linux/fs.h>
+#include <linux/delay.h>
+#include <linux/vmalloc.h>
+#include <linux/workqueue.h>
+#include <linux/bitops.h>
+#include <scsi/scsi.h>
+#include <scsi/scsi_host.h>
+#include <scsi/scsi_tcq.h>
+#include <scsi/scsi_transport_fc.h>
+#include <scsi/scsi_transport.h>
+#include <scsi/scsi_bsg_fc.h>
+#include <scsi/scsi_devinfo.h>
 
 #include "bfa_modules.h"
 #include "bfa_fcs.h"
@@ -39,7 +56,7 @@
 #ifdef BFA_DRIVER_VERSION
 #define BFAD_DRIVER_VERSION    BFA_DRIVER_VERSION
 #else
-#define BFAD_DRIVER_VERSION    "2.3.2.0"
+#define BFAD_DRIVER_VERSION    "3.0.23.0"
 #endif
 
 #define BFAD_PROTO_NAME FCPI_NAME
@@ -63,7 +80,7 @@
 #define BFAD_HAL_INIT_FAIL			0x00000100
 #define BFAD_FC4_PROBE_DONE			0x00000200
 #define BFAD_PORT_DELETE			0x00000001
-
+#define BFAD_INTX_ON				0x00000400
 /*
  * BFAD related definition
  */
@@ -76,6 +93,8 @@
  */
 #define BFAD_LUN_QUEUE_DEPTH	32
 #define BFAD_IO_MAX_SGE		SG_ALL
+#define BFAD_MIN_SECTORS	128 /* 64k   */
+#define BFAD_MAX_SECTORS	0xFFFF  /* 32 MB */
 
 #define bfad_isr_t irq_handler_t
 
@@ -94,6 +113,7 @@ struct bfad_msix_s {
 enum {
 	BFA_TRC_LDRV_BFAD		= 1,
 	BFA_TRC_LDRV_IM			= 2,
+	BFA_TRC_LDRV_BSG		= 3,
 };
 
 enum bfad_port_pvb_type {
@@ -173,8 +193,10 @@ struct bfad_s {
 	struct bfa_pcidev_s hal_pcidev;
 	struct bfa_ioc_pci_attr_s pci_attr;
 	void __iomem   *pci_bar0_kva;
+	void __iomem   *pci_bar2_kva;
 	struct completion comp;
 	struct completion suspend;
+	struct completion enable_comp;
 	struct completion disable_comp;
 	bfa_boolean_t   disable_active;
 	struct bfad_port_s     pport;	/* physical port of the BFAD */
@@ -202,6 +224,11 @@ struct bfad_s {
 	char *regdata;
 	u32 reglen;
 	struct dentry *bfad_dentry_files[5];
+	struct list_head	free_aen_q;
+	struct list_head	active_aen_q;
+	struct bfa_aen_entry_s	aen_list[BFA_AEN_MAX_ENTRY];
+	spinlock_t		bfad_aen_spinlock;
+	struct list_head	vport_list;
 };
 
 /* BFAD state machine events */
@@ -257,33 +284,11 @@ struct bfad_hal_comp {
 	struct completion comp;
 };
 
-/*
- * Macro to obtain the immediate lower power
- * of two for the integer.
- */
-#define nextLowerInt(x)                         \
-do {                                            \
-	int i;                                  \
-	(*x)--;					\
-	for (i = 1; i < (sizeof(int)*8); i <<= 1) \
-		(*x) = (*x) | (*x) >> i;	\
-	(*x)++;					\
-	(*x) = (*x) >> 1;			\
+#define BFA_LOG(level, bfad, mask, fmt, arg...)				\
+do {									\
+	if (((mask) == 4) || (level[1] <= '4'))				\
+		dev_printk(level, &((bfad)->pcidev)->dev, fmt, ##arg);	\
 } while (0)
-
-
-#define list_remove_head(list, entry, type, member)		\
-do {								\
-	entry = NULL;                                           \
-	if (!list_empty(list)) {                                \
-		entry = list_entry((list)->next, type, member);	\
-		list_del_init(&entry->member);			\
-	}							\
-} while (0)
-
-#define list_get_first(list, type, member)				\
-((list_empty(list)) ? NULL :						\
-	list_entry((list)->next, type, member))
 
 bfa_status_t	bfad_vport_create(struct bfad_s *bfad, u16 vf_id,
 				  struct bfa_lport_cfg_s *port_cfg,
@@ -316,8 +321,8 @@ void		bfad_debugfs_exit(struct bfad_port_s *port);
 
 void bfad_pci_remove(struct pci_dev *pdev);
 int bfad_pci_probe(struct pci_dev *pdev, const struct pci_device_id *pid);
-void bfad_os_rport_online_wait(struct bfad_s *bfad);
-int bfad_os_get_linkup_delay(struct bfad_s *bfad);
+void bfad_rport_online_wait(struct bfad_s *bfad);
+int bfad_get_linkup_delay(struct bfad_s *bfad);
 int bfad_install_msix_handler(struct bfad_s *bfad);
 
 extern struct idr bfad_im_port_index;
@@ -337,7 +342,7 @@ extern int	num_sgpgs;
 extern int      rport_del_timeout;
 extern int      bfa_lun_queue_depth;
 extern int      bfa_io_max_sge;
-extern int      log_level;
+extern int      bfa_log_level;
 extern int      ioc_auto_recover;
 extern int      bfa_linkup_delay;
 extern int      msix_disable_cb;
@@ -345,6 +350,7 @@ extern int      msix_disable_ct;
 extern int      fdmi_enable;
 extern int      supported_fc4s;
 extern int	pcie_max_read_reqsz;
+extern int	max_xfer_size;
 extern int bfa_debugfs_enable;
 extern struct mutex bfad_mutex;
 

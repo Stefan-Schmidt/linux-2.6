@@ -1,7 +1,7 @@
 /*
  *	w1.c
  *
- * Copyright (c) 2004 Evgeniy Polyakov <johnpol@2ka.mipt.ru>
+ * Copyright (c) 2004 Evgeniy Polyakov <zbr@ioremap.net>
  *
  *
  * This program is free software; you can redistribute it and/or modify
@@ -33,7 +33,7 @@
 #include <linux/kthread.h>
 #include <linux/freezer.h>
 
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 
 #include "w1.h"
 #include "w1_log.h"
@@ -42,7 +42,7 @@
 #include "w1_netlink.h"
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Evgeniy Polyakov <johnpol@2ka.mipt.ru>");
+MODULE_AUTHOR("Evgeniy Polyakov <zbr@ioremap.net>");
 MODULE_DESCRIPTION("Driver for 1-wire Dallas network protocol.");
 
 static int w1_timeout = 10;
@@ -557,7 +557,7 @@ static int w1_uevent(struct device *dev, struct kobj_uevent_env *env)
 	struct w1_master *md = NULL;
 	struct w1_slave *sl = NULL;
 	char *event_owner, *name;
-	int err;
+	int err = 0;
 
 	if (dev->driver == &w1_master_driver) {
 		md = container_of(dev, struct w1_master, dev);
@@ -576,19 +576,17 @@ static int w1_uevent(struct device *dev, struct kobj_uevent_env *env)
 			event_owner, name, dev_name(dev));
 
 	if (dev->driver != &w1_slave_driver || !sl)
-		return 0;
+		goto end;
 
 	err = add_uevent_var(env, "W1_FID=%02X", sl->reg_num.family);
 	if (err)
-		return err;
+		goto end;
 
 	err = add_uevent_var(env, "W1_SLAVE_ID=%024LX",
 			     (unsigned long long)sl->reg_num.id);
-	if (err)
-		return err;
-
-	return 0;
-};
+end:
+	return err;
+}
 #else
 static int w1_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
@@ -827,7 +825,7 @@ void w1_reconnect_slaves(struct w1_family *f, int attach)
 	mutex_unlock(&w1_mlock);
 }
 
-static void w1_slave_found(struct w1_master *dev, u64 rn)
+void w1_slave_found(struct w1_master *dev, u64 rn)
 {
 	struct w1_slave *sl;
 	struct w1_reg_num *tmp;
@@ -887,8 +885,23 @@ void w1_search(struct w1_master *dev, u8 search_type, w1_slave_found_callback cb
 		 *
 		 * Return 0 - device(s) present, 1 - no devices present.
 		 */
+		mutex_lock(&dev->bus_mutex);
 		if (w1_reset_bus(dev)) {
+			mutex_unlock(&dev->bus_mutex);
 			dev_dbg(&dev->dev, "No devices present on the wire.\n");
+			break;
+		}
+
+		/* Do fast search on single slave bus */
+		if (dev->max_slave_count == 1) {
+			int rv;
+			w1_write_8(dev, W1_READ_ROM);
+			rv = w1_read_block(dev, (u8 *)&rn, 8);
+			mutex_unlock(&dev->bus_mutex);
+
+			if (rv == 8 && rn)
+				cb(dev, rn);
+
 			break;
 		}
 
@@ -919,10 +932,12 @@ void w1_search(struct w1_master *dev, u8 search_type, w1_slave_found_callback cb
 			rn |= (tmp64 << i);
 
 			if (kthread_should_stop()) {
+				mutex_unlock(&dev->bus_mutex);
 				dev_dbg(&dev->dev, "Abort w1_search\n");
 				return;
 			}
 		}
+		mutex_unlock(&dev->bus_mutex);
 
 		if ( (triplet_ret & 0x03) != 0x03 ) {
 			if ( (desc_bit == last_zero) || (last_zero < 0))
@@ -933,14 +948,15 @@ void w1_search(struct w1_master *dev, u8 search_type, w1_slave_found_callback cb
 	}
 }
 
-void w1_search_process(struct w1_master *dev, u8 search_type)
+void w1_search_process_cb(struct w1_master *dev, u8 search_type,
+	w1_slave_found_callback cb)
 {
 	struct w1_slave *sl, *sln;
 
 	list_for_each_entry(sl, &dev->slist, w1_slave_entry)
 		clear_bit(W1_SLAVE_ACTIVE, (long *)&sl->flags);
 
-	w1_search_devices(dev, search_type, w1_slave_found);
+	w1_search_devices(dev, search_type, cb);
 
 	list_for_each_entry_safe(sl, sln, &dev->slist, w1_slave_entry) {
 		if (!test_bit(W1_SLAVE_ACTIVE, (unsigned long *)&sl->flags) && !--sl->ttl)
@@ -951,6 +967,11 @@ void w1_search_process(struct w1_master *dev, u8 search_type)
 
 	if (dev->search_count > 0)
 		dev->search_count--;
+}
+
+static void w1_search_process(struct w1_master *dev, u8 search_type)
+{
+	w1_search_process_cb(dev, search_type, w1_slave_found);
 }
 
 int w1_process(void *data)
@@ -1011,7 +1032,7 @@ static int __init w1_init(void)
 	retval = driver_register(&w1_slave_driver);
 	if (retval) {
 		printk(KERN_ERR
-			"Failed to register master driver. err=%d.\n",
+			"Failed to register slave driver. err=%d.\n",
 			retval);
 		goto err_out_master_unregister;
 	}

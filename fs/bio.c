@@ -19,12 +19,14 @@
 #include <linux/swap.h>
 #include <linux/bio.h>
 #include <linux/blkdev.h>
+#include <linux/iocontext.h>
 #include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/mempool.h>
 #include <linux/workqueue.h>
+#include <linux/cgroup.h>
 #include <scsi/sg.h>		/* for struct sg_iovec */
 
 #include <trace/events/block.h>
@@ -43,7 +45,7 @@ static mempool_t *bio_split_pool __read_mostly;
  * unsigned short
  */
 #define BV(x) { .nr_vecs = x, .name = "biovec-"__stringify(x) }
-struct biovec_slab bvec_slabs[BIOVEC_NR_POOLS] __read_mostly = {
+static struct biovec_slab bvec_slabs[BIOVEC_NR_POOLS] __read_mostly = {
 	BV(1), BV(4), BV(16), BV(64), BV(128), BV(BIO_MAX_PAGES),
 };
 #undef BV
@@ -71,7 +73,7 @@ static struct kmem_cache *bio_find_or_create_slab(unsigned int extra_size)
 {
 	unsigned int sz = sizeof(struct bio) + extra_size;
 	struct kmem_cache *slab = NULL;
-	struct bio_slab *bslab;
+	struct bio_slab *bslab, *new_bio_slabs;
 	unsigned int i, entry = -1;
 
 	mutex_lock(&bio_slab_lock);
@@ -95,11 +97,12 @@ static struct kmem_cache *bio_find_or_create_slab(unsigned int extra_size)
 
 	if (bio_slab_nr == bio_slab_max && entry == -1) {
 		bio_slab_max <<= 1;
-		bio_slabs = krealloc(bio_slabs,
-				     bio_slab_max * sizeof(struct bio_slab),
-				     GFP_KERNEL);
-		if (!bio_slabs)
+		new_bio_slabs = krealloc(bio_slabs,
+					 bio_slab_max * sizeof(struct bio_slab),
+					 GFP_KERNEL);
+		if (!new_bio_slabs)
 			goto out_unlock;
+		bio_slabs = new_bio_slabs;
 	}
 	if (entry == -1)
 		entry = bio_slab_nr++;
@@ -111,7 +114,7 @@ static struct kmem_cache *bio_find_or_create_slab(unsigned int extra_size)
 	if (!slab)
 		goto out_unlock;
 
-	printk("bio: create slab <%s> at %d\n", bslab->name, entry);
+	printk(KERN_INFO "bio: create slab <%s> at %d\n", bslab->name, entry);
 	bslab->slab = slab;
 	bslab->slab_ref = 1;
 	bslab->slab_size = sz;
@@ -255,7 +258,6 @@ void bio_init(struct bio *bio)
 {
 	memset(bio, 0, sizeof(*bio));
 	bio->bi_flags = 1 << BIO_UPTODATE;
-	bio->bi_comp_cpu = -1;
 	atomic_set(&bio->bi_cnt, 1);
 }
 EXPORT_SYMBOL(bio_init);
@@ -338,7 +340,7 @@ static void bio_fs_destructor(struct bio *bio)
  *	RETURNS:
  *	Pointer to new bio on success, NULL on failure.
  */
-struct bio *bio_alloc(gfp_t gfp_mask, int nr_iovecs)
+struct bio *bio_alloc(gfp_t gfp_mask, unsigned int nr_iovecs)
 {
 	struct bio *bio = bio_alloc_bioset(gfp_mask, nr_iovecs, fs_bio_set);
 
@@ -366,9 +368,12 @@ static void bio_kmalloc_destructor(struct bio *bio)
  *   %__GFP_WAIT, the allocation is guaranteed to succeed.
  *
  **/
-struct bio *bio_kmalloc(gfp_t gfp_mask, int nr_iovecs)
+struct bio *bio_kmalloc(gfp_t gfp_mask, unsigned int nr_iovecs)
 {
 	struct bio *bio;
+
+	if (nr_iovecs > UIO_MAXIOV)
+		return NULL;
 
 	bio = kmalloc(sizeof(struct bio) + nr_iovecs * sizeof(struct bio_vec),
 		      gfp_mask);
@@ -416,6 +421,7 @@ void bio_put(struct bio *bio)
 	 * last put frees it
 	 */
 	if (atomic_dec_and_test(&bio->bi_cnt)) {
+		bio_disassociate_task(bio);
 		bio->bi_next = NULL;
 		bio->bi_destructor(bio);
 	}
@@ -505,11 +511,12 @@ int bio_get_nr_vecs(struct block_device *bdev)
 	struct request_queue *q = bdev_get_queue(bdev);
 	int nr_pages;
 
-	nr_pages = ((queue_max_sectors(q) << 9) + PAGE_SIZE - 1) >> PAGE_SHIFT;
-	if (nr_pages > queue_max_segments(q))
-		nr_pages = queue_max_segments(q);
+	nr_pages = min_t(unsigned,
+		     queue_max_segments(q),
+		     queue_max_sectors(q) / (PAGE_SIZE >> 9) + 1);
 
-	return nr_pages;
+	return min_t(unsigned, nr_pages, BIO_MAX_PAGES);
+
 }
 EXPORT_SYMBOL(bio_get_nr_vecs);
 
@@ -635,10 +642,11 @@ static int __bio_add_page(struct request_queue *q, struct bio *bio, struct page
  *	@offset: vec entry offset
  *
  *	Attempt to add a page to the bio_vec maplist. This can fail for a
- *	number of reasons, such as the bio being full or target block
- *	device limitations. The target block device must allow bio's
- *      smaller than PAGE_SIZE, so it is always possible to add a single
- *      page to an empty bio. This should only be used by REQ_PC bios.
+ *	number of reasons, such as the bio being full or target block device
+ *	limitations. The target block device must allow bio's up to PAGE_SIZE,
+ *	so it is always possible to add a single page to an empty bio.
+ *
+ *	This should only be used by REQ_PC bios.
  */
 int bio_add_pc_page(struct request_queue *q, struct bio *bio, struct page *page,
 		    unsigned int len, unsigned int offset)
@@ -656,10 +664,9 @@ EXPORT_SYMBOL(bio_add_pc_page);
  *	@offset: vec entry offset
  *
  *	Attempt to add a page to the bio_vec maplist. This can fail for a
- *	number of reasons, such as the bio being full or target block
- *	device limitations. The target block device must allow bio's
- *      smaller than PAGE_SIZE, so it is always possible to add a single
- *      page to an empty bio.
+ *	number of reasons, such as the bio being full or target block device
+ *	limitations. The target block device must allow bio's up to PAGE_SIZE,
+ *	so it is always possible to add a single page to an empty bio.
  */
 int bio_add_page(struct bio *bio, struct page *page, unsigned int len,
 		 unsigned int offset)
@@ -694,11 +701,16 @@ static void bio_free_map_data(struct bio_map_data *bmd)
 	kfree(bmd);
 }
 
-static struct bio_map_data *bio_alloc_map_data(int nr_segs, int iov_count,
+static struct bio_map_data *bio_alloc_map_data(int nr_segs,
+					       unsigned int iov_count,
 					       gfp_t gfp_mask)
 {
-	struct bio_map_data *bmd = kmalloc(sizeof(*bmd), gfp_mask);
+	struct bio_map_data *bmd;
 
+	if (iov_count > UIO_MAXIOV)
+		return NULL;
+
+	bmd = kmalloc(sizeof(*bmd), gfp_mask);
 	if (!bmd)
 		return NULL;
 
@@ -826,6 +838,12 @@ struct bio *bio_copy_user_iov(struct request_queue *q,
 		uaddr = (unsigned long)iov[i].iov_base;
 		end = (uaddr + iov[i].iov_len + PAGE_SIZE - 1) >> PAGE_SHIFT;
 		start = uaddr >> PAGE_SHIFT;
+
+		/*
+		 * Overflow, abort
+		 */
+		if (end < start)
+			return ERR_PTR(-EINVAL);
 
 		nr_pages += end - start;
 		len += iov[i].iov_len;
@@ -955,6 +973,12 @@ static struct bio *__bio_map_user_iov(struct request_queue *q,
 		unsigned long end = (uaddr + len + PAGE_SIZE - 1) >> PAGE_SHIFT;
 		unsigned long start = uaddr >> PAGE_SHIFT;
 
+		/*
+		 * Overflow, abort
+		 */
+		if (end < start)
+			return ERR_PTR(-EINVAL);
+
 		nr_pages += end - start;
 		/*
 		 * buffer must be aligned to at least hardsector size for now
@@ -982,7 +1006,7 @@ static struct bio *__bio_map_user_iov(struct request_queue *q,
 		unsigned long start = uaddr >> PAGE_SHIFT;
 		const int local_nr_pages = end - start;
 		const int page_limit = cur_page + local_nr_pages;
-		
+
 		ret = get_user_pages_fast(uaddr, local_nr_pages,
 				write_to_vm, &pages[cur_page]);
 		if (ret < local_nr_pages) {
@@ -1289,7 +1313,7 @@ EXPORT_SYMBOL(bio_copy_kern);
  * Note that this code is very hard to test under normal circumstances because
  * direct-io pins the pages with get_user_pages().  This makes
  * is_page_cache_freeable return false, and the VM will not clean the pages.
- * But other code (eg, pdflush) could clean the pages if they are mapped
+ * But other code (eg, flusher threads) could clean the pages if they are mapped
  * pagecache.
  *
  * Simply disabling the call to bio_set_pages_dirty() is a good way to test the
@@ -1417,7 +1441,7 @@ EXPORT_SYMBOL(bio_flush_dcache_pages);
  *   preferred way to end I/O on a bio, it takes care of clearing
  *   BIO_UPTODATE on error. @error is 0 on success, and and one of the
  *   established -Exxxx (-EIO, for instance) error values in case
- *   something went wrong. Noone should call bi_end_io() directly on a
+ *   something went wrong. No one should call bi_end_io() directly on a
  *   bio unless they own it and thus know that it has an end_io
  *   function.
  **/
@@ -1617,9 +1641,6 @@ struct bio_set *bioset_create(unsigned int pool_size, unsigned int front_pad)
 	if (!bs->bio_pool)
 		goto bad;
 
-	if (bioset_integrity_create(bs, pool_size))
-		goto bad;
-
 	if (!biovec_create_pools(bs, pool_size))
 		return bs;
 
@@ -1629,6 +1650,64 @@ bad:
 }
 EXPORT_SYMBOL(bioset_create);
 
+#ifdef CONFIG_BLK_CGROUP
+/**
+ * bio_associate_current - associate a bio with %current
+ * @bio: target bio
+ *
+ * Associate @bio with %current if it hasn't been associated yet.  Block
+ * layer will treat @bio as if it were issued by %current no matter which
+ * task actually issues it.
+ *
+ * This function takes an extra reference of @task's io_context and blkcg
+ * which will be put when @bio is released.  The caller must own @bio,
+ * ensure %current->io_context exists, and is responsible for synchronizing
+ * calls to this function.
+ */
+int bio_associate_current(struct bio *bio)
+{
+	struct io_context *ioc;
+	struct cgroup_subsys_state *css;
+
+	if (bio->bi_ioc)
+		return -EBUSY;
+
+	ioc = current->io_context;
+	if (!ioc)
+		return -ENOENT;
+
+	/* acquire active ref on @ioc and associate */
+	get_io_context_active(ioc);
+	bio->bi_ioc = ioc;
+
+	/* associate blkcg if exists */
+	rcu_read_lock();
+	css = task_subsys_state(current, blkio_subsys_id);
+	if (css && css_tryget(css))
+		bio->bi_css = css;
+	rcu_read_unlock();
+
+	return 0;
+}
+
+/**
+ * bio_disassociate_task - undo bio_associate_current()
+ * @bio: target bio
+ */
+void bio_disassociate_task(struct bio *bio)
+{
+	if (bio->bi_ioc) {
+		put_io_context(bio->bi_ioc);
+		bio->bi_ioc = NULL;
+	}
+	if (bio->bi_css) {
+		css_put(bio->bi_css);
+		bio->bi_css = NULL;
+	}
+}
+
+#endif /* CONFIG_BLK_CGROUP */
+
 static void __init biovec_init_slabs(void)
 {
 	int i;
@@ -1637,12 +1716,10 @@ static void __init biovec_init_slabs(void)
 		int size;
 		struct biovec_slab *bvs = bvec_slabs + i;
 
-#ifndef CONFIG_BLK_DEV_INTEGRITY
 		if (bvs->nr_vecs <= BIO_INLINE_VECS) {
 			bvs->slab = NULL;
 			continue;
 		}
-#endif
 
 		size = bvs->nr_vecs * sizeof(struct bio_vec);
 		bvs->slab = kmem_cache_create(bvs->name, size, 0,
@@ -1664,6 +1741,9 @@ static int __init init_bio(void)
 	fs_bio_set = bioset_create(BIO_POOL_SIZE, 0);
 	if (!fs_bio_set)
 		panic("bio: can't allocate bios\n");
+
+	if (bioset_integrity_create(fs_bio_set, BIO_POOL_SIZE))
+		panic("bio: can't create integrity pool\n");
 
 	bio_split_pool = mempool_create_kmalloc_pool(BIO_SPLIT_ENTRIES,
 						     sizeof(struct bio_pair));

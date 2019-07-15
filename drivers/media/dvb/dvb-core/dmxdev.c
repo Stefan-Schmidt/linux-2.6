@@ -29,7 +29,6 @@
 #include <linux/ioctl.h>
 #include <linux/wait.h>
 #include <asm/uaccess.h>
-#include <asm/system.h>
 #include "dmxdev.h"
 
 static int debug;
@@ -572,13 +571,13 @@ static int dvb_dmxdev_start_feed(struct dmxdev *dmxdev,
 	dmx_output_t otype;
 	int ret;
 	int ts_type;
-	enum dmx_ts_pes ts_pes;
+	dmx_pes_type_t ts_pes;
 	struct dmx_ts_feed *tsfeed;
 
 	feed->ts = NULL;
 	otype = para->output;
 
-	ts_pes = (enum dmx_ts_pes)para->pes_type;
+	ts_pes = para->pes_type;
 
 	if (ts_pes < DMX_PES_OTHER)
 		ts_type = TS_DECODER;

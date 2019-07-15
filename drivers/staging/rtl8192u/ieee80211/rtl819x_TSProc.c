@@ -135,7 +135,7 @@ void ResetRxTsEntry(PRX_TS_RECORD pTS)
 	ResetTsCommonInfo(&pTS->TsCommonInfo);
 	pTS->RxIndicateSeq = 0xffff; // This indicate the RxIndicateSeq is not used now!!
 	pTS->RxTimeoutIndicateSeq = 0xffff; // This indicate the RxTimeoutIndicateSeq is not used now!!
-	ResetBaEntry(&pTS->RxAdmittedBARecord);	  // For BA Recepient
+	ResetBaEntry(&pTS->RxAdmittedBARecord);	  // For BA Recipient
 }
 
 void TSInitialize(struct ieee80211_device *ieee)
@@ -350,7 +350,7 @@ bool GetTs(
 	// We do not build any TS for Broadcast or Multicast stream.
 	// So reject these kinds of search here.
 	//
-	if(is_broadcast_ether_addr(Addr) || is_multicast_ether_addr(Addr))
+	if (is_multicast_ether_addr(Addr))
 	{
 		IEEE80211_DEBUG(IEEE80211_DL_ERR, "get TS for Broadcast or Multicast\n");
 		return false;

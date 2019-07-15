@@ -54,6 +54,7 @@
 #include <linux/notifier.h>
 #include <linux/cpu.h>
 #include <linux/mutex.h>
+#include <linux/async.h>
 
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
@@ -89,6 +90,10 @@ unsigned int scsi_logging_level;
 #if defined(CONFIG_SCSI_LOGGING)
 EXPORT_SYMBOL(scsi_logging_level);
 #endif
+
+/* sd, scsi core and power management need to coordinate flushing async actions */
+ASYNC_DOMAIN(scsi_sd_probe_domain);
+EXPORT_SYMBOL(scsi_sd_probe_domain);
 
 /* NB: These are exposed through /proc/scsi/scsi and form part of the ABI.
  * You may not alter any existing entry (although adding new ones is
@@ -634,12 +639,13 @@ void scsi_log_completion(struct scsi_cmnd *cmd, int disposition)
  * Description: a serial number identifies a request for error recovery
  * and debugging purposes.  Protected by the Host_Lock of host.
  */
-static inline void scsi_cmd_get_serial(struct Scsi_Host *host, struct scsi_cmnd *cmd)
+void scsi_cmd_get_serial(struct Scsi_Host *host, struct scsi_cmnd *cmd)
 {
 	cmd->serial_number = host->cmd_serial_number++;
 	if (cmd->serial_number == 0) 
 		cmd->serial_number = host->cmd_serial_number++;
 }
+EXPORT_SYMBOL(scsi_cmd_get_serial);
 
 /**
  * scsi_dispatch_command - Dispatch a command to the low-level driver.
@@ -651,7 +657,6 @@ static inline void scsi_cmd_get_serial(struct Scsi_Host *host, struct scsi_cmnd 
 int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
 {
 	struct Scsi_Host *host = cmd->device->host;
-	unsigned long flags = 0;
 	unsigned long timeout;
 	int rtn = 0;
 
@@ -737,23 +742,15 @@ int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
 		goto out;
 	}
 
-	spin_lock_irqsave(host->host_lock, flags);
-	/*
-	 * AK: unlikely race here: for some reason the timer could
-	 * expire before the serial number is set up below.
-	 *
-	 * TODO: kill serial or move to blk layer
-	 */
-	scsi_cmd_get_serial(host, cmd); 
-
 	if (unlikely(host->shost_state == SHOST_DEL)) {
 		cmd->result = (DID_NO_CONNECT << 16);
 		scsi_done(cmd);
 	} else {
 		trace_scsi_dispatch_cmd_start(cmd);
-		rtn = host->hostt->queuecommand(cmd, scsi_done);
+		cmd->scsi_done = scsi_done;
+		rtn = host->hostt->queuecommand(host, cmd);
 	}
-	spin_unlock_irqrestore(host->host_lock, flags);
+
 	if (rtn) {
 		trace_scsi_dispatch_cmd_error(cmd, rtn);
 		if (rtn != SCSI_MLQUEUE_DEVICE_BUSY &&
@@ -788,12 +785,6 @@ static void scsi_done(struct scsi_cmnd *cmd)
 {
 	trace_scsi_dispatch_cmd_done(cmd);
 	blk_complete_request(cmd->request);
-}
-
-/* Move this to a header if it becomes more generally useful */
-static struct scsi_driver *scsi_cmd_to_driver(struct scsi_cmnd *cmd)
-{
-	return *(struct scsi_driver **)cmd->request->rq_disk->private_data;
 }
 
 /**
@@ -1364,6 +1355,7 @@ static void __exit exit_scsi(void)
 	scsi_exit_devinfo();
 	scsi_exit_procfs();
 	scsi_exit_queue();
+	async_unregister_domain(&scsi_sd_probe_domain);
 }
 
 subsys_initcall(init_scsi);

@@ -265,12 +265,11 @@ static ssize_t keymap_store(struct kobject *kobj, struct kobj_attribute *attr,
 	unsigned long flags;
 
 	spk_lock(flags);
-	in_buff = kmalloc(count + 1, GFP_ATOMIC);
+	in_buff = kmemdup(buf, count + 1, GFP_ATOMIC);
 	if (!in_buff) {
 		spk_unlock(flags);
 		return -ENOMEM;
 	}
-	memcpy(in_buff, buf, count + 1);
 	if (strchr("dDrR", *in_buff)) {
 		set_key_info(key_defaults, key_buf);
 		pr_info("keymap set to default values\n");
@@ -332,7 +331,7 @@ static ssize_t silent_store(struct kobject *kobj, struct kobj_attribute *attr,
 	unsigned long flags;
 
 	len = strlen(buf);
-	if (len > 0 || len < 3) {
+	if (len > 0 && len < 3) {
 		ch = buf[0];
 		if (ch == '\n')
 			ch = '0';
@@ -984,8 +983,10 @@ int speakup_kobj_init(void)
 	 * not known ahead of time.
 	 */
 	accessibility_kobj = kobject_create_and_add("accessibility", NULL);
-	if (!accessibility_kobj)
-		return -ENOMEM;
+	if (!accessibility_kobj) {
+		retval = -ENOMEM;
+		goto out;
+	}
 
 	speakup_kobj = kobject_create_and_add("speakup", accessibility_kobj);
 	if (!speakup_kobj) {
@@ -1002,7 +1003,7 @@ int speakup_kobj_init(void)
 	if (retval)
 		goto err_group;
 
-	return 0;
+	goto out;
 
 err_group:
 	sysfs_remove_group(speakup_kobj, &main_attr_group);
@@ -1010,6 +1011,7 @@ err_speakup:
 	kobject_put(speakup_kobj);
 err_acc:
 	kobject_put(accessibility_kobj);
+out:
 	return retval;
 }
 

@@ -31,6 +31,7 @@
 #ifndef LINUX_VGA_H
 #define LINUX_VGA_H
 
+#include <video/vga.h>
 
 /* Legacy VGA regions */
 #define VGA_RSRC_NONE	       0x00
@@ -46,6 +47,8 @@
  * have to provide their own vga_default_device();
  */
 #define VGA_DEFAULT_DEVICE     (NULL)
+
+struct pci_dev;
 
 /* For use by clients */
 
@@ -78,7 +81,7 @@ extern void vga_set_legacy_decoding(struct pci_dev *pdev,
  *     wether the card is doing legacy decoding for that type of resource. If
  *     yes, the lock is "converted" into a legacy resource lock.
  *     The arbiter will first look for all VGA cards that might conflict
- *     and disable their IOs and/or Memory access, inlcuding VGA forwarding
+ *     and disable their IOs and/or Memory access, including VGA forwarding
  *     on P2P bridges if necessary, so that the requested resources can
  *     be used. Then, the card is marked as locking these resources and
  *     the IO and/or Memory accesse are enabled on the card (including
@@ -180,14 +183,20 @@ extern void vga_put(struct pci_dev *pdev, unsigned int rsrc);
  */
 
 #ifndef __ARCH_HAS_VGA_DEFAULT_DEVICE
+#ifdef CONFIG_VGA_ARB
 extern struct pci_dev *vga_default_device(void);
+extern void vga_set_default_device(struct pci_dev *pdev);
+#else
+static inline struct pci_dev *vga_default_device(void) { return NULL; };
+static inline void vga_set_default_device(struct pci_dev *pdev) { };
+#endif
 #endif
 
 /**
  *     vga_conflicts
  *
  *     Architectures should define this if they have several
- *     independant PCI domains that can afford concurrent VGA
+ *     independent PCI domains that can afford concurrent VGA
  *     decoding
  */
 

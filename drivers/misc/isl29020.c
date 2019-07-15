@@ -87,7 +87,7 @@ static ssize_t als_sensing_range_store(struct device *dev,
 		struct device_attribute *attr, const  char *buf, size_t count)
 {
 	struct i2c_client *client = to_i2c_client(dev);
-	unsigned int ret_val;
+	int ret_val;
 	unsigned long val;
 
 	if (strict_strtoul(buf, 10, &val))
@@ -106,6 +106,8 @@ static ssize_t als_sensing_range_store(struct device *dev,
 		val = 4;
 
 	ret_val = i2c_smbus_read_byte_data(client, 0x00);
+	if (ret_val < 0)
+		return ret_val;
 
 	ret_val &= 0xFC; /*reset the bit before setting them */
 	ret_val |= val - 1;
@@ -156,7 +158,7 @@ static int als_set_default_config(struct i2c_client *client)
 		dev_err(&client->dev, "default write failed.");
 		return retval;
 	}
-	return 0;;
+	return 0;
 }
 
 static int  isl29020_probe(struct i2c_client *client,
@@ -181,9 +183,7 @@ static int  isl29020_probe(struct i2c_client *client,
 
 static int isl29020_remove(struct i2c_client *client)
 {
-	struct als_data *data = i2c_get_clientdata(client);
 	sysfs_remove_group(&client->dev.kobj, &m_als_gr);
-	kfree(data);
 	return 0;
 }
 
@@ -230,19 +230,8 @@ static struct i2c_driver isl29020_driver = {
 	.id_table = isl29020_id,
 };
 
-static int __init sensor_isl29020_init(void)
-{
-	return i2c_add_driver(&isl29020_driver);
-}
+module_i2c_driver(isl29020_driver);
 
-static void  __exit sensor_isl29020_exit(void)
-{
-	i2c_del_driver(&isl29020_driver);
-}
-
-module_init(sensor_isl29020_init);
-module_exit(sensor_isl29020_exit);
-
-MODULE_AUTHOR("Kalhan Trisal <kalhan.trisal@intel.com");
+MODULE_AUTHOR("Kalhan Trisal <kalhan.trisal@intel.com>");
 MODULE_DESCRIPTION("Intersil isl29020 ALS Driver");
 MODULE_LICENSE("GPL v2");

@@ -1,5 +1,6 @@
 
 #include <linux/ceph/types.h>
+#include <linux/module.h>
 
 /*
  * Robert Jenkin's hash function.
@@ -19,7 +20,7 @@
 		c = c - a;  c = c - b;  c = c ^ (b >> 15);	\
 	} while (0)
 
-unsigned ceph_str_hash_rjenkins(const char *str, unsigned length)
+unsigned int ceph_str_hash_rjenkins(const char *str, unsigned int length)
 {
 	const unsigned char *k = (const unsigned char *)str;
 	__u32 a, b, c;  /* the internal state */
@@ -80,7 +81,7 @@ unsigned ceph_str_hash_rjenkins(const char *str, unsigned length)
 /*
  * linux dcache hash
  */
-unsigned ceph_str_hash_linux(const char *str, unsigned length)
+unsigned int ceph_str_hash_linux(const char *str, unsigned int length)
 {
 	unsigned long hash = 0;
 	unsigned char c;
@@ -93,7 +94,7 @@ unsigned ceph_str_hash_linux(const char *str, unsigned length)
 }
 
 
-unsigned ceph_str_hash(int type, const char *s, unsigned len)
+unsigned int ceph_str_hash(int type, const char *s, unsigned int len)
 {
 	switch (type) {
 	case CEPH_STR_HASH_LINUX:
@@ -104,6 +105,7 @@ unsigned ceph_str_hash(int type, const char *s, unsigned len)
 		return -1;
 	}
 }
+EXPORT_SYMBOL(ceph_str_hash);
 
 const char *ceph_str_hash_name(int type)
 {
@@ -116,3 +118,4 @@ const char *ceph_str_hash_name(int type)
 		return "unknown";
 	}
 }
+EXPORT_SYMBOL(ceph_str_hash_name);

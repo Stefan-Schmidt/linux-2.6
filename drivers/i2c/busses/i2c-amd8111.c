@@ -415,7 +415,7 @@ static const struct i2c_algorithm smbus_algorithm = {
 };
 
 
-static const struct pci_device_id amd8111_ids[] = {
+static DEFINE_PCI_DEVICE_TABLE(amd8111_ids) = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_8111_SMBUS2) },
 	{ 0, }
 };
@@ -491,15 +491,4 @@ static struct pci_driver amd8111_driver = {
 	.remove		= __devexit_p(amd8111_remove),
 };
 
-static int __init i2c_amd8111_init(void)
-{
-	return pci_register_driver(&amd8111_driver);
-}
-
-static void __exit i2c_amd8111_exit(void)
-{
-	pci_unregister_driver(&amd8111_driver);
-}
-
-module_init(i2c_amd8111_init);
-module_exit(i2c_amd8111_exit);
+module_pci_driver(amd8111_driver);

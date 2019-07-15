@@ -29,30 +29,7 @@
 
 #include <linux/of.h>
 #include <linux/of_platform.h>
-
-/**
- * ehci_xilinx_of_setup - Initialize the device for ehci_reset()
- * @hcd:	Pointer to the usb_hcd device to which the host controller bound
- *
- * called during probe() after chip reset completes.
- */
-static int ehci_xilinx_of_setup(struct usb_hcd *hcd)
-{
-	struct ehci_hcd	*ehci = hcd_to_ehci(hcd);
-	int		retval;
-
-	retval = ehci_halt(ehci);
-	if (retval)
-		return retval;
-
-	retval = ehci_init(hcd);
-	if (retval)
-		return retval;
-
-	ehci->sbrn = 0x20;
-
-	return ehci_reset(ehci);
-}
+#include <linux/of_address.h>
 
 /**
  * ehci_xilinx_port_handed_over - hand the port out if failed to enable it
@@ -106,7 +83,7 @@ static const struct hc_driver ehci_xilinx_of_hc_driver = {
 	/*
 	 * basic lifecycle operations
 	 */
-	.reset			= ehci_xilinx_of_setup,
+	.reset			= ehci_setup,
 	.start			= ehci_run,
 	.stop			= ehci_stop,
 	.shutdown		= ehci_shutdown,
@@ -117,6 +94,7 @@ static const struct hc_driver ehci_xilinx_of_hc_driver = {
 	.urb_enqueue		= ehci_urb_enqueue,
 	.urb_dequeue		= ehci_urb_dequeue,
 	.endpoint_disable	= ehci_endpoint_disable,
+	.endpoint_reset		= ehci_endpoint_reset,
 
 	/*
 	 * scheduling support
@@ -141,15 +119,13 @@ static const struct hc_driver ehci_xilinx_of_hc_driver = {
 /**
  * ehci_hcd_xilinx_of_probe - Probe method for the USB host controller
  * @op:		pointer to the platform_device bound to the host controller
- * @match:	pointer to of_device_id structure, not used
  *
  * This function requests resources and sets up appropriate properties for the
  * host controller. Because the Xilinx USB host controller can be configured
  * as HS only or HS/FS only, it checks the configuration in the device tree
  * entry, and sets an appropriate value for hcd->has_tt.
  */
-static int __devinit
-ehci_hcd_xilinx_of_probe(struct platform_device *op, const struct of_device_id *match)
+static int __devinit ehci_hcd_xilinx_of_probe(struct platform_device *op)
 {
 	struct device_node *dn = op->dev.of_node;
 	struct usb_hcd *hcd;
@@ -174,7 +150,7 @@ ehci_hcd_xilinx_of_probe(struct platform_device *op, const struct of_device_id *
 		return -ENOMEM;
 
 	hcd->rsrc_start = res.start;
-	hcd->rsrc_len = res.end - res.start + 1;
+	hcd->rsrc_len = resource_size(&res);
 
 	if (!request_mem_region(hcd->rsrc_start, hcd->rsrc_len, hcd_name)) {
 		printk(KERN_ERR "%s: request_mem_region failed\n", __FILE__);
@@ -183,7 +159,7 @@ ehci_hcd_xilinx_of_probe(struct platform_device *op, const struct of_device_id *
 	}
 
 	irq = irq_of_parse_and_map(dn, 0);
-	if (irq == NO_IRQ) {
+	if (!irq) {
 		printk(KERN_ERR "%s: irq_of_parse_and_map failed\n", __FILE__);
 		rv = -EBUSY;
 		goto err_irq;
@@ -219,11 +195,6 @@ ehci_hcd_xilinx_of_probe(struct platform_device *op, const struct of_device_id *
 	/* Debug registers are at the first 0x100 region
 	 */
 	ehci->caps = hcd->regs + 0x100;
-	ehci->regs = hcd->regs + 0x100 +
-			HC_LENGTH(ehci_readl(ehci, &ehci->caps->hc_capbase));
-
-	/* cache this readonly data; minimize chip reads */
-	ehci->hcs_params = ehci_readl(ehci, &ehci->caps->hcs_params);
 
 	rv = usb_add_hcd(hcd, irq, 0);
 	if (rv == 0)
@@ -270,14 +241,12 @@ static int ehci_hcd_xilinx_of_remove(struct platform_device *op)
  *
  * Properly shutdown the hcd, call driver's shutdown routine.
  */
-static int ehci_hcd_xilinx_of_shutdown(struct platform_device *op)
+static void ehci_hcd_xilinx_of_shutdown(struct platform_device *op)
 {
 	struct usb_hcd *hcd = dev_get_drvdata(&op->dev);
 
 	if (hcd->driver->shutdown)
 		hcd->driver->shutdown(hcd);
-
-	return 0;
 }
 
 
@@ -287,7 +256,7 @@ static const struct of_device_id ehci_hcd_xilinx_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, ehci_hcd_xilinx_of_match);
 
-static struct of_platform_driver ehci_hcd_xilinx_of_driver = {
+static struct platform_driver ehci_hcd_xilinx_of_driver = {
 	.probe		= ehci_hcd_xilinx_of_probe,
 	.remove		= ehci_hcd_xilinx_of_remove,
 	.shutdown	= ehci_hcd_xilinx_of_shutdown,

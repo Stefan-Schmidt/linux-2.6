@@ -20,10 +20,9 @@
 #include <linux/spinlock.h>
 
 #include <linux/coda.h>
-#include <linux/coda_linux.h>
 #include <linux/coda_psdev.h>
-#include <linux/coda_fs_i.h>
-#include <linux/coda_cache.h>
+#include "coda_linux.h"
+#include "coda_cache.h"
 
 static atomic_t permission_epoch = ATOMIC_INIT(0);
 
@@ -90,19 +89,15 @@ int coda_cache_check(struct inode *inode, int mask)
 /* this won't do any harm: just flag all children */
 static void coda_flag_children(struct dentry *parent, int flag)
 {
-	struct list_head *child;
 	struct dentry *de;
 
-	spin_lock(&dcache_lock);
-	list_for_each(child, &parent->d_subdirs)
-	{
-		de = list_entry(child, struct dentry, d_u.d_child);
+	spin_lock(&parent->d_lock);
+	list_for_each_entry(de, &parent->d_subdirs, d_u.d_child) {
 		/* don't know what to do with negative dentries */
-		if ( ! de->d_inode ) 
-			continue;
-		coda_flag_inode(de->d_inode, flag);
+		if (de->d_inode ) 
+			coda_flag_inode(de->d_inode, flag);
 	}
-	spin_unlock(&dcache_lock);
+	spin_unlock(&parent->d_lock);
 	return; 
 }
 

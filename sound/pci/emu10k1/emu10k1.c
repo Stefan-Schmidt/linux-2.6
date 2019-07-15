@@ -26,7 +26,7 @@
 #include <linux/init.h>
 #include <linux/pci.h>
 #include <linux/time.h>
-#include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <sound/core.h>
 #include <sound/emu10k1.h>
 #include <sound/initval.h>
@@ -44,13 +44,13 @@ MODULE_SUPPORTED_DEVICE("{{Creative Labs,SB Live!/PCI512/E-mu APS},"
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
-static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable this card */
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable this card */
 static int extin[SNDRV_CARDS];
 static int extout[SNDRV_CARDS];
 static int seq_ports[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = 4};
 static int max_synth_voices[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = 64};
 static int max_buffer_size[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = 128};
-static int enable_ir[SNDRV_CARDS];
+static bool enable_ir[SNDRV_CARDS];
 static uint subsystem[SNDRV_CARDS]; /* Force card subsystem model */
 static uint delay_pcm_irq[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = 2};
 
@@ -207,9 +207,10 @@ static void __devexit snd_card_emu10k1_remove(struct pci_dev *pci)
 
 
 #ifdef CONFIG_PM
-static int snd_emu10k1_suspend(struct pci_dev *pci, pm_message_t state)
+static int snd_emu10k1_suspend(struct device *dev)
 {
-	struct snd_card *card = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_emu10k1 *emu = card->private_data;
 
 	snd_power_change_state(card, SNDRV_CTL_POWER_D3hot);
@@ -231,13 +232,14 @@ static int snd_emu10k1_suspend(struct pci_dev *pci, pm_message_t state)
 
 	pci_disable_device(pci);
 	pci_save_state(pci);
-	pci_set_power_state(pci, pci_choose_state(pci, state));
+	pci_set_power_state(pci, PCI_D3hot);
 	return 0;
 }
 
-static int snd_emu10k1_resume(struct pci_dev *pci)
+static int snd_emu10k1_resume(struct device *dev)
 {
-	struct snd_card *card = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_emu10k1 *emu = card->private_data;
 
 	pci_set_power_state(pci, PCI_D0);
@@ -261,28 +263,21 @@ static int snd_emu10k1_resume(struct pci_dev *pci)
 	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
 	return 0;
 }
-#endif
 
-static struct pci_driver driver = {
-	.name = "EMU10K1_Audigy",
+static SIMPLE_DEV_PM_OPS(snd_emu10k1_pm, snd_emu10k1_suspend, snd_emu10k1_resume);
+#define SND_EMU10K1_PM_OPS	&snd_emu10k1_pm
+#else
+#define SND_EMU10K1_PM_OPS	NULL
+#endif /* CONFIG_PM */
+
+static struct pci_driver emu10k1_driver = {
+	.name = KBUILD_MODNAME,
 	.id_table = snd_emu10k1_ids,
 	.probe = snd_card_emu10k1_probe,
 	.remove = __devexit_p(snd_card_emu10k1_remove),
-#ifdef CONFIG_PM
-	.suspend = snd_emu10k1_suspend,
-	.resume = snd_emu10k1_resume,
-#endif
+	.driver = {
+		.pm = SND_EMU10K1_PM_OPS,
+	},
 };
 
-static int __init alsa_card_emu10k1_init(void)
-{
-	return pci_register_driver(&driver);
-}
-
-static void __exit alsa_card_emu10k1_exit(void)
-{
-	pci_unregister_driver(&driver);
-}
-
-module_init(alsa_card_emu10k1_init)
-module_exit(alsa_card_emu10k1_exit)
+module_pci_driver(emu10k1_driver);

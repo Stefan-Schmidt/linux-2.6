@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2012, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -53,7 +53,7 @@ typedef u32 acpi_mutex_handle;
 
 /* Total number of aml opcodes defined */
 
-#define AML_NUM_OPCODES                 0x7F
+#define AML_NUM_OPCODES                 0x81
 
 /* Forward declarations */
 
@@ -88,25 +88,6 @@ union acpi_parse_object;
 
 #define ACPI_MAX_MUTEX                  7
 #define ACPI_NUM_MUTEX                  ACPI_MAX_MUTEX+1
-
-#if defined(ACPI_DEBUG_OUTPUT) || defined(ACPI_DEBUGGER)
-#ifdef DEFINE_ACPI_GLOBALS
-
-/* Debug names for the mutexes above */
-
-static char *acpi_gbl_mutex_names[ACPI_NUM_MUTEX] = {
-	"ACPI_MTX_Interpreter",
-	"ACPI_MTX_Namespace",
-	"ACPI_MTX_Tables",
-	"ACPI_MTX_Events",
-	"ACPI_MTX_Caches",
-	"ACPI_MTX_Memory",
-	"ACPI_MTX_CommandComplete",
-	"ACPI_MTX_CommandReady"
-};
-
-#endif
-#endif
 
 /* Lock structure for reader/writer interfaces */
 
@@ -268,12 +249,16 @@ struct acpi_create_field_info {
 	struct acpi_namespace_node *field_node;
 	struct acpi_namespace_node *register_node;
 	struct acpi_namespace_node *data_register_node;
+	struct acpi_namespace_node *connection_node;
+	u8 *resource_buffer;
 	u32 bank_value;
 	u32 field_bit_position;
 	u32 field_bit_length;
+	u16 resource_length;
 	u8 field_flags;
 	u8 attribute;
 	u8 field_type;
+	u8 access_length;
 };
 
 typedef
@@ -314,7 +299,7 @@ acpi_status(*ACPI_INTERNAL_METHOD) (struct acpi_walk_state * walk_state);
  * Information structure for ACPI predefined names.
  * Each entry in the table contains the following items:
  *
- * Name                 - The ACPI reserved name
+ * name                 - The ACPI reserved name
  * param_count          - Number of arguments to the method
  * expected_return_btypes - Allowed type(s) for the return value
  */
@@ -334,7 +319,8 @@ struct acpi_name_info {
 
 /*
  * Used for ACPI_PTYPE1_FIXED, ACPI_PTYPE1_VAR, ACPI_PTYPE2,
- * ACPI_PTYPE2_MIN, ACPI_PTYPE2_PKG_COUNT, ACPI_PTYPE2_COUNT
+ * ACPI_PTYPE2_MIN, ACPI_PTYPE2_PKG_COUNT, ACPI_PTYPE2_COUNT,
+ * ACPI_PTYPE2_FIX_VAR
  */
 struct acpi_package_info {
 	u8 type;
@@ -376,6 +362,7 @@ struct acpi_predefined_data {
 	char *pathname;
 	const union acpi_predefined_info *predefined;
 	union acpi_operand_object *parent_package;
+	struct acpi_namespace_node *node;
 	u32 flags;
 	u8 node_flags;
 };
@@ -383,6 +370,7 @@ struct acpi_predefined_data {
 /* Defines for Flags field above */
 
 #define ACPI_OBJECT_REPAIRED    1
+#define ACPI_OBJECT_WRAPPED     2
 
 /*
  * Bitmapped return value types
@@ -408,17 +396,30 @@ struct acpi_predefined_data {
 
 /* Dispatch info for each GPE -- either a method or handler, cannot be both */
 
-struct acpi_handler_info {
-	acpi_event_handler address;	/* Address of handler, if any */
+struct acpi_gpe_handler_info {
+	acpi_gpe_handler address;	/* Address of handler, if any */
 	void *context;		/* Context to be passed to handler */
 	struct acpi_namespace_node *method_node;	/* Method node for this GPE level (saved) */
-	u8 orig_flags;		/* Original misc info about this GPE */
-	u8 orig_enabled;	/* Set if the GPE was originally enabled */
+	u8 original_flags;      /* Original (pre-handler) GPE info */
+	u8 originally_enabled;  /* True if GPE was originally enabled */
+};
+
+/* Notify info for implicit notify, multiple device objects */
+
+struct acpi_gpe_notify_info {
+	struct acpi_namespace_node *device_node;	/* Device to be notified */
+	struct acpi_gpe_notify_info *next;
+};
+
+struct acpi_gpe_notify_object {
+	struct acpi_namespace_node *node;
+	struct acpi_gpe_notify_object *next;
 };
 
 union acpi_gpe_dispatch_info {
 	struct acpi_namespace_node *method_node;	/* Method node for this GPE level */
-	struct acpi_handler_info *handler;
+	struct acpi_gpe_handler_info *handler;  /* Installed GPE handler */
+	struct acpi_gpe_notify_info *notify_list;	/* List of _PRW devices for implicit notifies */
 };
 
 /*
@@ -426,7 +427,7 @@ union acpi_gpe_dispatch_info {
  * NOTE: Important to keep this struct as small as possible.
  */
 struct acpi_gpe_event_info {
-	union acpi_gpe_dispatch_info dispatch;	/* Either Method or Handler */
+	union acpi_gpe_dispatch_info dispatch;	/* Either Method, Handler, or notify_list */
 	struct acpi_gpe_register_info *register_info;	/* Backpointer to register info */
 	u8 flags;		/* Misc info about this GPE */
 	u8 gpe_number;		/* This GPE */
@@ -458,7 +459,7 @@ struct acpi_gpe_block_info {
 	u32 register_count;	/* Number of register pairs in block */
 	u16 gpe_count;		/* Number of individual GPEs in block */
 	u8 block_base_number;	/* Base GPE number for this block */
-	u8 initialized;         /* If set, the GPE block has been initialized */
+	u8 initialized;         /* TRUE if this block is initialized */
 };
 
 /* Information about GPE interrupt handlers, one per each interrupt level used for GPEs */
@@ -606,13 +607,22 @@ acpi_status(*acpi_parse_downwards) (struct acpi_walk_state * walk_state,
 
 typedef acpi_status(*acpi_parse_upwards) (struct acpi_walk_state * walk_state);
 
+/* Global handlers for AML Notifies */
+
+struct acpi_global_notify_handler {
+	acpi_notify_handler handler;
+	void *context;
+};
+
 /*
  * Notify info - used to pass info to the deferred notify
  * handler/dispatcher.
  */
 struct acpi_notify_info {
-	ACPI_STATE_COMMON struct acpi_namespace_node *node;
-	union acpi_operand_object *handler_obj;
+	ACPI_STATE_COMMON u8 handler_list_id;
+	struct acpi_namespace_node *node;
+	union acpi_operand_object *handler_list_head;
+	struct acpi_global_notify_handler *global;
 };
 
 /* Generic state is union of structs above */
@@ -636,6 +646,15 @@ union acpi_generic_state {
  ****************************************************************************/
 
 typedef acpi_status(*ACPI_EXECUTE_OP) (struct acpi_walk_state * walk_state);
+
+/* Address Range info block */
+
+struct acpi_address_range {
+	struct acpi_address_range *next;
+	struct acpi_namespace_node *region_node;
+	acpi_physical_address start_address;
+	acpi_physical_address end_address;
+};
 
 /*****************************************************************************
  *
@@ -715,7 +734,7 @@ struct acpi_parse_obj_named {
 	u32 name;		/* 4-byte name or zero if no name */
 };
 
-/* This version is used by the i_aSL compiler only */
+/* This version is used by the iASL compiler only */
 
 #define ACPI_MAX_PARSEOP_NAME   20
 
@@ -784,6 +803,7 @@ struct acpi_parse_state {
 #define ACPI_PARSEOP_IGNORE             0x01
 #define ACPI_PARSEOP_PARAMLIST          0x02
 #define ACPI_PARSEOP_EMPTY_TERMLIST     0x04
+#define ACPI_PARSEOP_PREDEF_CHECKED     0x08
 #define ACPI_PARSEOP_SPECIAL            0x10
 
 /*****************************************************************************
@@ -963,7 +983,7 @@ struct acpi_port_info {
 #define ACPI_RESOURCE_NAME_END_DEPENDENT        0x38
 #define ACPI_RESOURCE_NAME_IO                   0x40
 #define ACPI_RESOURCE_NAME_FIXED_IO             0x48
-#define ACPI_RESOURCE_NAME_RESERVED_S1          0x50
+#define ACPI_RESOURCE_NAME_FIXED_DMA            0x50
 #define ACPI_RESOURCE_NAME_RESERVED_S2          0x58
 #define ACPI_RESOURCE_NAME_RESERVED_S3          0x60
 #define ACPI_RESOURCE_NAME_RESERVED_S4          0x68
@@ -985,7 +1005,9 @@ struct acpi_port_info {
 #define ACPI_RESOURCE_NAME_EXTENDED_IRQ         0x89
 #define ACPI_RESOURCE_NAME_ADDRESS64            0x8A
 #define ACPI_RESOURCE_NAME_EXTENDED_ADDRESS64   0x8B
-#define ACPI_RESOURCE_NAME_LARGE_MAX            0x8B
+#define ACPI_RESOURCE_NAME_GPIO                 0x8C
+#define ACPI_RESOURCE_NAME_SERIAL_BUS           0x8E
+#define ACPI_RESOURCE_NAME_LARGE_MAX            0x8E
 
 /*****************************************************************************
  *
@@ -1069,5 +1091,19 @@ struct acpi_debug_mem_block {
 #define ACPI_MEM_LIST_NSNODE            1
 #define ACPI_MEM_LIST_MAX               1
 #define ACPI_NUM_MEM_LISTS              2
+
+/*****************************************************************************
+ *
+ * Info/help support
+ *
+ ****************************************************************************/
+
+struct ah_predefined_name {
+	char *name;
+	char *description;
+#ifndef ACPI_ASL_COMPILER
+	char *action;
+#endif
+};
 
 #endif				/* __ACLOCAL_H__ */

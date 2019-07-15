@@ -15,6 +15,9 @@
 #define ATPX_VERSION 0
 #define ATPX_GPU_PWR 2
 #define ATPX_MUX_SELECT 3
+#define ATPX_I2C_MUX_SELECT 4
+#define ATPX_SWITCH_START 5
+#define ATPX_SWITCH_END 6
 
 #define ATPX_INTEGRATED 0
 #define ATPX_DISCRETE 1
@@ -27,55 +30,7 @@ static struct radeon_atpx_priv {
 	/* handle for device - and atpx */
 	acpi_handle dhandle;
 	acpi_handle atpx_handle;
-	acpi_handle atrm_handle;
 } radeon_atpx_priv;
-
-/* retrieve the ROM in 4k blocks */
-static int radeon_atrm_call(acpi_handle atrm_handle, uint8_t *bios,
-			    int offset, int len)
-{
-	acpi_status status;
-	union acpi_object atrm_arg_elements[2], *obj;
-	struct acpi_object_list atrm_arg;
-	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL};
-
-	atrm_arg.count = 2;
-	atrm_arg.pointer = &atrm_arg_elements[0];
-
-	atrm_arg_elements[0].type = ACPI_TYPE_INTEGER;
-	atrm_arg_elements[0].integer.value = offset;
-
-	atrm_arg_elements[1].type = ACPI_TYPE_INTEGER;
-	atrm_arg_elements[1].integer.value = len;
-
-	status = acpi_evaluate_object(atrm_handle, NULL, &atrm_arg, &buffer);
-	if (ACPI_FAILURE(status)) {
-		printk("failed to evaluate ATRM got %s\n", acpi_format_exception(status));
-		return -ENODEV;
-	}
-
-	obj = (union acpi_object *)buffer.pointer;
-	memcpy(bios+offset, obj->buffer.pointer, len);
-	kfree(buffer.pointer);
-	return len;
-}
-
-bool radeon_atrm_supported(struct pci_dev *pdev)
-{
-	/* get the discrete ROM only via ATRM */
-	if (!radeon_atpx_priv.atpx_detected)
-		return false;
-
-	if (radeon_atpx_priv.dhandle == DEVICE_ACPI_HANDLE(&pdev->dev))
-		return false;
-	return true;
-}
-
-
-int radeon_atrm_get_bios_chunk(uint8_t *bios, int offset, int len)
-{
-	return radeon_atrm_call(radeon_atpx_priv.atrm_handle, bios, offset, len);
-}
 
 static int radeon_atpx_get_version(acpi_handle handle)
 {
@@ -149,13 +104,35 @@ static int radeon_atpx_switch_mux(acpi_handle handle, int mux_id)
 	return radeon_atpx_execute(handle, ATPX_MUX_SELECT, mux_id);
 }
 
+static int radeon_atpx_switch_i2c_mux(acpi_handle handle, int mux_id)
+{
+	return radeon_atpx_execute(handle, ATPX_I2C_MUX_SELECT, mux_id);
+}
+
+static int radeon_atpx_switch_start(acpi_handle handle, int gpu_id)
+{
+	return radeon_atpx_execute(handle, ATPX_SWITCH_START, gpu_id);
+}
+
+static int radeon_atpx_switch_end(acpi_handle handle, int gpu_id)
+{
+	return radeon_atpx_execute(handle, ATPX_SWITCH_END, gpu_id);
+}
 
 static int radeon_atpx_switchto(enum vga_switcheroo_client_id id)
 {
+	int gpu_id;
+
 	if (id == VGA_SWITCHEROO_IGD)
-		radeon_atpx_switch_mux(radeon_atpx_priv.atpx_handle, 0);
+		gpu_id = ATPX_INTEGRATED;
 	else
-		radeon_atpx_switch_mux(radeon_atpx_priv.atpx_handle, 1);
+		gpu_id = ATPX_DISCRETE;
+
+	radeon_atpx_switch_start(radeon_atpx_priv.atpx_handle, gpu_id);
+	radeon_atpx_switch_mux(radeon_atpx_priv.atpx_handle, gpu_id);
+	radeon_atpx_switch_i2c_mux(radeon_atpx_priv.atpx_handle, gpu_id);
+	radeon_atpx_switch_end(radeon_atpx_priv.atpx_handle, gpu_id);
+
 	return 0;
 }
 
@@ -172,7 +149,7 @@ static int radeon_atpx_power_state(enum vga_switcheroo_client_id id,
 
 static bool radeon_atpx_pci_probe_handle(struct pci_dev *pdev)
 {
-	acpi_handle dhandle, atpx_handle, atrm_handle;
+	acpi_handle dhandle, atpx_handle;
 	acpi_status status;
 
 	dhandle = DEVICE_ACPI_HANDLE(&pdev->dev);
@@ -183,13 +160,8 @@ static bool radeon_atpx_pci_probe_handle(struct pci_dev *pdev)
 	if (ACPI_FAILURE(status))
 		return false;
 
-	status = acpi_get_handle(dhandle, "ATRM", &atrm_handle);
-	if (ACPI_FAILURE(status))
-		return false;
-
 	radeon_atpx_priv.dhandle = dhandle;
 	radeon_atpx_priv.atpx_handle = atpx_handle;
-	radeon_atpx_priv.atrm_handle = atrm_handle;
 	return true;
 }
 

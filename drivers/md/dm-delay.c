@@ -131,6 +131,7 @@ static int delay_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
 	struct delay_c *dc;
 	unsigned long long tmpll;
+	char dummy;
 
 	if (argc != 3 && argc != 6) {
 		ti->error = "requires exactly 3 or 6 arguments";
@@ -145,13 +146,13 @@ static int delay_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	dc->reads = dc->writes = 0;
 
-	if (sscanf(argv[1], "%llu", &tmpll) != 1) {
+	if (sscanf(argv[1], "%llu%c", &tmpll, &dummy) != 1) {
 		ti->error = "Invalid device sector";
 		goto bad;
 	}
 	dc->start_read = tmpll;
 
-	if (sscanf(argv[2], "%u", &dc->read_delay) != 1) {
+	if (sscanf(argv[2], "%u%c", &dc->read_delay, &dummy) != 1) {
 		ti->error = "Invalid delay";
 		goto bad;
 	}
@@ -166,13 +167,13 @@ static int delay_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	if (argc == 3)
 		goto out;
 
-	if (sscanf(argv[4], "%llu", &tmpll) != 1) {
+	if (sscanf(argv[4], "%llu%c", &tmpll, &dummy) != 1) {
 		ti->error = "Invalid write device sector";
 		goto bad_dev_read;
 	}
 	dc->start_write = tmpll;
 
-	if (sscanf(argv[5], "%u", &dc->write_delay) != 1) {
+	if (sscanf(argv[5], "%u%c", &dc->write_delay, &dummy) != 1) {
 		ti->error = "Invalid write delay";
 		goto bad_dev_read;
 	}
@@ -294,7 +295,7 @@ static int delay_map(struct dm_target *ti, struct bio *bio,
 }
 
 static int delay_status(struct dm_target *ti, status_type_t type,
-			char *result, unsigned maxlen)
+			unsigned status_flags, char *result, unsigned maxlen)
 {
 	struct delay_c *dc = ti->private;
 	int sz = 0;
@@ -352,7 +353,7 @@ static int __init dm_delay_init(void)
 {
 	int r = -ENOMEM;
 
-	kdelayd_wq = create_workqueue("kdelayd");
+	kdelayd_wq = alloc_workqueue("kdelayd", WQ_MEM_RECLAIM, 0);
 	if (!kdelayd_wq) {
 		DMERR("Couldn't start kdelayd");
 		goto bad_queue;

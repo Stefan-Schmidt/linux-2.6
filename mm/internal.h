@@ -37,6 +37,52 @@ static inline void __put_page(struct page *page)
 	atomic_dec(&page->_count);
 }
 
+static inline void __get_page_tail_foll(struct page *page,
+					bool get_page_head)
+{
+	/*
+	 * If we're getting a tail page, the elevated page->_count is
+	 * required only in the head page and we will elevate the head
+	 * page->_count and tail page->_mapcount.
+	 *
+	 * We elevate page_tail->_mapcount for tail pages to force
+	 * page_tail->_count to be zero at all times to avoid getting
+	 * false positives from get_page_unless_zero() with
+	 * speculative page access (like in
+	 * page_cache_get_speculative()) on tail pages.
+	 */
+	VM_BUG_ON(atomic_read(&page->first_page->_count) <= 0);
+	VM_BUG_ON(atomic_read(&page->_count) != 0);
+	VM_BUG_ON(page_mapcount(page) < 0);
+	if (get_page_head)
+		atomic_inc(&page->first_page->_count);
+	atomic_inc(&page->_mapcount);
+}
+
+/*
+ * This is meant to be called as the FOLL_GET operation of
+ * follow_page() and it must be called while holding the proper PT
+ * lock while the pte (or pmd_trans_huge) is still mapping the page.
+ */
+static inline void get_page_foll(struct page *page)
+{
+	if (unlikely(PageTail(page)))
+		/*
+		 * This is safe only because
+		 * __split_huge_page_refcount() can't run under
+		 * get_page_foll() because we hold the proper PT lock.
+		 */
+		__get_page_tail_foll(page, true);
+	else {
+		/*
+		 * Getting a normal page or the head of a compound page
+		 * requires to already have an elevated page->_count.
+		 */
+		VM_BUG_ON(atomic_read(&page->_count) <= 0);
+		atomic_inc(&page->_count);
+	}
+}
+
 extern unsigned long highest_memmap_pfn;
 
 /*
@@ -54,6 +100,46 @@ extern void prep_compound_page(struct page *page, unsigned long order);
 extern bool is_free_buddy_page(struct page *page);
 #endif
 
+#if defined CONFIG_COMPACTION || defined CONFIG_CMA
+
+/*
+ * in mm/compaction.c
+ */
+/*
+ * compact_control is used to track pages being migrated and the free pages
+ * they are being migrated to during memory compaction. The free_pfn starts
+ * at the end of a zone and migrate_pfn begins at the start. Movable pages
+ * are moved to the end of a zone during a compaction run and the run
+ * completes when free_pfn <= migrate_pfn
+ */
+struct compact_control {
+	struct list_head freepages;	/* List of free pages to migrate to */
+	struct list_head migratepages;	/* List of pages being migrated */
+	unsigned long nr_freepages;	/* Number of isolated free pages */
+	unsigned long nr_migratepages;	/* Number of pages to migrate */
+	unsigned long free_pfn;		/* isolate_freepages search base */
+	unsigned long start_free_pfn;	/* where we started the search */
+	unsigned long migrate_pfn;	/* isolate_migratepages search base */
+	bool sync;			/* Synchronous migration */
+	bool wrapped;			/* Order > 0 compactions are
+					   incremental, once free_pfn
+					   and migrate_pfn meet, we restart
+					   from the top of the zone;
+					   remember we wrapped around. */
+
+	int order;			/* order a direct compactor needs */
+	int migratetype;		/* MOVABLE, RECLAIMABLE etc */
+	struct zone *zone;
+	bool *contended;		/* True if a lock was contended */
+};
+
+unsigned long
+isolate_freepages_range(unsigned long start_pfn, unsigned long end_pfn);
+unsigned long
+isolate_migratepages_range(struct zone *zone, struct compact_control *cc,
+			   unsigned long low_pfn, unsigned long end_pfn);
+
+#endif
 
 /*
  * function for dealing with page's order in buddy system.
@@ -65,6 +151,10 @@ static inline unsigned long page_order(struct page *page)
 	/* PageBuddy() must be checked by the caller */
 	return page_private(page);
 }
+
+/* mm/util.c */
+void __vma_link_list(struct mm_struct *mm, struct vm_area_struct *vma,
+		struct vm_area_struct *prev, struct rb_node *rb_parent);
 
 #ifdef CONFIG_MMU
 extern long mlock_vma_pages_range(struct vm_area_struct *vma,
@@ -81,7 +171,8 @@ static inline void munlock_vma_pages_all(struct vm_area_struct *vma)
  * to determine if it's being mapped into a LOCKED vma.
  * If so, mark page as mlocked.
  */
-static inline int is_mlocked_vma(struct vm_area_struct *vma, struct page *page)
+static inline int mlocked_vma_newpage(struct vm_area_struct *vma,
+				    struct page *page)
 {
 	VM_BUG_ON(PageLRU(page));
 
@@ -134,8 +225,12 @@ static inline void mlock_migrate_page(struct page *newpage, struct page *page)
 	}
 }
 
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+extern unsigned long vma_address(struct page *page,
+				 struct vm_area_struct *vma);
+#endif
 #else /* !CONFIG_MMU */
-static inline int is_mlocked_vma(struct vm_area_struct *v, struct page *p)
+static inline int mlocked_vma_newpage(struct vm_area_struct *v, struct page *p)
 {
 	return 0;
 }
@@ -158,7 +253,7 @@ static inline struct page *mem_map_offset(struct page *base, int offset)
 }
 
 /*
- * Iterator over all subpages withing the maximally aligned gigantic
+ * Iterator over all subpages within the maximally aligned gigantic
  * page 'base'.  Handle any discontiguity in the mem_map.
  */
 static inline struct page *mem_map_next(struct page *iter,
@@ -241,10 +336,6 @@ static inline void mminit_validate_memmodel_limits(unsigned long *start_pfn,
 }
 #endif /* CONFIG_SPARSEMEM */
 
-int __get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
-		     unsigned long start, int len, unsigned int foll_flags,
-		     struct page **pages, struct vm_area_struct **vmas);
-
 #define ZONE_RECLAIM_NOSCAN	-2
 #define ZONE_RECLAIM_FULL	-1
 #define ZONE_RECLAIM_SOME	0
@@ -259,3 +350,9 @@ extern u64 hwpoison_filter_flags_mask;
 extern u64 hwpoison_filter_flags_value;
 extern u64 hwpoison_filter_memcg;
 extern u32 hwpoison_filter_enable;
+
+extern unsigned long vm_mmap_pgoff(struct file *, unsigned long,
+        unsigned long, unsigned long,
+        unsigned long, unsigned long);
+
+extern void set_pageblock_order(void);

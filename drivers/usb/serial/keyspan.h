@@ -58,10 +58,9 @@ static void keyspan_set_termios		(struct tty_struct *tty,
 					 struct ktermios *old);
 static void keyspan_break_ctl		(struct tty_struct *tty,
 					 int break_state);
-static int  keyspan_tiocmget		(struct tty_struct *tty,
-					 struct file *file);
+static int  keyspan_tiocmget		(struct tty_struct *tty);
 static int  keyspan_tiocmset		(struct tty_struct *tty,
-					 struct file *file, unsigned int set,
+					 unsigned int set,
 					 unsigned int clear);
 static int  keyspan_fake_startup	(struct usb_serial *serial);
 
@@ -488,14 +487,6 @@ static const struct usb_device_id keyspan_ids_combined[] = {
 
 MODULE_DEVICE_TABLE(usb, keyspan_ids_combined);
 
-static struct usb_driver keyspan_driver = {
-	.name =		"keyspan",                
-	.probe =	usb_serial_probe,
-	.disconnect =	usb_serial_disconnect,
-	.id_table =	keyspan_ids_combined,
-	.no_dynamic_id = 	1,
-};
-
 /* usb_device_id table for the pre-firmware download keyspan devices */
 static const struct usb_device_id keyspan_pre_ids[] = {
 	{ USB_DEVICE(KEYSPAN_VENDOR_ID, keyspan_usa18x_pre_product_id) },
@@ -615,6 +606,11 @@ static struct usb_serial_driver keyspan_4port_device = {
 	.attach			= keyspan_startup,
 	.disconnect		= keyspan_disconnect,
 	.release		= keyspan_release,
+};
+
+static struct usb_serial_driver * const serial_drivers[] = {
+	&keyspan_pre_device, &keyspan_1port_device,
+	&keyspan_2port_device, &keyspan_4port_device, NULL
 };
 
 #endif

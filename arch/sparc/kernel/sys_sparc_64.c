@@ -23,7 +23,7 @@
 #include <linux/ipc.h>
 #include <linux/personality.h>
 #include <linux/random.h>
-#include <linux/module.h>
+#include <linux/export.h>
 
 #include <asm/uaccess.h>
 #include <asm/utrap.h>
@@ -64,23 +64,6 @@ static inline int invalid_64bit_range(unsigned long addr, unsigned long len)
 		return 1;
 
 	return 0;
-}
-
-/* Does start,end straddle the VA-space hole?  */
-static inline int straddles_64bit_va_hole(unsigned long start, unsigned long end)
-{
-	unsigned long va_exclude_start, va_exclude_end;
-
-	va_exclude_start = VA_EXCLUDE_START;
-	va_exclude_end   = VA_EXCLUDE_END;
-
-	if (likely(start < va_exclude_start && end < va_exclude_start))
-		return 0;
-
-	if (likely(start >= va_exclude_end && end >= va_exclude_end))
-		return 0;
-
-	return 1;
 }
 
 /* These functions differ from the default implementations in
@@ -360,20 +343,25 @@ unsigned long get_fb_unmapped_area(struct file *filp, unsigned long orig_addr, u
 }
 EXPORT_SYMBOL(get_fb_unmapped_area);
 
-/* Essentially the same as PowerPC... */
-void arch_pick_mmap_layout(struct mm_struct *mm)
+/* Essentially the same as PowerPC.  */
+static unsigned long mmap_rnd(void)
 {
-	unsigned long random_factor = 0UL;
-	unsigned long gap;
+	unsigned long rnd = 0UL;
 
 	if (current->flags & PF_RANDOMIZE) {
-		random_factor = get_random_int();
+		unsigned long val = get_random_int();
 		if (test_thread_flag(TIF_32BIT))
-			random_factor &= ((1 * 1024 * 1024) - 1);
+			rnd = (val % (1UL << (23UL-PAGE_SHIFT)));
 		else
-			random_factor = ((random_factor << PAGE_SHIFT) &
-					 0xffffffffUL);
+			rnd = (val % (1UL << (30UL-PAGE_SHIFT)));
 	}
+	return rnd << PAGE_SHIFT;
+}
+
+void arch_pick_mmap_layout(struct mm_struct *mm)
+{
+	unsigned long random_factor = mmap_rnd();
+	unsigned long gap;
 
 	/*
 	 * Fall back to the standard layout if the personality
@@ -455,7 +443,7 @@ SYSCALL_DEFINE6(sparc_ipc, unsigned int, call, int, first, unsigned long, second
 		default:
 			err = -ENOSYS;
 			goto out;
-		};
+		}
 	}
 	if (call <= MSGCTL) {
 		switch (call) {
@@ -476,13 +464,13 @@ SYSCALL_DEFINE6(sparc_ipc, unsigned int, call, int, first, unsigned long, second
 		default:
 			err = -ENOSYS;
 			goto out;
-		};
+		}
 	}
 	if (call <= SHMCTL) {
 		switch (call) {
 		case SHMAT: {
 			ulong raddr;
-			err = do_shmat(first, ptr, (int)second, &raddr);
+			err = do_shmat(first, ptr, (int)second, &raddr, SHMLBA);
 			if (!err) {
 				if (put_user(raddr,
 					     (ulong __user *) third))
@@ -502,7 +490,7 @@ SYSCALL_DEFINE6(sparc_ipc, unsigned int, call, int, first, unsigned long, second
 		default:
 			err = -ENOSYS;
 			goto out;
-		};
+		}
 	} else {
 		err = -ENOSYS;
 	}
@@ -514,12 +502,12 @@ SYSCALL_DEFINE1(sparc64_personality, unsigned long, personality)
 {
 	int ret;
 
-	if (current->personality == PER_LINUX32 &&
-	    personality == PER_LINUX)
-		personality = PER_LINUX32;
+	if (personality(current->personality) == PER_LINUX32 &&
+	    personality(personality) == PER_LINUX)
+		personality |= PER_LINUX32;
 	ret = sys_personality(personality);
-	if (ret == PER_LINUX32)
-		ret = PER_LINUX;
+	if (personality(ret) == PER_LINUX32)
+		ret &= ~PER_LINUX32;
 
 	return ret;
 }
@@ -561,15 +549,10 @@ out:
 
 SYSCALL_DEFINE2(64_munmap, unsigned long, addr, size_t, len)
 {
-	long ret;
-
 	if (invalid_64bit_range(addr, len))
 		return -EINVAL;
 
-	down_write(&current->mm->mmap_sem);
-	ret = do_munmap(current->mm, addr, len);
-	up_write(&current->mm->mmap_sem);
-	return ret;
+	return vm_munmap(addr, len);
 }
 
 extern unsigned long do_mremap(unsigned long addr,
@@ -580,16 +563,9 @@ SYSCALL_DEFINE5(64_mremap, unsigned long, addr,	unsigned long, old_len,
 		unsigned long, new_len, unsigned long, flags,
 		unsigned long, new_addr)
 {
-	unsigned long ret = -EINVAL;
-
 	if (test_thread_flag(TIF_32BIT))
-		goto out;
-
-	down_write(&current->mm->mmap_sem);
-	ret = do_mremap(addr, old_len, new_len, flags, new_addr);
-	up_write(&current->mm->mmap_sem);
-out:
-	return ret;       
+		return -EINVAL;
+	return sys_mremap(addr, old_len, new_len, flags, new_addr);
 }
 
 /* we come to here via sys_nis_syscall so it can setup the regs argument */

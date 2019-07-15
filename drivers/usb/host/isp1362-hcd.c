@@ -70,7 +70,6 @@
 #include <linux/ioport.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
-#include <linux/smp_lock.h>
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/list.h>
@@ -82,9 +81,9 @@
 #include <linux/pm.h>
 #include <linux/io.h>
 #include <linux/bitmap.h>
+#include <linux/prefetch.h>
 
 #include <asm/irq.h>
-#include <asm/system.h>
 #include <asm/byteorder.h>
 #include <asm/unaligned.h>
 
@@ -227,7 +226,6 @@ static int claim_ptd_buffers(struct isp1362_ep_queue *epq,
 
 static inline void release_ptd_buffers(struct isp1362_ep_queue *epq, struct isp1362_ep *ep)
 {
-	int index = ep->ptd_index;
 	int last = ep->ptd_index + ep->num_ptds;
 
 	if (last > epq->buf_count)
@@ -237,10 +235,8 @@ static inline void release_ptd_buffers(struct isp1362_ep_queue *epq, struct isp1
 		    epq->buf_map, epq->skip_map);
 	BUG_ON(last > epq->buf_count);
 
-	for (; index < last; index++) {
-		__clear_bit(index, &epq->buf_map);
-		__set_bit(index, &epq->skip_map);
-	}
+	bitmap_clear(&epq->buf_map, ep->ptd_index, ep->num_ptds);
+	bitmap_set(&epq->skip_map, ep->ptd_index, ep->num_ptds);
 	epq->buf_avail += ep->num_ptds;
 	epq->ptd_count--;
 
@@ -547,12 +543,12 @@ static void postproc_ep(struct isp1362_hcd *isp1362_hcd, struct isp1362_ep *ep)
 			    usb_pipein(urb->pipe) ? "IN" : "OUT", ep->nextpid,
 			    short_ok ? "" : "not_",
 			    PTD_GET_COUNT(ptd), ep->maxpacket, len);
+			/* save the data underrun error code for later and
+			 * proceed with the status stage
+			 */
+			urb->actual_length += PTD_GET_COUNT(ptd);
 			if (usb_pipecontrol(urb->pipe)) {
 				ep->nextpid = USB_PID_ACK;
-				/* save the data underrun error code for later and
-				 * procede with the status stage
-				 */
-				urb->actual_length += PTD_GET_COUNT(ptd);
 				BUG_ON(urb->actual_length > urb->transfer_buffer_length);
 
 				if (urb->status == -EINPROGRESS)
@@ -1556,9 +1552,9 @@ static void isp1362_hub_descriptor(struct isp1362_hcd *isp1362_hcd,
 	desc->wHubCharacteristics = cpu_to_le16((reg >> 8) & 0x1f);
 	DBG(0, "%s: hubcharacteristics = %02x\n", __func__, cpu_to_le16((reg >> 8) & 0x1f));
 	desc->bPwrOn2PwrGood = (reg >> 24) & 0xff;
-	/* two bitmaps:  ports removable, and legacy PortPwrCtrlMask */
-	desc->bitmap[0] = desc->bNbrPorts == 1 ? 1 << 1 : 3 << 1;
-	desc->bitmap[1] = ~0;
+	/* ports removable, and legacy PortPwrCtrlMask */
+	desc->u.hs.DeviceRemovable[0] = desc->bNbrPorts == 1 ? 1 << 1 : 3 << 1;
+	desc->u.hs.DeviceRemovable[1] = ~0;
 
 	DBG(3, "%s: exit\n", __func__);
 }
@@ -2361,7 +2357,7 @@ static int isp1362_hc_reset(struct usb_hcd *hcd)
 	unsigned long flags;
 	int clkrdy = 0;
 
-	pr_info("%s:\n", __func__);
+	pr_debug("%s:\n", __func__);
 
 	if (isp1362_hcd->board && isp1362_hcd->board->reset) {
 		isp1362_hcd->board->reset(hcd->self.controller, 1);
@@ -2398,7 +2394,7 @@ static void isp1362_hc_stop(struct usb_hcd *hcd)
 	unsigned long flags;
 	u32 tmp;
 
-	pr_info("%s:\n", __func__);
+	pr_debug("%s:\n", __func__);
 
 	del_timer_sync(&hcd->rh_timer);
 
@@ -2526,7 +2522,7 @@ static int isp1362_hc_start(struct usb_hcd *hcd)
 	u16 chipid;
 	unsigned long flags;
 
-	pr_info("%s:\n", __func__);
+	pr_debug("%s:\n", __func__);
 
 	spin_lock_irqsave(&isp1362_hcd->lock, flags);
 	chipid = isp1362_read_reg16(isp1362_hcd, HCCHIPID);
@@ -2684,7 +2680,7 @@ static int __devexit isp1362_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static int __init isp1362_probe(struct platform_device *pdev)
+static int __devinit isp1362_probe(struct platform_device *pdev)
 {
 	struct usb_hcd *hcd;
 	struct isp1362_hcd *isp1362_hcd;
@@ -2695,6 +2691,9 @@ static int __init isp1362_probe(struct platform_device *pdev)
 	int retval = 0;
 	struct resource *irq_res;
 	unsigned int irq_flags = 0;
+
+	if (usb_disabled())
+		return -ENODEV;
 
 	/* basic sanity checks first.  board-specific init logic should
 	 * have initialized this the three resources and probably board
@@ -2776,7 +2775,7 @@ static int __init isp1362_probe(struct platform_device *pdev)
 	if (irq_res->flags & IORESOURCE_IRQ_LOWLEVEL)
 		irq_flags |= IRQF_TRIGGER_LOW;
 
-	retval = usb_add_hcd(hcd, irq, irq_flags | IRQF_DISABLED | IRQF_SHARED);
+	retval = usb_add_hcd(hcd, irq, irq_flags | IRQF_SHARED);
 	if (retval != 0)
 		goto err6;
 	pr_info("%s, irq %d\n", hcd->product_desc, irq);
@@ -2867,19 +2866,4 @@ static struct platform_driver isp1362_driver = {
 	},
 };
 
-/*-------------------------------------------------------------------------*/
-
-static int __init isp1362_init(void)
-{
-	if (usb_disabled())
-		return -ENODEV;
-	pr_info("driver %s, %s\n", hcd_name, DRIVER_VERSION);
-	return platform_driver_register(&isp1362_driver);
-}
-module_init(isp1362_init);
-
-static void __exit isp1362_cleanup(void)
-{
-	platform_driver_unregister(&isp1362_driver);
-}
-module_exit(isp1362_cleanup);
+module_platform_driver(isp1362_driver);

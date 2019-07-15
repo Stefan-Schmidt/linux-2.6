@@ -69,7 +69,7 @@ ENTRY(_start)
 	}
 	{
 	  moveli lr, lo16(1f)
-	  move r5, zero
+	  moveli r5, CTX_PAGE_FLAG
 	}
 	{
 	  auli lr, lr, ha16(1f)
@@ -133,7 +133,7 @@ ENTRY(_start)
 	}
 	ENDPROC(_start)
 
-.section ".bss.page_aligned","w"
+__PAGE_ALIGNED_BSS
 	.align PAGE_SIZE
 ENTRY(empty_zero_page)
 	.fill PAGE_SIZE,1,0
@@ -141,14 +141,14 @@ ENTRY(empty_zero_page)
 
 	.macro PTE va, cpa, bits1, no_org=0
 	.ifeq \no_org
-	.org swapper_pg_dir + HV_L1_INDEX(\va) * HV_PTE_SIZE
+	.org swapper_pg_dir + PGD_INDEX(\va) * HV_PTE_SIZE
 	.endif
 	.word HV_PTE_PAGE | HV_PTE_DIRTY | HV_PTE_PRESENT | HV_PTE_ACCESSED | \
 	      (HV_PTE_MODE_CACHE_NO_L3 << HV_PTE_INDEX_MODE)
-	.word (\bits1) | (HV_CPA_TO_PFN(\cpa) << HV_PTE_INDEX_PFN)
+	.word (\bits1) | (HV_CPA_TO_PTFN(\cpa) << (HV_PTE_INDEX_PTFN - 32))
 	.endm
 
-.section ".data.page_aligned","wa"
+__PAGE_ALIGNED_DATA
 	.align PAGE_SIZE
 ENTRY(swapper_pg_dir)
 	/*
@@ -158,13 +158,15 @@ ENTRY(swapper_pg_dir)
 	 */
 	.set addr, 0
 	.rept (MEM_USER_INTRPT - PAGE_OFFSET) >> PGDIR_SHIFT
-	PTE addr + PAGE_OFFSET, addr, HV_PTE_READABLE | HV_PTE_WRITABLE
+	PTE addr + PAGE_OFFSET, addr, (1 << (HV_PTE_INDEX_READABLE - 32)) | \
+				      (1 << (HV_PTE_INDEX_WRITABLE - 32))
 	.set addr, addr + PGDIR_SIZE
 	.endr
 
 	/* The true text VAs are mapped as VA = PA + MEM_SV_INTRPT */
-	PTE MEM_SV_INTRPT, 0, HV_PTE_READABLE | HV_PTE_EXECUTABLE
-	.org swapper_pg_dir + HV_L1_SIZE
+	PTE MEM_SV_INTRPT, 0, (1 << (HV_PTE_INDEX_READABLE - 32)) | \
+			      (1 << (HV_PTE_INDEX_EXECUTABLE - 32))
+	.org swapper_pg_dir + PGDIR_SIZE
 	END(swapper_pg_dir)
 
 	/*
@@ -176,6 +178,7 @@ ENTRY(swapper_pg_dir)
 	__INITDATA
 	.align CHIP_L2_LINE_SIZE()
 ENTRY(swapper_pgprot)
-	PTE	0, 0, HV_PTE_READABLE | HV_PTE_WRITABLE, 1
+	PTE	0, 0, (1 << (HV_PTE_INDEX_READABLE - 32)) | \
+		      (1 << (HV_PTE_INDEX_WRITABLE - 32)), 1
 	.align CHIP_L2_LINE_SIZE()
 	END(swapper_pgprot)

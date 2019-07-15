@@ -72,7 +72,7 @@ i915_verify_lists(struct drm_device *dev)
 			break;
 		} else if (!obj->active ||
 			   (obj->base.write_domain & I915_GEM_GPU_DOMAINS) == 0 ||
-			   list_empty(&obj->gpu_write_list)){
+			   list_empty(&obj->gpu_write_list)) {
 			DRM_ERROR("invalid flushing %p (a %d w %x gwl %d)\n",
 				  obj,
 				  obj->active,
@@ -114,89 +114,26 @@ i915_verify_lists(struct drm_device *dev)
 		}
 	}
 
-	list_for_each_entry(obj, &dev_priv->mm.pinned_list, list) {
-		if (obj->base.dev != dev ||
-		    !atomic_read(&obj->base.refcount.refcount)) {
-			DRM_ERROR("freed pinned %p\n", obj);
-			err++;
-			break;
-		} else if (!obj->pin_count || obj->active ||
-			   (obj->base.write_domain & I915_GEM_GPU_DOMAINS)) {
-			DRM_ERROR("invalid pinned %p (p %d a %d w %x)\n",
-				  obj,
-				  obj->pin_count, obj->active,
-				  obj->base.write_domain);
-			err++;
-		}
-	}
-
 	return warned = err;
 }
 #endif /* WATCH_INACTIVE */
 
-
-#if WATCH_EXEC | WATCH_PWRITE
-static void
-i915_gem_dump_page(struct page *page, uint32_t start, uint32_t end,
-		   uint32_t bias, uint32_t mark)
-{
-	uint32_t *mem = kmap_atomic(page, KM_USER0);
-	int i;
-	for (i = start; i < end; i += 4)
-		DRM_INFO("%08x: %08x%s\n",
-			  (int) (bias + i), mem[i / 4],
-			  (bias + i == mark) ? " ********" : "");
-	kunmap_atomic(mem, KM_USER0);
-	/* give syslog time to catch up */
-	msleep(1);
-}
-
-void
-i915_gem_dump_object(struct drm_gem_object *obj, int len,
-		     const char *where, uint32_t mark)
-{
-	struct drm_i915_gem_object *obj_priv = to_intel_bo(obj);
-	int page;
-
-	DRM_INFO("%s: object at offset %08x\n", where, obj_priv->gtt_offset);
-	for (page = 0; page < (len + PAGE_SIZE-1) / PAGE_SIZE; page++) {
-		int page_len, chunk, chunk_len;
-
-		page_len = len - page * PAGE_SIZE;
-		if (page_len > PAGE_SIZE)
-			page_len = PAGE_SIZE;
-
-		for (chunk = 0; chunk < page_len; chunk += 128) {
-			chunk_len = page_len - chunk;
-			if (chunk_len > 128)
-				chunk_len = 128;
-			i915_gem_dump_page(obj_priv->pages[page],
-					   chunk, chunk + chunk_len,
-					   obj_priv->gtt_offset +
-					   page * PAGE_SIZE,
-					   mark);
-		}
-	}
-}
-#endif
-
 #if WATCH_COHERENCY
 void
-i915_gem_object_check_coherency(struct drm_gem_object *obj, int handle)
+i915_gem_object_check_coherency(struct drm_i915_gem_object *obj, int handle)
 {
-	struct drm_device *dev = obj->dev;
-	struct drm_i915_gem_object *obj_priv = to_intel_bo(obj);
+	struct drm_device *dev = obj->base.dev;
 	int page;
 	uint32_t *gtt_mapping;
 	uint32_t *backing_map = NULL;
 	int bad_count = 0;
 
 	DRM_INFO("%s: checking coherency of object %p@0x%08x (%d, %zdkb):\n",
-		 __func__, obj, obj_priv->gtt_offset, handle,
+		 __func__, obj, obj->gtt_offset, handle,
 		 obj->size / 1024);
 
-	gtt_mapping = ioremap(dev->agp->base + obj_priv->gtt_offset,
-			      obj->size);
+	gtt_mapping = ioremap(dev_priv->mm.gtt_base_addr + obj->gtt_offset,
+			      obj->base.size);
 	if (gtt_mapping == NULL) {
 		DRM_ERROR("failed to map GTT space\n");
 		return;
@@ -205,7 +142,7 @@ i915_gem_object_check_coherency(struct drm_gem_object *obj, int handle)
 	for (page = 0; page < obj->size / PAGE_SIZE; page++) {
 		int i;
 
-		backing_map = kmap_atomic(obj_priv->pages[page], KM_USER0);
+		backing_map = kmap_atomic(obj->pages[page]);
 
 		if (backing_map == NULL) {
 			DRM_ERROR("failed to map backing page\n");
@@ -220,7 +157,7 @@ i915_gem_object_check_coherency(struct drm_gem_object *obj, int handle)
 			if (cpuval != gttval) {
 				DRM_INFO("incoherent CPU vs GPU at 0x%08x: "
 					 "0x%08x vs 0x%08x\n",
-					 (int)(obj_priv->gtt_offset +
+					 (int)(obj->gtt_offset +
 					       page * PAGE_SIZE + i * 4),
 					 cpuval, gttval);
 				if (bad_count++ >= 8) {
@@ -229,13 +166,13 @@ i915_gem_object_check_coherency(struct drm_gem_object *obj, int handle)
 				}
 			}
 		}
-		kunmap_atomic(backing_map, KM_USER0);
+		kunmap_atomic(backing_map);
 		backing_map = NULL;
 	}
 
  out:
 	if (backing_map != NULL)
-		kunmap_atomic(backing_map, KM_USER0);
+		kunmap_atomic(backing_map);
 	iounmap(gtt_mapping);
 
 	/* give syslog time to catch up */

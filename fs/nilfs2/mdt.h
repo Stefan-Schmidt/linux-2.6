@@ -28,6 +28,13 @@
 #include "nilfs.h"
 #include "page.h"
 
+/**
+ * struct nilfs_shadow_map - shadow mapping of meta data file
+ * @bmap_store: shadow copy of bmap state
+ * @frozen_data: shadowed dirty data pages
+ * @frozen_btnodes: shadowed dirty b-tree nodes' pages
+ * @frozen_buffers: list of frozen buffers
+ */
 struct nilfs_shadow_map {
 	struct nilfs_bmap_store bmap_store;
 	struct address_space frozen_data;
@@ -64,11 +71,6 @@ static inline struct nilfs_mdt_info *NILFS_MDT(const struct inode *inode)
 	return inode->i_private;
 }
 
-static inline struct the_nilfs *NILFS_I_NILFS(struct inode *inode)
-{
-	return NILFS_SB(inode->i_sb)->s_nilfs;
-}
-
 /* Default GFP flags using highmem */
 #define NILFS_MDT_GFP      (__GFP_WAIT | __GFP_IO | __GFP_HIGHMEM)
 
@@ -93,8 +95,6 @@ int nilfs_mdt_freeze_buffer(struct inode *inode, struct buffer_head *bh);
 struct buffer_head *nilfs_mdt_get_frozen_buffer(struct inode *inode,
 						struct buffer_head *bh);
 
-#define nilfs_mdt_mark_buffer_dirty(bh)	nilfs_mark_buffer_dirty(bh)
-
 static inline void nilfs_mdt_mark_dirty(struct inode *inode)
 {
 	if (!test_bit(NILFS_I_DIRTY, &NILFS_I(inode)->i_state))
@@ -108,7 +108,7 @@ static inline void nilfs_mdt_clear_dirty(struct inode *inode)
 
 static inline __u64 nilfs_mdt_cno(struct inode *inode)
 {
-	return NILFS_I_NILFS(inode)->ns_cno;
+	return ((struct the_nilfs *)inode->i_sb->s_fs_info)->ns_cno;
 }
 
 #define nilfs_mdt_bgl_lock(inode, bg) \

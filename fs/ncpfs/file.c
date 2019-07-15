@@ -7,7 +7,6 @@
  */
 
 #include <asm/uaccess.h>
-#include <asm/system.h>
 
 #include <linux/time.h>
 #include <linux/kernel.h>
@@ -17,14 +16,12 @@
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
 #include <linux/sched.h>
-#include <linux/smp_lock.h>
 
-#include <linux/ncp_fs.h>
-#include "ncplib_kernel.h"
+#include "ncp_fs.h"
 
-static int ncp_fsync(struct file *file, int datasync)
+static int ncp_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
-	return 0;
+	return filemap_write_and_wait_range(file->f_mapping, start, end);
 }
 
 /*
@@ -224,6 +221,10 @@ ncp_file_write(struct file *file, const char __user *buf, size_t count, loff_t *
 
 	already_written = 0;
 
+	errno = file_update_time(file);
+	if (errno)
+		goto outrel;
+
 	bouncebuffer = vmalloc(bufsize);
 	if (!bouncebuffer) {
 		errno = -EIO;	/* -ENOMEM */
@@ -254,8 +255,6 @@ ncp_file_write(struct file *file, const char __user *buf, size_t count, loff_t *
 		}
 	}
 	vfree(bouncebuffer);
-
-	file_update_time(file);
 
 	*ppos = pos;
 

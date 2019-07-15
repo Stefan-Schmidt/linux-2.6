@@ -29,10 +29,12 @@
 #include <net/netfilter/nf_conntrack_helper.h>
 #include <net/netfilter/nf_conntrack_acct.h>
 #include <net/netfilter/nf_conntrack_zones.h>
+#include <net/netfilter/nf_conntrack_timestamp.h>
+#include <linux/rculist_nulls.h>
 
 MODULE_LICENSE("GPL");
 
-#ifdef CONFIG_PROC_FS
+#ifdef CONFIG_NF_CONNTRACK_PROCFS
 int
 print_tuple(struct seq_file *s, const struct nf_conntrack_tuple *tuple,
             const struct nf_conntrack_l3proto *l3proto,
@@ -45,6 +47,7 @@ EXPORT_SYMBOL_GPL(print_tuple);
 struct ct_iter_state {
 	struct seq_net_private p;
 	unsigned int bucket;
+	u_int64_t time_now;
 };
 
 static struct hlist_nulls_node *ct_get_first(struct seq_file *seq)
@@ -56,7 +59,7 @@ static struct hlist_nulls_node *ct_get_first(struct seq_file *seq)
 	for (st->bucket = 0;
 	     st->bucket < net->ct.htable_size;
 	     st->bucket++) {
-		n = rcu_dereference(net->ct.hash[st->bucket].first);
+		n = rcu_dereference(hlist_nulls_first_rcu(&net->ct.hash[st->bucket]));
 		if (!is_a_nulls(n))
 			return n;
 	}
@@ -69,13 +72,15 @@ static struct hlist_nulls_node *ct_get_next(struct seq_file *seq,
 	struct net *net = seq_file_net(seq);
 	struct ct_iter_state *st = seq->private;
 
-	head = rcu_dereference(head->next);
+	head = rcu_dereference(hlist_nulls_next_rcu(head));
 	while (is_a_nulls(head)) {
 		if (likely(get_nulls_value(head) == st->bucket)) {
 			if (++st->bucket >= net->ct.htable_size)
 				return NULL;
 		}
-		head = rcu_dereference(net->ct.hash[st->bucket].first);
+		head = rcu_dereference(
+				hlist_nulls_first_rcu(
+					&net->ct.hash[st->bucket]));
 	}
 	return head;
 }
@@ -93,6 +98,9 @@ static struct hlist_nulls_node *ct_get_idx(struct seq_file *seq, loff_t pos)
 static void *ct_seq_start(struct seq_file *seq, loff_t *pos)
 	__acquires(RCU)
 {
+	struct ct_iter_state *st = seq->private;
+
+	st->time_now = ktime_to_ns(ktime_get_real());
 	rcu_read_lock();
 	return ct_get_idx(seq, *pos);
 }
@@ -118,7 +126,7 @@ static int ct_show_secctx(struct seq_file *s, const struct nf_conn *ct)
 
 	ret = security_secid_to_secctx(ct->secmark, &secctx, &len);
 	if (ret)
-		return ret;
+		return 0;
 
 	ret = seq_printf(s, "secctx=%s ", secctx);
 
@@ -127,6 +135,34 @@ static int ct_show_secctx(struct seq_file *s, const struct nf_conn *ct)
 }
 #else
 static inline int ct_show_secctx(struct seq_file *s, const struct nf_conn *ct)
+{
+	return 0;
+}
+#endif
+
+#ifdef CONFIG_NF_CONNTRACK_TIMESTAMP
+static int ct_show_delta_time(struct seq_file *s, const struct nf_conn *ct)
+{
+	struct ct_iter_state *st = s->private;
+	struct nf_conn_tstamp *tstamp;
+	s64 delta_time;
+
+	tstamp = nf_conn_tstamp_find(ct);
+	if (tstamp) {
+		delta_time = st->time_now - tstamp->start;
+		if (delta_time > 0)
+			delta_time = div_s64(delta_time, NSEC_PER_SEC);
+		else
+			delta_time = 0;
+
+		return seq_printf(s, "delta-time=%llu ",
+				  (unsigned long long)delta_time);
+	}
+	return 0;
+}
+#else
+static inline int
+ct_show_delta_time(struct seq_file *s, const struct nf_conn *ct)
 {
 	return 0;
 }
@@ -200,13 +236,16 @@ static int ct_seq_show(struct seq_file *s, void *v)
 		goto release;
 #endif
 
+	if (ct_show_delta_time(s, ct))
+		goto release;
+
 	if (seq_printf(s, "use=%u\n", atomic_read(&ct->ct_general.use)))
 		goto release;
 
 	ret = 0;
 release:
 	nf_ct_put(ct);
-	return 0;
+	return ret;
 }
 
 static const struct seq_operations ct_seq_ops = {
@@ -357,7 +396,7 @@ static int nf_conntrack_standalone_init_proc(struct net *net)
 static void nf_conntrack_standalone_fini_proc(struct net *net)
 {
 }
-#endif /* CONFIG_PROC_FS */
+#endif /* CONFIG_NF_CONNTRACK_PROCFS */
 
 /* Sysctl support */
 
@@ -429,18 +468,13 @@ static ctl_table nf_ct_netfilter_table[] = {
 	{ }
 };
 
-static struct ctl_path nf_ct_path[] = {
-	{ .procname = "net", },
-	{ }
-};
-
 static int nf_conntrack_standalone_init_sysctl(struct net *net)
 {
 	struct ctl_table *table;
 
 	if (net_eq(net, &init_net)) {
 		nf_ct_netfilter_header =
-		       register_sysctl_paths(nf_ct_path, nf_ct_netfilter_table);
+		       register_net_sysctl(&init_net, "net", nf_ct_netfilter_table);
 		if (!nf_ct_netfilter_header)
 			goto out;
 	}
@@ -455,8 +489,7 @@ static int nf_conntrack_standalone_init_sysctl(struct net *net)
 	table[3].data = &net->ct.sysctl_checksum;
 	table[4].data = &net->ct.sysctl_log_invalid;
 
-	net->ct.sysctl_header = register_net_sysctl_table(net,
-					nf_net_netfilter_sysctl_path, table);
+	net->ct.sysctl_header = register_net_sysctl(net, "net/netfilter", table);
 	if (!net->ct.sysctl_header)
 		goto out_unregister_netfilter;
 
@@ -466,7 +499,7 @@ out_unregister_netfilter:
 	kfree(table);
 out_kmemdup:
 	if (net_eq(net, &init_net))
-		unregister_sysctl_table(nf_ct_netfilter_header);
+		unregister_net_sysctl_table(nf_ct_netfilter_header);
 out:
 	printk(KERN_ERR "nf_conntrack: can't register to sysctl.\n");
 	return -ENOMEM;
@@ -477,7 +510,7 @@ static void nf_conntrack_standalone_fini_sysctl(struct net *net)
 	struct ctl_table *table;
 
 	if (net_eq(net, &init_net))
-		unregister_sysctl_table(nf_ct_netfilter_header);
+		unregister_net_sysctl_table(nf_ct_netfilter_header);
 	table = net->ct.sysctl_header->ctl_table_arg;
 	unregister_net_sysctl_table(net->ct.sysctl_header);
 	kfree(table);

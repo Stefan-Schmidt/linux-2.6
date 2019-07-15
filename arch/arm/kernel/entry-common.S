@@ -10,8 +10,14 @@
 
 #include <asm/unistd.h>
 #include <asm/ftrace.h>
-#include <mach/entry-macro.S>
 #include <asm/unwind.h>
+
+#ifdef CONFIG_NEED_RET_TO_USER
+#include <mach/entry-macro.S>
+#else
+	.macro  arch_ret_to_user, tmp1, tmp2
+	.endm
+#endif
 
 #include "entry-header.S"
 
@@ -29,6 +35,9 @@ ret_fast_syscall:
 	ldr	r1, [tsk, #TI_FLAGS]
 	tst	r1, #_TIF_WORK_MASK
 	bne	fast_work_pending
+#if defined(CONFIG_IRQSOFF_TRACER)
+	asm_trace_hardirqs_on
+#endif
 
 	/* perform architecture specific actions before user return */
 	arch_ret_to_user r1, lr
@@ -42,33 +51,34 @@ ret_fast_syscall:
 fast_work_pending:
 	str	r0, [sp, #S_R0+S_OFF]!		@ returned r0
 work_pending:
-	tst	r1, #_TIF_NEED_RESCHED
-	bne	work_resched
-	tst	r1, #_TIF_SIGPENDING|_TIF_NOTIFY_RESUME
-	beq	no_work_pending
 	mov	r0, sp				@ 'regs'
 	mov	r2, why				@ 'syscall'
-	tst	r1, #_TIF_SIGPENDING		@ delivering a signal?
-	movne	why, #0				@ prevent further restarts
-	bl	do_notify_resume
-	b	ret_slow_syscall		@ Check work again
+	bl	do_work_pending
+	cmp	r0, #0
+	beq	no_work_pending
+	movlt	scno, #(__NR_restart_syscall - __NR_SYSCALL_BASE)
+	ldmia	sp, {r0 - r6}			@ have to reload r0 - r6
+	b	local_restart			@ ... and off we go
 
-work_resched:
-	bl	schedule
 /*
  * "slow" syscall return path.  "why" tells us if this was a real syscall.
  */
 ENTRY(ret_to_user)
 ret_slow_syscall:
 	disable_irq				@ disable interrupts
+ENTRY(ret_to_user_from_irq)
 	ldr	r1, [tsk, #TI_FLAGS]
 	tst	r1, #_TIF_WORK_MASK
 	bne	work_pending
 no_work_pending:
+#if defined(CONFIG_IRQSOFF_TRACER)
+	asm_trace_hardirqs_on
+#endif
 	/* perform architecture specific actions before user return */
 	arch_ret_to_user r1, lr
 
 	restore_user_regs fast = 0, offset = 0
+ENDPROC(ret_to_user_from_irq)
 ENDPROC(ret_to_user)
 
 /*
@@ -77,13 +87,7 @@ ENDPROC(ret_to_user)
 ENTRY(ret_from_fork)
 	bl	schedule_tail
 	get_thread_info tsk
-	ldr	r1, [tsk, #TI_FLAGS]		@ check for syscall tracing
 	mov	why, #1
-	tst	r1, #_TIF_SYSCALL_TRACE		@ are we tracing syscalls?
-	beq	ret_slow_syscall
-	mov	r1, sp
-	mov	r0, #1				@ trace exit [IP = 1]
-	bl	syscall_trace
 	b	ret_slow_syscall
 ENDPROC(ret_from_fork)
 
@@ -141,98 +145,173 @@ ENDPROC(ret_from_fork)
 #endif
 #endif
 
-#ifdef CONFIG_DYNAMIC_FTRACE
-ENTRY(__gnu_mcount_nc)
-	mov	ip, lr
-	ldmia	sp!, {lr}
-	mov	pc, ip
-ENDPROC(__gnu_mcount_nc)
+.macro mcount_adjust_addr rd, rn
+	bic	\rd, \rn, #1		@ clear the Thumb bit if present
+	sub	\rd, \rd, #MCOUNT_INSN_SIZE
+.endm
 
-ENTRY(ftrace_caller)
-	stmdb	sp!, {r0-r3, lr}
-	mov	r0, lr
-	sub	r0, r0, #MCOUNT_INSN_SIZE
-	ldr	r1, [sp, #20]
-
-	.global	ftrace_call
-ftrace_call:
-	bl	ftrace_stub
-	ldmia	sp!, {r0-r3, ip, lr}
-	mov	pc, ip
-ENDPROC(ftrace_caller)
-
-#ifdef CONFIG_OLD_MCOUNT
-ENTRY(mcount)
-	stmdb	sp!, {lr}
-	ldr	lr, [fp, #-4]
-	ldmia	sp!, {pc}
-ENDPROC(mcount)
-
-ENTRY(ftrace_caller_old)
-	stmdb	sp!, {r0-r3, lr}
-	ldr	r1, [fp, #-4]
-	mov	r0, lr
-	sub	r0, r0, #MCOUNT_INSN_SIZE
-
-	.globl ftrace_call_old
-ftrace_call_old:
-	bl	ftrace_stub
-	ldr	lr, [fp, #-4]			@ restore lr
-	ldmia	sp!, {r0-r3, pc}
-ENDPROC(ftrace_caller_old)
-#endif
-
-#else
-
-ENTRY(__gnu_mcount_nc)
-	stmdb	sp!, {r0-r3, lr}
+.macro __mcount suffix
+	mcount_enter
 	ldr	r0, =ftrace_trace_function
 	ldr	r2, [r0]
 	adr	r0, .Lftrace_stub
 	cmp	r0, r2
-	bne	gnu_trace
-	ldmia	sp!, {r0-r3, ip, lr}
-	mov	pc, ip
+	bne	1f
 
-gnu_trace:
-	ldr	r1, [sp, #20]			@ lr of instrumented routine
-	mov	r0, lr
-	sub	r0, r0, #MCOUNT_INSN_SIZE
-	adr	lr, BSYM(1f)
+#ifdef CONFIG_FUNCTION_GRAPH_TRACER
+	ldr     r1, =ftrace_graph_return
+	ldr     r2, [r1]
+	cmp     r0, r2
+	bne     ftrace_graph_caller\suffix
+
+	ldr     r1, =ftrace_graph_entry
+	ldr     r2, [r1]
+	ldr     r0, =ftrace_graph_entry_stub
+	cmp     r0, r2
+	bne     ftrace_graph_caller\suffix
+#endif
+
+	mcount_exit
+
+1: 	mcount_get_lr	r1			@ lr of instrumented func
+	mcount_adjust_addr	r0, lr		@ instrumented function
+	adr	lr, BSYM(2f)
 	mov	pc, r2
-1:
-	ldmia	sp!, {r0-r3, ip, lr}
-	mov	pc, ip
-ENDPROC(__gnu_mcount_nc)
+2:	mcount_exit
+.endm
+
+.macro __ftrace_caller suffix
+	mcount_enter
+
+	mcount_get_lr	r1			@ lr of instrumented func
+	mcount_adjust_addr	r0, lr		@ instrumented function
+
+	.globl ftrace_call\suffix
+ftrace_call\suffix:
+	bl	ftrace_stub
+
+#ifdef CONFIG_FUNCTION_GRAPH_TRACER
+	.globl ftrace_graph_call\suffix
+ftrace_graph_call\suffix:
+	mov	r0, r0
+#endif
+
+	mcount_exit
+.endm
+
+.macro __ftrace_graph_caller
+	sub	r0, fp, #4		@ &lr of instrumented routine (&parent)
+#ifdef CONFIG_DYNAMIC_FTRACE
+	@ called from __ftrace_caller, saved in mcount_enter
+	ldr	r1, [sp, #16]		@ instrumented routine (func)
+	mcount_adjust_addr	r1, r1
+#else
+	@ called from __mcount, untouched in lr
+	mcount_adjust_addr	r1, lr	@ instrumented routine (func)
+#endif
+	mov	r2, fp			@ frame pointer
+	bl	prepare_ftrace_return
+	mcount_exit
+.endm
 
 #ifdef CONFIG_OLD_MCOUNT
 /*
- * This is under an ifdef in order to force link-time errors for people trying
- * to build with !FRAME_POINTER with a GCC which doesn't use the new-style
- * mcount.
+ * mcount
  */
-ENTRY(mcount)
-	stmdb	sp!, {r0-r3, lr}
-	ldr	r0, =ftrace_trace_function
-	ldr	r2, [r0]
-	adr	r0, ftrace_stub
-	cmp	r0, r2
-	bne	trace
-	ldr	lr, [fp, #-4]			@ restore lr
-	ldmia	sp!, {r0-r3, pc}
 
-trace:
-	ldr	r1, [fp, #-4]			@ lr of instrumented routine
-	mov	r0, lr
-	sub	r0, r0, #MCOUNT_INSN_SIZE
-	mov	lr, pc
-	mov	pc, r2
-	ldr	lr, [fp, #-4]			@ restore lr
+.macro mcount_enter
+	stmdb	sp!, {r0-r3, lr}
+.endm
+
+.macro mcount_get_lr reg
+	ldr	\reg, [fp, #-4]
+.endm
+
+.macro mcount_exit
+	ldr	lr, [fp, #-4]
 	ldmia	sp!, {r0-r3, pc}
+.endm
+
+ENTRY(mcount)
+#ifdef CONFIG_DYNAMIC_FTRACE
+	stmdb	sp!, {lr}
+	ldr	lr, [fp, #-4]
+	ldmia	sp!, {pc}
+#else
+	__mcount _old
+#endif
 ENDPROC(mcount)
+
+#ifdef CONFIG_DYNAMIC_FTRACE
+ENTRY(ftrace_caller_old)
+	__ftrace_caller _old
+ENDPROC(ftrace_caller_old)
 #endif
 
-#endif /* CONFIG_DYNAMIC_FTRACE */
+#ifdef CONFIG_FUNCTION_GRAPH_TRACER
+ENTRY(ftrace_graph_caller_old)
+	__ftrace_graph_caller
+ENDPROC(ftrace_graph_caller_old)
+#endif
+
+.purgem mcount_enter
+.purgem mcount_get_lr
+.purgem mcount_exit
+#endif
+
+/*
+ * __gnu_mcount_nc
+ */
+
+.macro mcount_enter
+	stmdb	sp!, {r0-r3, lr}
+.endm
+
+.macro mcount_get_lr reg
+	ldr	\reg, [sp, #20]
+.endm
+
+.macro mcount_exit
+	ldmia	sp!, {r0-r3, ip, lr}
+	mov	pc, ip
+.endm
+
+ENTRY(__gnu_mcount_nc)
+#ifdef CONFIG_DYNAMIC_FTRACE
+	mov	ip, lr
+	ldmia	sp!, {lr}
+	mov	pc, ip
+#else
+	__mcount
+#endif
+ENDPROC(__gnu_mcount_nc)
+
+#ifdef CONFIG_DYNAMIC_FTRACE
+ENTRY(ftrace_caller)
+	__ftrace_caller
+ENDPROC(ftrace_caller)
+#endif
+
+#ifdef CONFIG_FUNCTION_GRAPH_TRACER
+ENTRY(ftrace_graph_caller)
+	__ftrace_graph_caller
+ENDPROC(ftrace_graph_caller)
+#endif
+
+.purgem mcount_enter
+.purgem mcount_get_lr
+.purgem mcount_exit
+
+#ifdef CONFIG_FUNCTION_GRAPH_TRACER
+	.globl return_to_handler
+return_to_handler:
+	stmdb	sp!, {r0-r3}
+	mov	r0, fp			@ frame pointer
+	bl	ftrace_return_to_handler
+	mov	lr, r0			@ r0 has real ret addr
+	ldmia	sp!, {r0-r3}
+	mov	pc, lr
+#endif
 
 ENTRY(ftrace_stub)
 .Lftrace_stub:
@@ -245,20 +324,6 @@ ENDPROC(ftrace_stub)
  * SWI handler
  *-----------------------------------------------------------------------------
  */
-
-	/* If we're optimising for StrongARM the resulting code won't 
-	   run on an ARM7 and we can save a couple of instructions.  
-								--pb */
-#ifdef CONFIG_CPU_ARM710
-#define A710(code...) code
-.Larm710bug:
-	ldmia	sp, {r0 - lr}^			@ Get calling r0 - lr
-	mov	r0, r0
-	add	sp, sp, #S_FRAME_SIZE
-	subs	pc, lr, #4
-#else
-#define A710(code...)
-#endif
 
 	.align	5
 ENTRY(vector_swi)
@@ -290,9 +355,6 @@ ENTRY(vector_swi)
 	ldreq	r10, [lr, #-4]			@ get SWI instruction
 #else
 	ldr	r10, [lr, #-4]			@ get SWI instruction
-  A710(	and	ip, r10, #0x0f000000		@ check for SWI		)
-  A710(	teq	ip, #0x0f000000						)
-  A710(	bne	.Larm710bug						)
 #endif
 #ifdef CONFIG_CPU_ENDIAN_BE8
 	rev	r10, r10			@ little endian instruction
@@ -303,26 +365,15 @@ ENTRY(vector_swi)
 	/*
 	 * Pure EABI user space always put syscall number into scno (r7).
 	 */
-  A710(	ldr	ip, [lr, #-4]			@ get SWI instruction	)
-  A710(	and	ip, ip, #0x0f000000		@ check for SWI		)
-  A710(	teq	ip, #0x0f000000						)
-  A710(	bne	.Larm710bug						)
-
 #elif defined(CONFIG_ARM_THUMB)
-
 	/* Legacy ABI only, possibly thumb mode. */
 	tst	r8, #PSR_T_BIT			@ this is SPSR from save_user_regs
 	addne	scno, r7, #__NR_SYSCALL_BASE	@ put OS number in
 	ldreq	scno, [lr, #-4]
 
 #else
-
 	/* Legacy ABI only. */
 	ldr	scno, [lr, #-4]			@ get SWI instruction
-  A710(	and	ip, scno, #0x0f000000		@ check for SWI		)
-  A710(	teq	ip, #0x0f000000						)
-  A710(	bne	.Larm710bug						)
-
 #endif
 
 #ifdef CONFIG_ALIGNMENT_TRAP
@@ -350,6 +401,7 @@ ENTRY(vector_swi)
 	eor	scno, scno, #__NR_SYSCALL_BASE	@ check OS number
 #endif
 
+local_restart:
 	ldr	r10, [tsk, #TI_FLAGS]		@ check for syscall tracing
 	stmdb	sp!, {r4, r5}			@ push fifth and sixth args
 
@@ -363,7 +415,7 @@ ENTRY(vector_swi)
 1:
 #endif
 
-	tst	r10, #_TIF_SYSCALL_TRACE		@ are we tracing syscalls?
+	tst	r10, #_TIF_SYSCALL_WORK		@ are we tracing syscalls?
 	bne	__sys_trace
 
 	cmp	scno, #NR_syscalls		@ check upper syscall limit
@@ -383,25 +435,24 @@ ENDPROC(vector_swi)
 	 * context switches, and waiting for our parent to respond.
 	 */
 __sys_trace:
-	mov	r2, scno
-	add	r1, sp, #S_OFF
-	mov	r0, #0				@ trace entry [IP = 0]
-	bl	syscall_trace
+	mov	r1, scno
+	add	r0, sp, #S_OFF
+	bl	syscall_trace_enter
 
 	adr	lr, BSYM(__sys_trace_return)	@ return address
 	mov	scno, r0			@ syscall number (possibly new)
 	add	r1, sp, #S_R0 + S_OFF		@ pointer to regs
 	cmp	scno, #NR_syscalls		@ check upper syscall limit
-	ldmccia	r1, {r0 - r3}			@ have to reload r0 - r3
+	ldmccia	r1, {r0 - r6}			@ have to reload r0 - r6
+	stmccia	sp, {r4, r5}			@ and update the stack args
 	ldrcc	pc, [tbl, scno, lsl #2]		@ call sys_* routine
 	b	2b
 
 __sys_trace_return:
 	str	r0, [sp, #S_R0 + S_OFF]!	@ save returned r0
-	mov	r2, scno
-	mov	r1, sp
-	mov	r0, #1				@ trace exit [IP = 1]
-	bl	syscall_trace
+	mov	r1, scno
+	mov	r0, sp
+	bl	syscall_trace_exit
 	b	ret_slow_syscall
 
 	.align	5

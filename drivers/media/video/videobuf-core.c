@@ -359,11 +359,6 @@ static void videobuf_status(struct videobuf_queue *q, struct v4l2_buffer *b,
 		break;
 	}
 
-	if (vb->input != UNSET) {
-		b->flags |= V4L2_BUF_FLAG_INPUT;
-		b->input  = vb->input;
-	}
-
 	b->field     = vb->field;
 	b->timestamp = vb->ts;
 	b->bytesused = vb->size;
@@ -402,7 +397,6 @@ int __videobuf_mmap_setup(struct videobuf_queue *q,
 			break;
 
 		q->bufs[i]->i      = i;
-		q->bufs[i]->input  = UNSET;
 		q->bufs[i]->memory = memory;
 		q->bufs[i]->bsize  = bsize;
 		switch (memory) {
@@ -564,16 +558,6 @@ int videobuf_qbuf(struct videobuf_queue *q, struct v4l2_buffer *b)
 	if (buf->state != VIDEOBUF_NEEDS_INIT && buf->state != VIDEOBUF_IDLE) {
 		dprintk(1, "qbuf: buffer is already queued or active.\n");
 		goto done;
-	}
-
-	if (b->flags & V4L2_BUF_FLAG_INPUT) {
-		if (b->input >= q->inputs) {
-			dprintk(1, "qbuf: wrong input.\n");
-			goto done;
-		}
-		buf->input = b->input;
-	} else {
-		buf->input = UNSET;
 	}
 
 	switch (b->memory) {
@@ -1129,6 +1113,7 @@ unsigned int videobuf_poll_stream(struct file *file,
 				  struct videobuf_queue *q,
 				  poll_table *wait)
 {
+	unsigned long req_events = poll_requested_events(wait);
 	struct videobuf_buffer *buf = NULL;
 	unsigned int rc = 0;
 
@@ -1137,7 +1122,7 @@ unsigned int videobuf_poll_stream(struct file *file,
 		if (!list_empty(&q->stream))
 			buf = list_entry(q->stream.next,
 					 struct videobuf_buffer, stream);
-	} else {
+	} else if (req_events & (POLLIN | POLLRDNORM)) {
 		if (!q->reading)
 			__videobuf_read_start(q);
 		if (!q->reading) {
@@ -1202,33 +1187,3 @@ int videobuf_mmap_mapper(struct videobuf_queue *q, struct vm_area_struct *vma)
 	return rc;
 }
 EXPORT_SYMBOL_GPL(videobuf_mmap_mapper);
-
-#ifdef CONFIG_VIDEO_V4L1_COMPAT
-int videobuf_cgmbuf(struct videobuf_queue *q,
-		    struct video_mbuf *mbuf, int count)
-{
-	struct v4l2_requestbuffers req;
-	int rc, i;
-
-	MAGIC_CHECK(q->int_ops->magic, MAGIC_QTYPE_OPS);
-
-	memset(&req, 0, sizeof(req));
-	req.type   = q->type;
-	req.count  = count;
-	req.memory = V4L2_MEMORY_MMAP;
-	rc = videobuf_reqbufs(q, &req);
-	if (rc < 0)
-		return rc;
-
-	mbuf->frames = req.count;
-	mbuf->size   = 0;
-	for (i = 0; i < mbuf->frames; i++) {
-		mbuf->offsets[i]  = q->bufs[i]->boff;
-		mbuf->size       += PAGE_ALIGN(q->bufs[i]->bsize);
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(videobuf_cgmbuf);
-#endif
-

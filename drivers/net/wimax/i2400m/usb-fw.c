@@ -169,7 +169,7 @@ retry:
  *
  * Command can be a raw command, which requires no preparation (and
  * which might not even be following the command format). Checks that
- * the right amount of data was transfered.
+ * the right amount of data was transferred.
  *
  * To satisfy USB requirements (no onstack, vmalloc or in data segment
  * buffers), we copy the command to i2400m->bm_cmd_buf and send it from
@@ -212,7 +212,7 @@ ssize_t i2400mu_bus_bm_cmd_send(struct i2400m *i2400m,
 	}
 	if (result != cmd_size) {		/* all was transferred? */
 		dev_err(dev, "boot-mode cmd %d: incomplete transfer "
-			"(%zu vs %zu submitted)\n",  opcode, result, cmd_size);
+			"(%zd vs %zu submitted)\n",  opcode, result, cmd_size);
 		result = -EIO;
 		goto error_cmd_size;
 	}

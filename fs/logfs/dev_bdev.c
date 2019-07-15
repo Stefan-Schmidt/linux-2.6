@@ -10,6 +10,7 @@
 #include <linux/blkdev.h>
 #include <linux/buffer_head.h>
 #include <linux/gfp.h>
+#include <linux/prefetch.h>
 
 #define PAGE_OFS(ofs) ((ofs) & (PAGE_SIZE-1))
 
@@ -25,6 +26,7 @@ static int sync_request(struct page *page, struct block_device *bdev, int rw)
 	struct completion complete;
 
 	bio_init(&bio);
+	bio.bi_max_vecs = 1;
 	bio.bi_io_vec = &bio_vec;
 	bio_vec.bv_page = page;
 	bio_vec.bv_len = PAGE_SIZE;
@@ -39,7 +41,6 @@ static int sync_request(struct page *page, struct block_device *bdev, int rw)
 	bio.bi_end_io = request_complete;
 
 	submit_bio(rw, &bio);
-	generic_unplug_device(bdev_get_queue(bdev));
 	wait_for_completion(&complete);
 	return test_bit(BIO_UPTODATE, &bio.bi_flags) ? 0 : -EIO;
 }
@@ -95,12 +96,11 @@ static int __bdev_writeseg(struct super_block *sb, u64 ofs, pgoff_t index,
 	struct address_space *mapping = super->s_mapping_inode->i_mapping;
 	struct bio *bio;
 	struct page *page;
-	struct request_queue *q = bdev_get_queue(sb->s_bdev);
-	unsigned int max_pages = queue_max_hw_sectors(q) >> (PAGE_SHIFT - 9);
+	unsigned int max_pages;
 	int i;
 
-	if (max_pages > BIO_MAX_PAGES)
-		max_pages = BIO_MAX_PAGES;
+	max_pages = min(nr_pages, (size_t) bio_get_nr_vecs(super->s_bdev));
+
 	bio = bio_alloc(GFP_NOFS, max_pages);
 	BUG_ON(!bio);
 
@@ -168,7 +168,6 @@ static void bdev_writeseg(struct super_block *sb, u64 ofs, size_t len)
 	}
 	len = PAGE_ALIGN(len);
 	__bdev_writeseg(sb, ofs, ofs >> PAGE_SHIFT, len >> PAGE_SHIFT);
-	generic_unplug_device(bdev_get_queue(logfs_super(sb)->s_bdev));
 }
 
 
@@ -191,12 +190,11 @@ static int do_erase(struct super_block *sb, u64 ofs, pgoff_t index,
 {
 	struct logfs_super *super = logfs_super(sb);
 	struct bio *bio;
-	struct request_queue *q = bdev_get_queue(sb->s_bdev);
-	unsigned int max_pages = queue_max_hw_sectors(q) >> (PAGE_SHIFT - 9);
+	unsigned int max_pages;
 	int i;
 
-	if (max_pages > BIO_MAX_PAGES)
-		max_pages = BIO_MAX_PAGES;
+	max_pages = min(nr_pages, (size_t) bio_get_nr_vecs(super->s_bdev));
+
 	bio = bio_alloc(GFP_NOFS, max_pages);
 	BUG_ON(!bio);
 
@@ -300,7 +298,7 @@ static int bdev_write_sb(struct super_block *sb, struct page *page)
 
 static void bdev_put_device(struct logfs_super *s)
 {
-	close_bdev_exclusive(s->s_bdev, FMODE_READ|FMODE_WRITE);
+	blkdev_put(s->s_bdev, FMODE_READ|FMODE_WRITE|FMODE_EXCL);
 }
 
 static int bdev_can_write_buf(struct super_block *sb, u64 ofs)
@@ -325,13 +323,14 @@ int logfs_get_sb_bdev(struct logfs_super *p, struct file_system_type *type,
 {
 	struct block_device *bdev;
 
-	bdev = open_bdev_exclusive(devname, FMODE_READ|FMODE_WRITE, type);
+	bdev = blkdev_get_by_path(devname, FMODE_READ|FMODE_WRITE|FMODE_EXCL,
+				  type);
 	if (IS_ERR(bdev))
 		return PTR_ERR(bdev);
 
 	if (MAJOR(bdev->bd_dev) == MTD_BLOCK_MAJOR) {
 		int mtdnr = MINOR(bdev->bd_dev);
-		close_bdev_exclusive(bdev, FMODE_READ|FMODE_WRITE);
+		blkdev_put(bdev, FMODE_READ|FMODE_WRITE|FMODE_EXCL);
 		return logfs_get_sb_mtd(p, mtdnr);
 	}
 

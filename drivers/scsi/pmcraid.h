@@ -24,7 +24,6 @@
 #ifndef _PMCRAID_H
 #define _PMCRAID_H
 
-#include <linux/version.h>
 #include <linux/types.h>
 #include <linux/completion.h>
 #include <linux/list.h>
@@ -42,8 +41,7 @@
  */
 #define PMCRAID_DRIVER_NAME		"PMC MaxRAID"
 #define PMCRAID_DEVFILE			"pmcsas"
-#define PMCRAID_DRIVER_VERSION		"2.0.3"
-#define PMCRAID_DRIVER_DATE		__DATE__
+#define PMCRAID_DRIVER_VERSION		"1.0.3"
 
 #define PMCRAID_FW_VERSION_1		0x002
 
@@ -333,11 +331,9 @@ struct pmcraid_config_table_entry {
 	__u8  lun[PMCRAID_LUN_LEN];
 } __attribute__((packed, aligned(4)));
 
-/* extended configuration table sizes are of 64 bytes in size */
-#define PMCRAID_CFGTE_EXT_SIZE	32
+/* extended configuration table sizes are also of 32 bytes in size */
 struct pmcraid_config_table_entry_ext {
 	struct pmcraid_config_table_entry cfgte;
-	__u8  cfgte_ext[PMCRAID_CFGTE_EXT_SIZE];
 };
 
 /* resource types (config_table_entry.resource_type values) */
@@ -861,11 +857,11 @@ static struct pmcraid_ioasc_error pmcraid_ioasc_error_table[] = {
 	{0x01180600, IOASC_LOG_LEVEL_HARD,
 	 "Recovered Error, soft media error, sector reassignment suggested"},
 	{0x015D0000, IOASC_LOG_LEVEL_HARD,
-	 "Recovered Error, failure prediction thresold exceeded"},
+	 "Recovered Error, failure prediction threshold exceeded"},
 	{0x015D9200, IOASC_LOG_LEVEL_HARD,
-	 "Recovered Error, soft Cache Card Battery error thresold"},
+	 "Recovered Error, soft Cache Card Battery error threshold"},
 	{0x015D9200, IOASC_LOG_LEVEL_HARD,
-	 "Recovered Error, soft Cache Card Battery error thresold"},
+	 "Recovered Error, soft Cache Card Battery error threshold"},
 	{0x02048000, IOASC_LOG_LEVEL_HARD,
 	 "Not Ready, IOA Reset Required"},
 	{0x02408500, IOASC_LOG_LEVEL_HARD,
@@ -1026,7 +1022,7 @@ static struct pmcraid_ioasc_error pmcraid_ioasc_error_table[] = {
 
 
 /*
- * pmcraid_ioctl_header - definition of header structure that preceeds all the
+ * pmcraid_ioctl_header - definition of header structure that precedes all the
  * buffers given as ioctl arguments.
  *
  * .signature           : always ASCII string, "PMCRAID"

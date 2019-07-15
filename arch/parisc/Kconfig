@@ -12,7 +12,14 @@ config PARISC
 	select HAVE_IRQ_WORK
 	select HAVE_PERF_EVENTS
 	select GENERIC_ATOMIC64 if !64BIT
-	select GENERIC_HARDIRQS_NO__DO_IRQ
+	select HAVE_GENERIC_HARDIRQS
+	select GENERIC_IRQ_PROBE
+	select GENERIC_PCI_IOMAP
+	select IRQ_PER_CPU
+	select ARCH_HAVE_NMI_SAFE_CMPXCHG
+	select GENERIC_SMP_IDLE_THREAD
+	select GENERIC_STRNCPY_FROM_USER
+
 	help
 	  The PA-RISC microprocessor is designed by Hewlett-Packard and used
 	  in many of their workstations & servers (HP9000 700 and 800 series,
@@ -44,10 +51,6 @@ config ARCH_HAS_ILOG2_U64
 	bool
 	default n
 
-config GENERIC_FIND_NEXT_BIT
-	bool
-	default y
-
 config GENERIC_BUG
 	bool
 	default y
@@ -66,21 +69,8 @@ config TIME_LOW_RES
 	depends on SMP
 	default y
 
-config GENERIC_HARDIRQS
-	def_bool y
-
-config GENERIC_IRQ_PROBE
-	def_bool y
-
 config HAVE_LATENCYTOP_SUPPORT
         def_bool y
-
-config IRQ_PER_CPU
-	bool
-	default y
-
-config GENERIC_HARDIRQS_NO__DO_IRQ
-	def_bool y
 
 # unless you want to implement ACPI on PA-RISC ... ;-)
 config PM
@@ -182,9 +172,7 @@ config 64BIT
 
 choice
 	prompt "Kernel page size"
-	default PARISC_PAGE_SIZE_4KB  if !64BIT
-	default PARISC_PAGE_SIZE_4KB  if 64BIT
-#	default PARISC_PAGE_SIZE_16KB if 64BIT
+	default PARISC_PAGE_SIZE_4KB
 
 config PARISC_PAGE_SIZE_4KB
 	bool "4KB"

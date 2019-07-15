@@ -6,7 +6,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2012, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -42,6 +42,7 @@
  * POSSIBILITY OF SUCH DAMAGES.
  */
 
+#include <linux/export.h>
 #include <acpi/acpi.h>
 #include "accommon.h"
 #include "acnamesp.h"
@@ -54,11 +55,11 @@ ACPI_MODULE_NAME("evxfregn")
  *
  * FUNCTION:    acpi_install_address_space_handler
  *
- * PARAMETERS:  Device          - Handle for the device
+ * PARAMETERS:  device          - Handle for the device
  *              space_id        - The address space ID
- *              Handler         - Address of the handler
- *              Setup           - Address of the setup function
- *              Context         - Value passed to the handler on each access
+ *              handler         - Address of the handler
+ *              setup           - Address of the setup function
+ *              context         - Value passed to the handler on each access
  *
  * RETURN:      Status
  *
@@ -110,6 +111,37 @@ acpi_install_address_space_handler(acpi_handle device,
 		goto unlock_and_exit;
 	}
 
+	/*
+	 * For the default space_IDs, (the IDs for which there are default region handlers
+	 * installed) Only execute the _REG methods if the global initialization _REG
+	 * methods have already been run (via acpi_initialize_objects). In other words,
+	 * we will defer the execution of the _REG methods for these space_IDs until
+	 * execution of acpi_initialize_objects. This is done because we need the handlers
+	 * for the default spaces (mem/io/pci/table) to be installed before we can run
+	 * any control methods (or _REG methods). There is known BIOS code that depends
+	 * on this.
+	 *
+	 * For all other space_IDs, we can safely execute the _REG methods immediately.
+	 * This means that for IDs like embedded_controller, this function should be called
+	 * only after acpi_enable_subsystem has been called.
+	 */
+	switch (space_id) {
+	case ACPI_ADR_SPACE_SYSTEM_MEMORY:
+	case ACPI_ADR_SPACE_SYSTEM_IO:
+	case ACPI_ADR_SPACE_PCI_CONFIG:
+	case ACPI_ADR_SPACE_DATA_TABLE:
+
+		if (!acpi_gbl_reg_methods_executed) {
+
+			/* We will defer execution of the _REG methods for this space */
+			goto unlock_and_exit;
+		}
+		break;
+
+	default:
+		break;
+	}
+
 	/* Run all _REG methods for this address space */
 
 	status = acpi_ev_execute_reg_methods(node, space_id);
@@ -125,9 +157,9 @@ ACPI_EXPORT_SYMBOL(acpi_install_address_space_handler)
  *
  * FUNCTION:    acpi_remove_address_space_handler
  *
- * PARAMETERS:  Device          - Handle for the device
+ * PARAMETERS:  device          - Handle for the device
  *              space_id        - The address space ID
- *              Handler         - Address of the handler
+ *              handler         - Address of the handler
  *
  * RETURN:      Status
  *

@@ -11,9 +11,6 @@
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/platform_device.h>
-#include <linux/mtd/mtd.h>
-#include <linux/mtd/partitions.h>
-#include <linux/mtd/physmap.h>
 #include <linux/ssb/ssb.h>
 #include <asm/addrspace.h>
 #include <bcm63xx_board.h>
@@ -24,7 +21,9 @@
 #include <bcm63xx_dev_pci.h>
 #include <bcm63xx_dev_enet.h>
 #include <bcm63xx_dev_dsp.h>
+#include <bcm63xx_dev_flash.h>
 #include <bcm63xx_dev_pcmcia.h>
+#include <bcm63xx_dev_spi.h>
 #include <board_bcm963xx.h>
 
 #define PFX	"board_bcm963xx: "
@@ -32,6 +31,48 @@
 static struct bcm963xx_nvram nvram;
 static unsigned int mac_addr_used;
 static struct board_info board;
+
+/*
+ * known 6328 boards
+ */
+#ifdef CONFIG_BCM63XX_CPU_6328
+static struct board_info __initdata board_96328avng = {
+	.name				= "96328avng",
+	.expected_cpu_id		= 0x6328,
+
+	.has_uart0			= 1,
+	.has_pci			= 1,
+
+	.leds = {
+		{
+			.name		= "96328avng::ppp-fail",
+			.gpio		= 2,
+			.active_low	= 1,
+		},
+		{
+			.name		= "96328avng::power",
+			.gpio		= 4,
+			.active_low	= 1,
+			.default_trigger = "default-on",
+		},
+		{
+			.name		= "96328avng::power-fail",
+			.gpio		= 8,
+			.active_low	= 1,
+		},
+		{
+			.name		= "96328avng::wps",
+			.gpio		= 9,
+			.active_low	= 1,
+		},
+		{
+			.name		= "96328avng::ppp",
+			.gpio		= 11,
+			.active_low	= 1,
+		},
+	},
+};
+#endif
 
 /*
  * known 6338 boards
@@ -592,6 +633,9 @@ static struct board_info __initdata board_DWVS0 = {
  * all boards
  */
 static const struct board_info __initdata *bcm963xx_boards[] = {
+#ifdef CONFIG_BCM63XX_CPU_6328
+	&board_96328avng,
+#endif
 #ifdef CONFIG_BCM63XX_CPU_6338
 	&board_96338gw,
 	&board_96338w,
@@ -643,6 +687,17 @@ static struct ssb_sprom bcm63xx_sprom = {
 	.boardflags_lo		= 0x2848,
 	.boardflags_hi		= 0x0000,
 };
+
+int bcm63xx_get_fallback_sprom(struct ssb_bus *bus, struct ssb_sprom *out)
+{
+	if (bus->bustype == SSB_BUSTYPE_PCI) {
+		memcpy(out, &bcm63xx_sprom, sizeof(struct ssb_sprom));
+		return 0;
+	} else {
+		printk(KERN_ERR PFX "unable to fill SPROM for given bustype.\n");
+		return -EINVAL;
+	}
+}
 #endif
 
 /*
@@ -699,10 +754,10 @@ void __init board_prom_init(void)
 	u32 val;
 
 	/* read base address of boot chip select (0)
-	 * 6345 does not have MPI but boots from standard
-	 * MIPS Flash address */
-	if (BCMCPU_IS_6345())
-		val = 0x1fc00000;
+	 * 6328 does not have MPI but boots from a fixed address
+	 */
+	if (BCMCPU_IS_6328())
+		val = 0x18000000;
 	else {
 		val = bcm_mpi_readl(MPI_CSBASE_REG(0));
 		val &= MPI_CSBASE_BASE_MASK;
@@ -786,17 +841,6 @@ void __init board_prom_init(void)
 	}
 
 	bcm_gpio_writel(val, GPIO_MODE_REG);
-
-	/* Generate MAC address for WLAN and
-	 * register our SPROM */
-#ifdef CONFIG_SSB_PCIHOST
-	if (!board_get_mac_address(bcm63xx_sprom.il0mac)) {
-		memcpy(bcm63xx_sprom.et0mac, bcm63xx_sprom.il0mac, ETH_ALEN);
-		memcpy(bcm63xx_sprom.et1mac, bcm63xx_sprom.il0mac, ETH_ALEN);
-		if (ssb_arch_set_fallback_sprom(&bcm63xx_sprom) < 0)
-			printk(KERN_ERR "failed to register fallback SPROM\n");
-	}
-#endif
 }
 
 /*
@@ -814,37 +858,6 @@ void __init board_setup(void)
 		panic("unexpected CPU for bcm963xx board");
 }
 
-static struct mtd_partition mtd_partitions[] = {
-	{
-		.name		= "cfe",
-		.offset		= 0x0,
-		.size		= 0x40000,
-	}
-};
-
-static struct physmap_flash_data flash_data = {
-	.width			= 2,
-	.nr_parts		= ARRAY_SIZE(mtd_partitions),
-	.parts			= mtd_partitions,
-};
-
-static struct resource mtd_resources[] = {
-	{
-		.start		= 0,	/* filled at runtime */
-		.end		= 0,	/* filled at runtime */
-		.flags		= IORESOURCE_MEM,
-	}
-};
-
-static struct platform_device mtd_dev = {
-	.name			= "physmap-flash",
-	.resource		= mtd_resources,
-	.num_resources		= ARRAY_SIZE(mtd_resources),
-	.dev			= {
-		.platform_data	= &flash_data,
-	},
-};
-
 static struct gpio_led_platform_data bcm63xx_led_data;
 
 static struct platform_device bcm63xx_gpio_leds = {
@@ -858,8 +871,6 @@ static struct platform_device bcm63xx_gpio_leds = {
  */
 int __init board_register_devices(void)
 {
-	u32 val;
-
 	if (board.has_uart0)
 		bcm63xx_uart_register(0);
 
@@ -880,17 +891,22 @@ int __init board_register_devices(void)
 	if (board.has_dsp)
 		bcm63xx_dsp_register(&board.dsp);
 
-	/* read base address of boot chip select (0) */
-	if (BCMCPU_IS_6345())
-		val = 0x1fc00000;
-	else {
-		val = bcm_mpi_readl(MPI_CSBASE_REG(0));
-		val &= MPI_CSBASE_BASE_MASK;
+	/* Generate MAC address for WLAN and register our SPROM,
+	 * do this after registering enet devices
+	 */
+#ifdef CONFIG_SSB_PCIHOST
+	if (!board_get_mac_address(bcm63xx_sprom.il0mac)) {
+		memcpy(bcm63xx_sprom.et0mac, bcm63xx_sprom.il0mac, ETH_ALEN);
+		memcpy(bcm63xx_sprom.et1mac, bcm63xx_sprom.il0mac, ETH_ALEN);
+		if (ssb_arch_register_fallback_sprom(
+				&bcm63xx_get_fallback_sprom) < 0)
+			pr_err(PFX "failed to register fallback SPROM\n");
 	}
-	mtd_resources[0].start = val;
-	mtd_resources[0].end = 0x1FFFFFFF;
+#endif
 
-	platform_device_register(&mtd_dev);
+	bcm63xx_spi_register();
+
+	bcm63xx_flash_register();
 
 	bcm63xx_led_data.num_leds = ARRAY_SIZE(board.leds);
 	bcm63xx_led_data.leds = board.leds;

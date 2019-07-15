@@ -1,11 +1,10 @@
 /*
- * File...........: linux/drivers/s390/block/dasd_genhd.c
  * Author(s)......: Holger Smolinski <Holger.Smolinski@de.ibm.com>
  *		    Horst Hummel <Horst.Hummel@de.ibm.com>
  *		    Carsten Otte <Cotte@de.ibm.com>
  *		    Martin Schwidefsky <schwidefsky@de.ibm.com>
  * Bugreports.to..: <Linux390@de.ibm.com>
- * (C) IBM Corporation, IBM Deutschland Entwicklung GmbH, 1999-2001
+ * Copyright IBM Corp. 1999, 2001
  *
  * gendisk related functions for the dasd driver.
  *
@@ -73,7 +72,7 @@ int dasd_gendisk_alloc(struct dasd_block *block)
 	if (base->features & DASD_FEATURE_READONLY ||
 	    test_bit(DASD_FLAG_DEVICE_RO, &base->flags))
 		set_disk_ro(gdp, 1);
-	gdp->private_data = block;
+	dasd_add_link_to_gendisk(gdp, base);
 	gdp->queue = block->request_queue;
 	block->gdp = gdp;
 	set_capacity(block->gdp, 0);
@@ -103,7 +102,7 @@ int dasd_scan_partitions(struct dasd_block *block)
 	struct block_device *bdev;
 
 	bdev = bdget_disk(block->gdp, 0);
-	if (!bdev || blkdev_get(bdev, FMODE_READ) < 0)
+	if (!bdev || blkdev_get(bdev, FMODE_READ, NULL) < 0)
 		return -ENODEV;
 	/*
 	 * See fs/partition/check.c:register_disk,rescan_partitions

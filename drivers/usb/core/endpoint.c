@@ -56,7 +56,7 @@ static ssize_t show_ep_wMaxPacketSize(struct device *dev,
 {
 	struct ep_device *ep = to_ep_device(dev);
 	return sprintf(buf, "%04x\n",
-			le16_to_cpu(ep->desc->wMaxPacketSize) & 0x07ff);
+		        usb_endpoint_maxp(ep->desc) & 0x07ff);
 }
 static DEVICE_ATTR(wMaxPacketSize, S_IRUGO, show_ep_wMaxPacketSize, NULL);
 
@@ -192,12 +192,12 @@ int usb_create_ep_devs(struct device *parent,
 	ep_dev->dev.parent = parent;
 	ep_dev->dev.release = ep_device_release;
 	dev_set_name(&ep_dev->dev, "ep_%02x", endpoint->desc.bEndpointAddress);
-	device_enable_async_suspend(&ep_dev->dev);
 
 	retval = device_register(&ep_dev->dev);
 	if (retval)
 		goto error_register;
 
+	device_enable_async_suspend(&ep_dev->dev);
 	endpoint->ep_dev = ep_dev;
 	return retval;
 

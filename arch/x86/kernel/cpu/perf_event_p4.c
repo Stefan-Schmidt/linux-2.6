@@ -1,5 +1,5 @@
 /*
- * Netburst Perfomance Events (P4, old Xeon)
+ * Netburst Performance Events (P4, old Xeon)
  *
  *  Copyright (C) 2010 Parallels, Inc., Cyrill Gorcunov <gorcunov@openvz.org>
  *  Copyright (C) 2010 Intel Corporation, Lin Ming <ming.m.lin@intel.com>
@@ -7,9 +7,13 @@
  *  For licencing details see kernel-base/COPYING
  */
 
-#ifdef CONFIG_CPU_SUP_INTEL
+#include <linux/perf_event.h>
 
 #include <asm/perf_event_p4.h>
+#include <asm/hardirq.h>
+#include <asm/apic.h>
+
+#include "perf_event.h"
 
 #define P4_CNTR_LIMIT 3
 /*
@@ -468,7 +472,7 @@ static struct p4_event_bind p4_event_bind_map[] = {
 		.opcode		= P4_OPCODE(P4_EVENT_MISPRED_BRANCH_RETIRED),
 		.escr_msr	= { MSR_P4_CRU_ESCR0, MSR_P4_CRU_ESCR1 },
 		.escr_emask	=
-		P4_ESCR_EMASK_BIT(P4_EVENT_MISPRED_BRANCH_RETIRED, NBOGUS),
+			P4_ESCR_EMASK_BIT(P4_EVENT_MISPRED_BRANCH_RETIRED, NBOGUS),
 		.cntr		= { {12, 13, 16}, {14, 15, 17} },
 	},
 	[P4_EVENT_X87_ASSIST] = {
@@ -554,13 +558,102 @@ static __initconst const u64 p4_hw_cache_event_ids
 		[ C(RESULT_MISS)   ] = -1,
 	},
  },
+ [ C(NODE) ] = {
+	[ C(OP_READ) ] = {
+		[ C(RESULT_ACCESS) ] = -1,
+		[ C(RESULT_MISS)   ] = -1,
+	},
+	[ C(OP_WRITE) ] = {
+		[ C(RESULT_ACCESS) ] = -1,
+		[ C(RESULT_MISS)   ] = -1,
+	},
+	[ C(OP_PREFETCH) ] = {
+		[ C(RESULT_ACCESS) ] = -1,
+		[ C(RESULT_MISS)   ] = -1,
+	},
+ },
 };
+
+/*
+ * Because of Netburst being quite restricted in how many
+ * identical events may run simultaneously, we introduce event aliases,
+ * ie the different events which have the same functionality but
+ * utilize non-intersected resources (ESCR/CCCR/counter registers).
+ *
+ * This allow us to relax restrictions a bit and run two or more
+ * identical events together.
+ *
+ * Never set any custom internal bits such as P4_CONFIG_HT,
+ * P4_CONFIG_ALIASABLE or bits for P4_PEBS_METRIC, they are
+ * either up to date automatically or not applicable at all.
+ */
+struct p4_event_alias {
+	u64 original;
+	u64 alternative;
+} p4_event_aliases[] = {
+	{
+		/*
+		 * Non-halted cycles can be substituted with non-sleeping cycles (see
+		 * Intel SDM Vol3b for details). We need this alias to be able
+		 * to run nmi-watchdog and 'perf top' (or any other user space tool
+		 * which is interested in running PERF_COUNT_HW_CPU_CYCLES)
+		 * simultaneously.
+		 */
+	.original	=
+		p4_config_pack_escr(P4_ESCR_EVENT(P4_EVENT_GLOBAL_POWER_EVENTS)		|
+				    P4_ESCR_EMASK_BIT(P4_EVENT_GLOBAL_POWER_EVENTS, RUNNING)),
+	.alternative	=
+		p4_config_pack_escr(P4_ESCR_EVENT(P4_EVENT_EXECUTION_EVENT)		|
+				    P4_ESCR_EMASK_BIT(P4_EVENT_EXECUTION_EVENT, NBOGUS0)|
+				    P4_ESCR_EMASK_BIT(P4_EVENT_EXECUTION_EVENT, NBOGUS1)|
+				    P4_ESCR_EMASK_BIT(P4_EVENT_EXECUTION_EVENT, NBOGUS2)|
+				    P4_ESCR_EMASK_BIT(P4_EVENT_EXECUTION_EVENT, NBOGUS3)|
+				    P4_ESCR_EMASK_BIT(P4_EVENT_EXECUTION_EVENT, BOGUS0)	|
+				    P4_ESCR_EMASK_BIT(P4_EVENT_EXECUTION_EVENT, BOGUS1)	|
+				    P4_ESCR_EMASK_BIT(P4_EVENT_EXECUTION_EVENT, BOGUS2)	|
+				    P4_ESCR_EMASK_BIT(P4_EVENT_EXECUTION_EVENT, BOGUS3))|
+		p4_config_pack_cccr(P4_CCCR_THRESHOLD(15) | P4_CCCR_COMPLEMENT		|
+				    P4_CCCR_COMPARE),
+	},
+};
+
+static u64 p4_get_alias_event(u64 config)
+{
+	u64 config_match;
+	int i;
+
+	/*
+	 * Only event with special mark is allowed,
+	 * we're to be sure it didn't come as malformed
+	 * RAW event.
+	 */
+	if (!(config & P4_CONFIG_ALIASABLE))
+		return 0;
+
+	config_match = config & P4_CONFIG_EVENT_ALIAS_MASK;
+
+	for (i = 0; i < ARRAY_SIZE(p4_event_aliases); i++) {
+		if (config_match == p4_event_aliases[i].original) {
+			config_match = p4_event_aliases[i].alternative;
+			break;
+		} else if (config_match == p4_event_aliases[i].alternative) {
+			config_match = p4_event_aliases[i].original;
+			break;
+		}
+	}
+
+	if (i >= ARRAY_SIZE(p4_event_aliases))
+		return 0;
+
+	return config_match | (config & P4_CONFIG_EVENT_ALIAS_IMMUTABLE_BITS);
+}
 
 static u64 p4_general_events[PERF_COUNT_HW_MAX] = {
   /* non-halted CPU clocks */
   [PERF_COUNT_HW_CPU_CYCLES] =
 	p4_config_pack_escr(P4_ESCR_EVENT(P4_EVENT_GLOBAL_POWER_EVENTS)		|
-		P4_ESCR_EMASK_BIT(P4_EVENT_GLOBAL_POWER_EVENTS, RUNNING)),
+		P4_ESCR_EMASK_BIT(P4_EVENT_GLOBAL_POWER_EVENTS, RUNNING))	|
+		P4_CONFIG_ALIASABLE,
 
   /*
    * retired instructions
@@ -679,10 +772,10 @@ static int p4_validate_raw_event(struct perf_event *event)
 	 */
 
 	/*
-	 * if an event is shared accross the logical threads
+	 * if an event is shared across the logical threads
 	 * the user needs special permissions to be able to use it
 	 */
-	if (p4_event_bind_map[v].shared) {
+	if (p4_ht_active() && p4_event_bind_map[v].shared) {
 		if (perf_paranoid_cpu() && !capable(CAP_SYS_ADMIN))
 			return -EACCES;
 	}
@@ -727,7 +820,8 @@ static int p4_hw_config(struct perf_event *event)
 		event->hw.config = p4_set_ht_bit(event->hw.config);
 
 	if (event->attr.type == PERF_TYPE_RAW) {
-
+		struct p4_event_bind *bind;
+		unsigned int esel;
 		/*
 		 * Clear bits we reserve to be managed by kernel itself
 		 * and never allowed from a user space
@@ -743,6 +837,13 @@ static int p4_hw_config(struct perf_event *event)
 		 * bits since we keep additional info here (for cache events and etc)
 		 */
 		event->hw.config |= event->attr.config;
+		bind = p4_config_get_bind(event->attr.config);
+		if (!bind) {
+			rc = -EINVAL;
+			goto out;
+		}
+		esel = P4_OPCODE_ESEL(bind->opcode);
+		event->hw.config |= p4_config_pack_cccr(P4_CCCR_ESEL(esel));
 	}
 
 	rc = x86_setup_perfctr(event);
@@ -753,19 +854,27 @@ out:
 
 static inline int p4_pmu_clear_cccr_ovf(struct hw_perf_event *hwc)
 {
-	int overflow = 0;
-	u32 low, high;
+	u64 v;
 
-	rdmsr(hwc->config_base + hwc->idx, low, high);
-
-	/* we need to check high bit for unflagged overflows */
-	if ((low & P4_CCCR_OVF) || !(high & (1 << 31))) {
-		overflow = 1;
-		(void)checking_wrmsrl(hwc->config_base + hwc->idx,
-			((u64)low) & ~P4_CCCR_OVF);
+	/* an official way for overflow indication */
+	rdmsrl(hwc->config_base, v);
+	if (v & P4_CCCR_OVF) {
+		wrmsrl(hwc->config_base, v & ~P4_CCCR_OVF);
+		return 1;
 	}
 
-	return overflow;
+	/*
+	 * In some circumstances the overflow might issue an NMI but did
+	 * not set P4_CCCR_OVF bit. Because a counter holds a negative value
+	 * we simply check for high bit being set, if it's cleared it means
+	 * the counter has reached zero value and continued counting before
+	 * real NMI signal was received:
+	 */
+	rdmsrl(hwc->event_base, v);
+	if (!(v & ARCH_P4_UNFLAGGED_BIT))
+		return 1;
+
+	return 0;
 }
 
 static void p4_pmu_disable_pebs(void)
@@ -775,19 +884,19 @@ static void p4_pmu_disable_pebs(void)
 	 *
 	 * It's still allowed that two threads setup same cache
 	 * events so we can't simply clear metrics until we knew
-	 * noone is depending on us, so we need kind of counter
+	 * no one is depending on us, so we need kind of counter
 	 * for "ReplayEvent" users.
 	 *
 	 * What is more complex -- RAW events, if user (for some
 	 * reason) will pass some cache event metric with improper
 	 * event opcode -- it's fine from hardware point of view
-	 * but completely nonsence from "meaning" of such action.
+	 * but completely nonsense from "meaning" of such action.
 	 *
 	 * So at moment let leave metrics turned on forever -- it's
 	 * ok for now but need to be revisited!
 	 *
-	 * (void)checking_wrmsrl(MSR_IA32_PEBS_ENABLE, (u64)0);
-	 * (void)checking_wrmsrl(MSR_P4_PEBS_MATRIX_VERT, (u64)0);
+	 * (void)wrmsrl_safe(MSR_IA32_PEBS_ENABLE, (u64)0);
+	 * (void)wrmsrl_safe(MSR_P4_PEBS_MATRIX_VERT, (u64)0);
 	 */
 }
 
@@ -800,7 +909,7 @@ static inline void p4_pmu_disable_event(struct perf_event *event)
 	 * state we need to clear P4_CCCR_OVF, otherwise interrupt get
 	 * asserted again and again
 	 */
-	(void)checking_wrmsrl(hwc->config_base + hwc->idx,
+	(void)wrmsrl_safe(hwc->config_base,
 		(u64)(p4_config_unpack_cccr(hwc->config)) &
 			~P4_CCCR_ENABLE & ~P4_CCCR_OVF & ~P4_CCCR_RESERVED);
 }
@@ -834,8 +943,8 @@ static void p4_pmu_enable_pebs(u64 config)
 
 	bind = &p4_pebs_bind_map[idx];
 
-	(void)checking_wrmsrl(MSR_IA32_PEBS_ENABLE,	(u64)bind->metric_pebs);
-	(void)checking_wrmsrl(MSR_P4_PEBS_MATRIX_VERT,	(u64)bind->metric_vert);
+	(void)wrmsrl_safe(MSR_IA32_PEBS_ENABLE,	(u64)bind->metric_pebs);
+	(void)wrmsrl_safe(MSR_P4_PEBS_MATRIX_VERT,	(u64)bind->metric_vert);
 }
 
 static void p4_pmu_enable_event(struct perf_event *event)
@@ -869,8 +978,8 @@ static void p4_pmu_enable_event(struct perf_event *event)
 	 */
 	p4_pmu_enable_pebs(hwc->config);
 
-	(void)checking_wrmsrl(escr_addr, escr_conf);
-	(void)checking_wrmsrl(hwc->config_base + hwc->idx,
+	(void)wrmsrl_safe(escr_addr, escr_conf);
+	(void)wrmsrl_safe(hwc->config_base,
 				(cccr & ~P4_CCCR_RESERVED) | P4_CCCR_ENABLE);
 }
 
@@ -895,9 +1004,6 @@ static int p4_pmu_handle_irq(struct pt_regs *regs)
 	struct hw_perf_event *hwc;
 	int idx, handled = 0;
 	u64 val;
-
-	data.addr = 0;
-	data.raw = NULL;
 
 	cpuc = &__get_cpu_var(cpu_hw_events);
 
@@ -926,19 +1032,30 @@ static int p4_pmu_handle_irq(struct pt_regs *regs)
 		handled += overflow;
 
 		/* event overflow for sure */
-		data.period = event->hw.last_period;
+		perf_sample_data_init(&data, 0, hwc->last_period);
 
 		if (!x86_perf_event_set_period(event))
 			continue;
-		if (perf_event_overflow(event, 1, &data, regs))
-			p4_pmu_disable_event(event);
+
+
+		if (perf_event_overflow(event, &data, regs))
+			x86_pmu_stop(event, 0);
 	}
 
-	if (handled) {
-		/* p4 quirk: unmask it again */
-		apic_write(APIC_LVTPC, apic_read(APIC_LVTPC) & ~APIC_LVT_MASKED);
+	if (handled)
 		inc_irq_stat(apic_perf_irqs);
-	}
+
+	/*
+	 * When dealing with the unmasking of the LVTPC on P4 perf hw, it has
+	 * been observed that the OVF bit flag has to be cleared first _before_
+	 * the LVTPC can be unmasked.
+	 *
+	 * The reason is the NMI line will continue to be asserted while the OVF
+	 * bit is set.  This causes a second NMI to generate if the LVTPC is
+	 * unmasked before the OVF bit is cleared, leading to unknown NMI
+	 * messages.
+	 */
+	apic_write(APIC_LVTPC, APIC_DM_NMI);
 
 	return handled;
 }
@@ -1096,6 +1213,8 @@ static int p4_pmu_schedule_events(struct cpu_hw_events *cpuc, int n, int *assign
 	struct p4_event_bind *bind;
 	unsigned int i, thread, num;
 	int cntr_idx, escr_idx;
+	u64 config_alias;
+	int pass;
 
 	bitmap_zero(used_mask, X86_PMC_IDX_MAX);
 	bitmap_zero(escr_mask, P4_ESCR_MSR_TABLE_SIZE);
@@ -1104,6 +1223,17 @@ static int p4_pmu_schedule_events(struct cpu_hw_events *cpuc, int n, int *assign
 
 		hwc = &cpuc->event_list[i]->hw;
 		thread = p4_ht_thread(cpu);
+		pass = 0;
+
+again:
+		/*
+		 * It's possible to hit a circular lock
+		 * between original and alternative events
+		 * if both are scheduled already.
+		 */
+		if (pass > 2)
+			goto done;
+
 		bind = p4_config_get_bind(hwc->config);
 		escr_idx = p4_get_escr_idx(bind->escr_msr[thread]);
 		if (unlikely(escr_idx == -1))
@@ -1117,8 +1247,17 @@ static int p4_pmu_schedule_events(struct cpu_hw_events *cpuc, int n, int *assign
 		}
 
 		cntr_idx = p4_next_cntr(thread, used_mask, bind);
-		if (cntr_idx == -1 || test_bit(escr_idx, escr_mask))
-			goto done;
+		if (cntr_idx == -1 || test_bit(escr_idx, escr_mask)) {
+			/*
+			 * Check whether an event alias is still available.
+			 */
+			config_alias = p4_get_alias_event(hwc->config);
+			if (!config_alias)
+				goto done;
+			hwc->config = config_alias;
+			pass++;
+			goto again;
+		}
 
 		p4_pmu_swap_config_ts(hwc, cpu);
 		if (assign)
@@ -1129,8 +1268,19 @@ reserve:
 	}
 
 done:
-	return num ? -ENOSPC : 0;
+	return num ? -EINVAL : 0;
 }
+
+PMU_FORMAT_ATTR(cccr, "config:0-31" );
+PMU_FORMAT_ATTR(escr, "config:32-62");
+PMU_FORMAT_ATTR(ht,   "config:63"   );
+
+static struct attribute *intel_p4_formats_attr[] = {
+	&format_attr_cccr.attr,
+	&format_attr_escr.attr,
+	&format_attr_ht.attr,
+	NULL,
+};
 
 static __initconst const struct x86_pmu p4_pmu = {
 	.name			= "Netburst P4/Xeon",
@@ -1152,9 +1302,9 @@ static __initconst const struct x86_pmu p4_pmu = {
 	 */
 	.num_counters		= ARCH_P4_MAX_CCCR,
 	.apic			= 1,
-	.cntval_bits		= 40,
-	.cntval_mask		= (1ULL << 40) - 1,
-	.max_period		= (1ULL << 39) - 1,
+	.cntval_bits		= ARCH_P4_CNTRVAL_BITS,
+	.cntval_mask		= ARCH_P4_CNTRVAL_MASK,
+	.max_period		= (1ULL << (ARCH_P4_CNTRVAL_BITS - 1)) - 1,
 	.hw_config		= p4_hw_config,
 	.schedule_events	= p4_pmu_schedule_events,
 	/*
@@ -1166,14 +1316,16 @@ static __initconst const struct x86_pmu p4_pmu = {
 	 * the former idea is taken from OProfile code
 	 */
 	.perfctr_second_write	= 1,
+
+	.format_attrs		= intel_p4_formats_attr,
 };
 
-static __init int p4_pmu_init(void)
+__init int p4_pmu_init(void)
 {
 	unsigned int low, high;
 
-	/* If we get stripped -- indexig fails */
-	BUILD_BUG_ON(ARCH_P4_MAX_CCCR > X86_PMC_MAX_GENERIC);
+	/* If we get stripped -- indexing fails */
+	BUILD_BUG_ON(ARCH_P4_MAX_CCCR > INTEL_PMC_MAX_GENERIC);
 
 	rdmsr(MSR_IA32_MISC_ENABLE, low, high);
 	if (!(low & (1 << 7))) {
@@ -1191,5 +1343,3 @@ static __init int p4_pmu_init(void)
 
 	return 0;
 }
-
-#endif /* CONFIG_CPU_SUP_INTEL */

@@ -12,6 +12,8 @@
 #define __ASM_SH7372_H__
 
 #include <linux/sh_clk.h>
+#include <linux/pm_domain.h>
+#include <mach/pm-rmobile.h>
 
 /*
  * Pin Function Controller:
@@ -435,6 +437,7 @@ enum {
 
 /* DMA slave IDs */
 enum {
+	SHDMA_SLAVE_INVALID,
 	SHDMA_SLAVE_SCIF0_TX,
 	SHDMA_SLAVE_SCIF0_RX,
 	SHDMA_SLAVE_SCIF1_TX,
@@ -455,6 +458,14 @@ enum {
 	SHDMA_SLAVE_SDHI1_TX,
 	SHDMA_SLAVE_SDHI2_RX,
 	SHDMA_SLAVE_SDHI2_TX,
+	SHDMA_SLAVE_FSIA_RX,
+	SHDMA_SLAVE_FSIA_TX,
+	SHDMA_SLAVE_MMCIF_RX,
+	SHDMA_SLAVE_MMCIF_TX,
+	SHDMA_SLAVE_USB0_TX,
+	SHDMA_SLAVE_USB0_RX,
+	SHDMA_SLAVE_USB1_TX,
+	SHDMA_SLAVE_USB1_RX,
 };
 
 extern struct clk sh7372_extal1_clk;
@@ -464,5 +475,24 @@ extern struct clk sh7372_dv_clki_div2_clk;
 extern struct clk sh7372_pllc2_clk;
 extern struct clk sh7372_fsiack_clk;
 extern struct clk sh7372_fsibck_clk;
+extern struct clk sh7372_fsidiva_clk;
+extern struct clk sh7372_fsidivb_clk;
+
+#ifdef CONFIG_PM
+extern struct rmobile_pm_domain sh7372_pd_a4lc;
+extern struct rmobile_pm_domain sh7372_pd_a4mp;
+extern struct rmobile_pm_domain sh7372_pd_d4;
+extern struct rmobile_pm_domain sh7372_pd_a4r;
+extern struct rmobile_pm_domain sh7372_pd_a3rv;
+extern struct rmobile_pm_domain sh7372_pd_a3ri;
+extern struct rmobile_pm_domain sh7372_pd_a4s;
+extern struct rmobile_pm_domain sh7372_pd_a3sp;
+extern struct rmobile_pm_domain sh7372_pd_a3sg;
+#endif /* CONFIG_PM */
+
+extern void sh7372_intcs_suspend(void);
+extern void sh7372_intcs_resume(void);
+extern void sh7372_intca_suspend(void);
+extern void sh7372_intca_resume(void);
 
 #endif /* __ASM_SH7372_H__ */

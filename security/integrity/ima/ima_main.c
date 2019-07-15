@@ -22,6 +22,7 @@
 #include <linux/mount.h>
 #include <linux/mman.h>
 #include <linux/slab.h>
+#include <linux/ima.h>
 
 #include "ima.h"
 
@@ -36,209 +37,121 @@ static int __init hash_setup(char *str)
 }
 __setup("ima_hash=", hash_setup);
 
-struct ima_imbalance {
-	struct hlist_node node;
-	unsigned long fsmagic;
-};
-
 /*
- * ima_limit_imbalance - emit one imbalance message per filesystem type
+ * ima_rdwr_violation_check
  *
- * Maintain list of filesystem types that do not measure files properly.
- * Return false if unknown, true if known.
- */
-static bool ima_limit_imbalance(struct file *file)
-{
-	static DEFINE_SPINLOCK(ima_imbalance_lock);
-	static HLIST_HEAD(ima_imbalance_list);
-
-	struct super_block *sb = file->f_dentry->d_sb;
-	struct ima_imbalance *entry;
-	struct hlist_node *node;
-	bool found = false;
-
-	rcu_read_lock();
-	hlist_for_each_entry_rcu(entry, node, &ima_imbalance_list, node) {
-		if (entry->fsmagic == sb->s_magic) {
-			found = true;
-			break;
-		}
-	}
-	rcu_read_unlock();
-	if (found)
-		goto out;
-
-	entry = kmalloc(sizeof(*entry), GFP_NOFS);
-	if (!entry)
-		goto out;
-	entry->fsmagic = sb->s_magic;
-	spin_lock(&ima_imbalance_lock);
-	/*
-	 * we could have raced and something else might have added this fs
-	 * to the list, but we don't really care
-	 */
-	hlist_add_head_rcu(&entry->node, &ima_imbalance_list);
-	spin_unlock(&ima_imbalance_lock);
-	printk(KERN_INFO "IMA: unmeasured files on fsmagic: %lX\n",
-	       entry->fsmagic);
-out:
-	return found;
-}
-
-/*
- * ima_counts_get - increment file counts
- *
- * Maintain read/write counters for all files, but only
- * invalidate the PCR for measured files:
+ * Only invalidate the PCR for measured files:
  * 	- Opening a file for write when already open for read,
  *	  results in a time of measure, time of use (ToMToU) error.
  *	- Opening a file for read when already open for write,
  * 	  could result in a file measurement error.
  *
  */
-void ima_counts_get(struct file *file)
+static void ima_rdwr_violation_check(struct file *file)
 {
 	struct dentry *dentry = file->f_path.dentry;
 	struct inode *inode = dentry->d_inode;
 	fmode_t mode = file->f_mode;
 	int rc;
 	bool send_tomtou = false, send_writers = false;
+	unsigned char *pathname = NULL, *pathbuf = NULL;
 
-	if (!S_ISREG(inode->i_mode))
+	if (!S_ISREG(inode->i_mode) || !ima_initialized)
 		return;
 
-	spin_lock(&inode->i_lock);
-
-	if (!ima_initialized)
-		goto out;
+	mutex_lock(&inode->i_mutex);	/* file metadata: permissions, xattr */
 
 	if (mode & FMODE_WRITE) {
-		if (inode->i_readcount && IS_IMA(inode))
+		if (atomic_read(&inode->i_readcount) && IS_IMA(inode))
 			send_tomtou = true;
 		goto out;
 	}
 
-	rc = ima_must_measure(NULL, inode, MAY_READ, FILE_CHECK);
+	rc = ima_must_measure(inode, MAY_READ, FILE_CHECK);
 	if (rc < 0)
 		goto out;
 
 	if (atomic_read(&inode->i_writecount) > 0)
 		send_writers = true;
 out:
-	/* remember the vfs deals with i_writecount */
-	if ((mode & (FMODE_READ | FMODE_WRITE)) == FMODE_READ)
-		inode->i_readcount++;
+	mutex_unlock(&inode->i_mutex);
 
-	spin_unlock(&inode->i_lock);
+	if (!send_tomtou && !send_writers)
+		return;
 
-	if (send_tomtou)
-		ima_add_violation(inode, dentry->d_name.name, "invalid_pcr",
-				  "ToMToU");
-	if (send_writers)
-		ima_add_violation(inode, dentry->d_name.name, "invalid_pcr",
-				  "open_writers");
-}
-
-/*
- * Decrement ima counts
- */
-static void ima_dec_counts(struct inode *inode, struct file *file)
-{
-	mode_t mode = file->f_mode;
-
-	assert_spin_locked(&inode->i_lock);
-
-	if ((mode & (FMODE_READ | FMODE_WRITE)) == FMODE_READ) {
-		if (unlikely(inode->i_readcount == 0)) {
-			if (!ima_limit_imbalance(file)) {
-				printk(KERN_INFO "%s: open/free imbalance (r:%u)\n",
-				       __func__, inode->i_readcount);
-				dump_stack();
-			}
-			return;
-		}
-		inode->i_readcount--;
+	/* We will allow 11 spaces for ' (deleted)' to be appended */
+	pathbuf = kmalloc(PATH_MAX + 11, GFP_KERNEL);
+	if (pathbuf) {
+		pathname = d_path(&file->f_path, pathbuf, PATH_MAX + 11);
+		if (IS_ERR(pathname))
+			pathname = NULL;
+		else if (strlen(pathname) > IMA_EVENT_NAME_LEN_MAX)
+			pathname = NULL;
 	}
+	if (send_tomtou)
+		ima_add_violation(inode,
+				  !pathname ? dentry->d_name.name : pathname,
+				  "invalid_pcr", "ToMToU");
+	if (send_writers)
+		ima_add_violation(inode,
+				  !pathname ? dentry->d_name.name : pathname,
+				  "invalid_pcr", "open_writers");
+	kfree(pathbuf);
 }
 
-static void ima_check_last_writer(struct ima_iint_cache *iint,
+static void ima_check_last_writer(struct integrity_iint_cache *iint,
 				  struct inode *inode,
 				  struct file *file)
 {
-	mode_t mode = file->f_mode;
+	fmode_t mode = file->f_mode;
 
-	BUG_ON(!mutex_is_locked(&iint->mutex));
-	assert_spin_locked(&inode->i_lock);
-
+	mutex_lock(&iint->mutex);
 	if (mode & FMODE_WRITE &&
 	    atomic_read(&inode->i_writecount) == 1 &&
 	    iint->version != inode->i_version)
 		iint->flags &= ~IMA_MEASURED;
-}
-
-static void ima_file_free_iint(struct ima_iint_cache *iint, struct inode *inode,
-			       struct file *file)
-{
-	mutex_lock(&iint->mutex);
-	spin_lock(&inode->i_lock);
-
-	ima_dec_counts(inode, file);
-	ima_check_last_writer(iint, inode, file);
-
-	spin_unlock(&inode->i_lock);
 	mutex_unlock(&iint->mutex);
-}
-
-static void ima_file_free_noiint(struct inode *inode, struct file *file)
-{
-	spin_lock(&inode->i_lock);
-
-	ima_dec_counts(inode, file);
-
-	spin_unlock(&inode->i_lock);
 }
 
 /**
  * ima_file_free - called on __fput()
  * @file: pointer to file structure being freed
  *
- * Flag files that changed, based on i_version;
- * and decrement the i_readcount.
+ * Flag files that changed, based on i_version
  */
 void ima_file_free(struct file *file)
 {
 	struct inode *inode = file->f_dentry->d_inode;
-	struct ima_iint_cache *iint;
+	struct integrity_iint_cache *iint;
 
 	if (!iint_initialized || !S_ISREG(inode->i_mode))
 		return;
 
-	iint = ima_iint_find(inode);
+	iint = integrity_iint_find(inode);
+	if (!iint)
+		return;
 
-	if (iint)
-		ima_file_free_iint(iint, inode, file);
-	else
-		ima_file_free_noiint(inode, file);
-
+	ima_check_last_writer(iint, inode, file);
 }
 
 static int process_measurement(struct file *file, const unsigned char *filename,
 			       int mask, int function)
 {
 	struct inode *inode = file->f_dentry->d_inode;
-	struct ima_iint_cache *iint;
+	struct integrity_iint_cache *iint;
+	unsigned char *pathname = NULL, *pathbuf = NULL;
 	int rc = 0;
 
 	if (!ima_initialized || !S_ISREG(inode->i_mode))
 		return 0;
 
-	rc = ima_must_measure(NULL, inode, mask, function);
+	rc = ima_must_measure(inode, mask, function);
 	if (rc != 0)
 		return rc;
 retry:
-	iint = ima_iint_find(inode);
+	iint = integrity_iint_find(inode);
 	if (!iint) {
-		rc = ima_inode_alloc(inode);
+		rc = integrity_inode_alloc(inode);
 		if (!rc || rc == -EEXIST)
 			goto retry;
 		return rc;
@@ -246,13 +159,26 @@ retry:
 
 	mutex_lock(&iint->mutex);
 
-	rc = ima_must_measure(iint, inode, mask, function);
+	rc = iint->flags & IMA_MEASURED ? 1 : 0;
 	if (rc != 0)
 		goto out;
 
 	rc = ima_collect_measurement(iint, file);
-	if (!rc)
-		ima_store_measurement(iint, file, filename);
+	if (rc != 0)
+		goto out;
+
+	if (function != BPRM_CHECK) {
+		/* We will allow 11 spaces for ' (deleted)' to be appended */
+		pathbuf = kmalloc(PATH_MAX + 11, GFP_KERNEL);
+		if (pathbuf) {
+			pathname =
+			    d_path(&file->f_path, pathbuf, PATH_MAX + 11);
+			if (IS_ERR(pathname))
+				pathname = NULL;
+		}
+	}
+	ima_store_measurement(iint, file, !pathname ? filename : pathname);
+	kfree(pathbuf);
 out:
 	mutex_unlock(&iint->mutex);
 	return rc;
@@ -298,7 +224,9 @@ int ima_bprm_check(struct linux_binprm *bprm)
 {
 	int rc;
 
-	rc = process_measurement(bprm->file, bprm->filename,
+	rc = process_measurement(bprm->file,
+				 (strcmp(bprm->filename, bprm->interp) == 0) ?
+				 bprm->filename : bprm->interp,
 				 MAY_EXEC, BPRM_CHECK);
 	return 0;
 }
@@ -317,6 +245,7 @@ int ima_file_check(struct file *file, int mask)
 {
 	int rc;
 
+	ima_rdwr_violation_check(file);
 	rc = process_measurement(file, file->f_dentry->d_name.name,
 				 mask & (MAY_READ | MAY_WRITE | MAY_EXEC),
 				 FILE_CHECK);
@@ -329,13 +258,9 @@ static int __init init_ima(void)
 	int error;
 
 	error = ima_init();
-	ima_initialized = 1;
+	if (!error)
+		ima_initialized = 1;
 	return error;
-}
-
-static void __exit cleanup_ima(void)
-{
-	ima_cleanup();
 }
 
 late_initcall(init_ima);	/* Start IMA after the TPM is available */

@@ -25,6 +25,7 @@
 #include <asm/cputable.h>
 #include <asm/thread_info.h>
 #include <asm/kexec.h>
+#include <asm/ptrace.h>
 
 	.text
 
@@ -300,11 +301,6 @@ _GLOBAL(real_writeb)
 
 #ifdef CONFIG_PPC_PASEMI
 
-/* No support in all binutils for these yet, so use defines */
-#define LBZCIX(RT,RA,RB)  .long (0x7c0006aa|(RT<<21)|(RA<<16)|(RB << 11))
-#define STBCIX(RS,RA,RB)  .long (0x7c0007aa|(RS<<21)|(RA<<16)|(RB << 11))
-
-
 _GLOBAL(real_205_readb)
 	mfmsr	r7
 	ori	r0,r7,MSR_DR
@@ -313,7 +309,7 @@ _GLOBAL(real_205_readb)
 	mtmsrd	r0
 	sync
 	isync
-	LBZCIX(r3,0,r3)
+	LBZCIX(R3,R0,R3)
 	isync
 	mtmsrd	r7
 	sync
@@ -328,7 +324,7 @@ _GLOBAL(real_205_writeb)
 	mtmsrd	r0
 	sync
 	isync
-	STBCIX(r3,0,r4)
+	STBCIX(R3,R0,R4)
 	isync
 	mtmsrd	r7
 	sync
@@ -338,7 +334,7 @@ _GLOBAL(real_205_writeb)
 #endif /* CONFIG_PPC_PASEMI */
 
 
-#ifdef CONFIG_CPU_FREQ_PMAC64
+#if defined(CONFIG_CPU_FREQ_PMAC64) || defined(CONFIG_CPU_FREQ_MAPLE)
 /*
  * SCOM access functions for 970 (FX only for now)
  *
@@ -407,7 +403,7 @@ _GLOBAL(scom970_write)
 	/* restore interrupts */
 	mtmsrd	r5,1
 	blr
-#endif /* CONFIG_CPU_FREQ_PMAC64 */
+#endif /* CONFIG_CPU_FREQ_PMAC64 || CONFIG_CPU_FREQ_MAPLE */
 
 
 /*
@@ -461,7 +457,8 @@ _GLOBAL(disable_kernel_fp)
  * wait for the flag to change, indicating this kernel is going away but
  * the slave code for the next one is at addresses 0 to 100.
  *
- * This is used by all slaves.
+ * This is used by all slaves, even those that did not find a matching
+ * paca in the secondary startup code.
  *
  * Physical (hardware) cpu id should be in r3.
  */
@@ -469,10 +466,6 @@ _GLOBAL(kexec_wait)
 	bl	1f
 1:	mflr	r5
 	addi	r5,r5,kexec_flag-1b
-
-	li	r4,KEXEC_STATE_REAL_MODE
-	stb	r4,PACAKEXECSTATE(r13)
-	SYNC
 
 99:	HMT_LOW
 #ifdef CONFIG_KEXEC		/* use no memory without kexec */
@@ -498,11 +491,17 @@ kexec_flag:
  *
  * get phys id from paca
  * switch to real mode
+ * mark the paca as no longer used
  * join other cpus in kexec_wait(phys_id)
  */
 _GLOBAL(kexec_smp_wait)
 	lhz	r3,PACAHWCPUID(r13)
 	bl	real_mode
+
+	li	r4,KEXEC_STATE_REAL_MODE
+	stb	r4,PACAKEXECSTATE(r13)
+	SYNC
+
 	b	.kexec_wait
 
 /*

@@ -1276,7 +1276,7 @@ static int vpfe_videobuf_prepare(struct videobuf_queue *vq,
 		vb->size = vpfe_dev->fmt.fmt.pix.sizeimage;
 		vb->field = field;
 
-		ret = videobuf_iolock(vq, vb, NULL);;
+		ret = videobuf_iolock(vq, vb, NULL);
 		if (ret < 0)
 			return ret;
 
@@ -1691,7 +1691,7 @@ static int vpfe_s_crop(struct file *file, void *priv,
 		goto unlock_out;
 	}
 
-	/* adjust the width to 16 pixel boundry */
+	/* adjust the width to 16 pixel boundary */
 	crop->c.width = ((crop->c.width + 15) & ~0xf);
 
 	/* make sure parameters are valid */
@@ -1719,7 +1719,7 @@ unlock_out:
 
 
 static long vpfe_param_handler(struct file *file, void *priv,
-		int cmd, void *param)
+		bool valid_prio, int cmd, void *param)
 {
 	struct vpfe_device *vpfe_dev = video_drvdata(file);
 	int ret = 0;
@@ -1761,7 +1761,7 @@ static long vpfe_param_handler(struct file *file, void *priv,
 		}
 		break;
 	default:
-		ret = -EINVAL;
+		ret = -ENOTTY;
 	}
 unlock_out:
 	mutex_unlock(&vpfe_dev->lock);
@@ -1986,7 +1986,6 @@ static __init int vpfe_probe(struct platform_device *pdev)
 		vpfe_dev->sd[i] =
 			v4l2_i2c_new_subdev_board(&vpfe_dev->v4l2_dev,
 						  i2c_adap,
-						  NULL,
 						  &sdinfo->board_info,
 						  NULL);
 		if (vpfe_dev->sd[i]) {
@@ -2077,20 +2076,4 @@ static struct platform_driver vpfe_driver = {
 	.remove = __devexit_p(vpfe_remove),
 };
 
-static __init int vpfe_init(void)
-{
-	printk(KERN_NOTICE "vpfe_init\n");
-	/* Register driver to the kernel */
-	return platform_driver_register(&vpfe_driver);
-}
-
-/*
- * vpfe_cleanup : This function un-registers device driver
- */
-static void vpfe_cleanup(void)
-{
-	platform_driver_unregister(&vpfe_driver);
-}
-
-module_init(vpfe_init);
-module_exit(vpfe_cleanup);
+module_platform_driver(vpfe_driver);

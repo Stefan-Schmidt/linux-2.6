@@ -21,9 +21,6 @@
 /*  ----------------------------------- DSP/BIOS Bridge */
 #include <dspbridge/dbdefs.h>
 
-/*  ----------------------------------- Trace & Debug */
-#include <dspbridge/dbc.h>
-
 /*  ----------------------------------- Platform Manager */
 #include <dspbridge/dev.h>
 #include <dspbridge/drv.h>
@@ -61,27 +58,24 @@ int read_ext_dsp_data(struct bridge_dev_context *dev_ctxt,
 	u32 ul_tlb_base_virt = 0;
 	u32 ul_shm_offset_virt = 0;
 	u32 dw_ext_prog_virt_mem;
-	u32 dw_base_addr = dev_context->dw_dsp_ext_base_addr;
+	u32 dw_base_addr = dev_context->dsp_ext_base_addr;
 	bool trace_read = false;
 
 	if (!ul_shm_base_virt) {
-		status = dev_get_symbol(dev_context->hdev_obj,
+		status = dev_get_symbol(dev_context->dev_obj,
 					SHMBASENAME, &ul_shm_base_virt);
 	}
-	DBC_ASSERT(ul_shm_base_virt != 0);
 
 	/* Check if it is a read of Trace section */
 	if (!status && !ul_trace_sec_beg) {
-		status = dev_get_symbol(dev_context->hdev_obj,
+		status = dev_get_symbol(dev_context->dev_obj,
 					DSP_TRACESEC_BEG, &ul_trace_sec_beg);
 	}
-	DBC_ASSERT(ul_trace_sec_beg != 0);
 
 	if (!status && !ul_trace_sec_end) {
-		status = dev_get_symbol(dev_context->hdev_obj,
+		status = dev_get_symbol(dev_context->dev_obj,
 					DSP_TRACESEC_END, &ul_trace_sec_end);
 	}
-	DBC_ASSERT(ul_trace_sec_end != 0);
 
 	if (!status) {
 		if ((dsp_addr <= ul_trace_sec_end) &&
@@ -92,7 +86,7 @@ int read_ext_dsp_data(struct bridge_dev_context *dev_ctxt,
 	/* If reading from TRACE, force remap/unmap */
 	if (trace_read && dw_base_addr) {
 		dw_base_addr = 0;
-		dev_context->dw_dsp_ext_base_addr = 0;
+		dev_context->dsp_ext_base_addr = 0;
 	}
 
 	if (!dw_base_addr) {
@@ -102,22 +96,19 @@ int read_ext_dsp_data(struct bridge_dev_context *dev_ctxt,
 
 		/* Get DYNEXT_BEG, EXT_BEG and EXT_END. */
 		if (!status && !ul_dyn_ext_base) {
-			status = dev_get_symbol(dev_context->hdev_obj,
+			status = dev_get_symbol(dev_context->dev_obj,
 						DYNEXTBASE, &ul_dyn_ext_base);
 		}
-		DBC_ASSERT(ul_dyn_ext_base != 0);
 
 		if (!status) {
-			status = dev_get_symbol(dev_context->hdev_obj,
+			status = dev_get_symbol(dev_context->dev_obj,
 						EXTBASE, &ul_ext_base);
 		}
-		DBC_ASSERT(ul_ext_base != 0);
 
 		if (!status) {
-			status = dev_get_symbol(dev_context->hdev_obj,
+			status = dev_get_symbol(dev_context->dev_obj,
 						EXTEND, &ul_ext_end);
 		}
-		DBC_ASSERT(ul_ext_end != 0);
 
 		/* Trace buffer is right after the shm SEG0,
 		 *  so set the base address to SHMBASE */
@@ -126,35 +117,33 @@ int read_ext_dsp_data(struct bridge_dev_context *dev_ctxt,
 			ul_ext_end = ul_trace_sec_end;
 		}
 
-		DBC_ASSERT(ul_ext_end != 0);
-		DBC_ASSERT(ul_ext_end > ul_ext_base);
 
 		if (ul_ext_end < ul_ext_base)
 			status = -EPERM;
 
 		if (!status) {
 			ul_tlb_base_virt =
-			    dev_context->sh_s.seg0_da * DSPWORDSIZE;
-			DBC_ASSERT(ul_tlb_base_virt <= ul_shm_base_virt);
-			dw_ext_prog_virt_mem = dev_context->sh_s.seg0_va;
+			    dev_context->atlb_entry[0].dsp_va * DSPWORDSIZE;
+			dw_ext_prog_virt_mem =
+			    dev_context->atlb_entry[0].gpp_va;
 
 			if (!trace_read) {
 				ul_shm_offset_virt =
 				    ul_shm_base_virt - ul_tlb_base_virt;
 				ul_shm_offset_virt +=
 				    PG_ALIGN_HIGH(ul_ext_end - ul_dyn_ext_base +
-						  1, PAGE_SIZE * 16);
+						  1, HW_PAGE_SIZE64KB);
 				dw_ext_prog_virt_mem -= ul_shm_offset_virt;
 				dw_ext_prog_virt_mem +=
 				    (ul_ext_base - ul_dyn_ext_base);
-				dev_context->dw_dsp_ext_base_addr =
+				dev_context->dsp_ext_base_addr =
 				    dw_ext_prog_virt_mem;
 
 				/*
-				 * This dw_dsp_ext_base_addr will get cleared
+				 * This dsp_ext_base_addr will get cleared
 				 * only when the board is stopped.
 				*/
-				if (!dev_context->dw_dsp_ext_base_addr)
+				if (!dev_context->dsp_ext_base_addr)
 					status = -EPERM;
 			}
 
@@ -183,7 +172,7 @@ int write_dsp_data(struct bridge_dev_context *dev_context,
 			  u32 mem_type)
 {
 	u32 offset;
-	u32 dw_base_addr = dev_context->dw_dsp_base_addr;
+	u32 dw_base_addr = dev_context->dsp_base_addr;
 	struct cfg_hostres *resources = dev_context->resources;
 	int status = 0;
 	u32 base1, base2, base3;
@@ -194,18 +183,18 @@ int write_dsp_data(struct bridge_dev_context *dev_context,
 	if (!resources)
 		return -EPERM;
 
-	offset = dsp_addr - dev_context->dw_dsp_start_add;
+	offset = dsp_addr - dev_context->dsp_start_add;
 	if (offset < base1) {
-		dw_base_addr = MEM_LINEAR_ADDRESS(resources->dw_mem_base[2],
-						  resources->dw_mem_length[2]);
+		dw_base_addr = MEM_LINEAR_ADDRESS(resources->mem_base[2],
+						  resources->mem_length[2]);
 	} else if (offset > base1 && offset < base2 + OMAP_DSP_MEM2_SIZE) {
-		dw_base_addr = MEM_LINEAR_ADDRESS(resources->dw_mem_base[3],
-						  resources->dw_mem_length[3]);
+		dw_base_addr = MEM_LINEAR_ADDRESS(resources->mem_base[3],
+						  resources->mem_length[3]);
 		offset = offset - base2;
 	} else if (offset >= base2 + OMAP_DSP_MEM2_SIZE &&
 		   offset < base3 + OMAP_DSP_MEM3_SIZE) {
-		dw_base_addr = MEM_LINEAR_ADDRESS(resources->dw_mem_base[4],
-						  resources->dw_mem_length[4]);
+		dw_base_addr = MEM_LINEAR_ADDRESS(resources->mem_base[4],
+						  resources->mem_length[4]);
 		offset = offset - base3;
 	} else {
 		return -EPERM;
@@ -229,7 +218,7 @@ int write_ext_dsp_data(struct bridge_dev_context *dev_context,
 			      u32 ul_num_bytes, u32 mem_type,
 			      bool dynamic_load)
 {
-	u32 dw_base_addr = dev_context->dw_dsp_ext_base_addr;
+	u32 dw_base_addr = dev_context->dsp_ext_base_addr;
 	u32 dw_offset = 0;
 	u8 temp_byte1, temp_byte2;
 	u8 remain_byte[4];
@@ -245,10 +234,10 @@ int write_ext_dsp_data(struct bridge_dev_context *dev_context,
 
 	if (symbols_reloaded) {
 		/* Check if it is a load to Trace section */
-		ret = dev_get_symbol(dev_context->hdev_obj,
+		ret = dev_get_symbol(dev_context->dev_obj,
 				     DSP_TRACESEC_BEG, &ul_trace_sec_beg);
 		if (!ret)
-			ret = dev_get_symbol(dev_context->hdev_obj,
+			ret = dev_get_symbol(dev_context->dev_obj,
 					     DSP_TRACESEC_END,
 					     &ul_trace_sec_end);
 	}
@@ -262,24 +251,22 @@ int write_ext_dsp_data(struct bridge_dev_context *dev_context,
 	if ((dynamic_load || trace_load) && dw_base_addr) {
 		dw_base_addr = 0;
 		MEM_UNMAP_LINEAR_ADDRESS((void *)
-					 dev_context->dw_dsp_ext_base_addr);
-		dev_context->dw_dsp_ext_base_addr = 0x0;
+					 dev_context->dsp_ext_base_addr);
+		dev_context->dsp_ext_base_addr = 0x0;
 	}
 	if (!dw_base_addr) {
 		if (symbols_reloaded)
 			/* Get SHM_BEG  EXT_BEG and EXT_END. */
-			ret = dev_get_symbol(dev_context->hdev_obj,
+			ret = dev_get_symbol(dev_context->dev_obj,
 					     SHMBASENAME, &ul_shm_base_virt);
-		DBC_ASSERT(ul_shm_base_virt != 0);
 		if (dynamic_load) {
 			if (!ret) {
 				if (symbols_reloaded)
 					ret =
 					    dev_get_symbol
-					    (dev_context->hdev_obj, DYNEXTBASE,
+					    (dev_context->dev_obj, DYNEXTBASE,
 					     &ul_ext_base);
 			}
-			DBC_ASSERT(ul_ext_base != 0);
 			if (!ret) {
 				/* DR  OMAPS00013235 : DLModules array may be
 				 * in EXTMEM. It is expected that DYNEXTMEM and
@@ -288,7 +275,7 @@ int write_ext_dsp_data(struct bridge_dev_context *dev_context,
 				if (symbols_reloaded)
 					ret =
 					    dev_get_symbol
-					    (dev_context->hdev_obj, EXTEND,
+					    (dev_context->dev_obj, EXTEND,
 					     &ul_ext_end);
 			}
 		} else {
@@ -296,13 +283,12 @@ int write_ext_dsp_data(struct bridge_dev_context *dev_context,
 				if (!ret)
 					ret =
 					    dev_get_symbol
-					    (dev_context->hdev_obj, EXTBASE,
+					    (dev_context->dev_obj, EXTBASE,
 					     &ul_ext_base);
-				DBC_ASSERT(ul_ext_base != 0);
 				if (!ret)
 					ret =
 					    dev_get_symbol
-					    (dev_context->hdev_obj, EXTEND,
+					    (dev_context->dev_obj, EXTEND,
 					     &ul_ext_end);
 			}
 		}
@@ -311,25 +297,21 @@ int write_ext_dsp_data(struct bridge_dev_context *dev_context,
 		if (trace_load)
 			ul_ext_base = ul_shm_base_virt;
 
-		DBC_ASSERT(ul_ext_end != 0);
-		DBC_ASSERT(ul_ext_end > ul_ext_base);
 		if (ul_ext_end < ul_ext_base)
 			ret = -EPERM;
 
 		if (!ret) {
-			ul_tlb_base_virt = dev_context->sh_s.seg0_da *
-								DSPWORDSIZE;
-
-			DBC_ASSERT(ul_tlb_base_virt <= ul_shm_base_virt);
+			ul_tlb_base_virt =
+			    dev_context->atlb_entry[0].dsp_va * DSPWORDSIZE;
 
 			if (symbols_reloaded) {
 				ret = dev_get_symbol
-					    (dev_context->hdev_obj,
+					    (dev_context->dev_obj,
 					     DSP_TRACESEC_END, &shm0_end);
 				if (!ret) {
 					ret =
 					    dev_get_symbol
-					    (dev_context->hdev_obj, DYNEXTBASE,
+					    (dev_context->dev_obj, DYNEXTBASE,
 					     &ul_dyn_ext_base);
 				}
 			}
@@ -337,21 +319,21 @@ int write_ext_dsp_data(struct bridge_dev_context *dev_context,
 			    ul_shm_base_virt - ul_tlb_base_virt;
 			if (trace_load) {
 				dw_ext_prog_virt_mem =
-					dev_context->sh_s.seg0_va;
+				    dev_context->atlb_entry[0].gpp_va;
 			} else {
-				dw_ext_prog_virt_mem = host_res->dw_mem_base[1];
+				dw_ext_prog_virt_mem = host_res->mem_base[1];
 				dw_ext_prog_virt_mem +=
 				    (ul_ext_base - ul_dyn_ext_base);
 			}
 
-			dev_context->dw_dsp_ext_base_addr =
+			dev_context->dsp_ext_base_addr =
 			    (u32) MEM_LINEAR_ADDRESS((void *)
 						     dw_ext_prog_virt_mem,
 						     ul_ext_end - ul_ext_base);
-			dw_base_addr += dev_context->dw_dsp_ext_base_addr;
-			/* This dw_dsp_ext_base_addr will get cleared only when
+			dw_base_addr += dev_context->dsp_ext_base_addr;
+			/* This dsp_ext_base_addr will get cleared only when
 			 * the board is stopped. */
-			if (!dev_context->dw_dsp_ext_base_addr)
+			if (!dev_context->dsp_ext_base_addr)
 				ret = -EPERM;
 		}
 	}
@@ -375,10 +357,10 @@ int write_ext_dsp_data(struct bridge_dev_context *dev_context,
 			*((u32 *) host_buff) = dw_base_addr + dw_offset;
 	}
 	/* Unmap here to force remap for other Ext loads */
-	if ((dynamic_load || trace_load) && dev_context->dw_dsp_ext_base_addr) {
+	if ((dynamic_load || trace_load) && dev_context->dsp_ext_base_addr) {
 		MEM_UNMAP_LINEAR_ADDRESS((void *)
-					 dev_context->dw_dsp_ext_base_addr);
-		dev_context->dw_dsp_ext_base_addr = 0x0;
+					 dev_context->dsp_ext_base_addr);
+		dev_context->dsp_ext_base_addr = 0x0;
 	}
 	symbols_reloaded = false;
 	return ret;
@@ -393,6 +375,7 @@ int sm_interrupt_dsp(struct bridge_dev_context *dev_context, u16 mb_val)
 		omap_dspbridge_dev->dev.platform_data;
 	struct cfg_hostres *resources = dev_context->resources;
 	int status = 0;
+	u32 temp;
 
 	if (!dev_context->mbox)
 		return 0;
@@ -400,8 +383,8 @@ int sm_interrupt_dsp(struct bridge_dev_context *dev_context, u16 mb_val)
 	if (!resources)
 		return -EPERM;
 
-	if (dev_context->dw_brd_state == BRD_DSP_HIBERNATION ||
-	    dev_context->dw_brd_state == BRD_HIBERNATION) {
+	if (dev_context->brd_state == BRD_DSP_HIBERNATION ||
+	    dev_context->brd_state == BRD_HIBERNATION) {
 #ifdef CONFIG_TIDSPBRIDGE_DVFS
 		if (pdata->dsp_get_opp)
 			opplevel = (*pdata->dsp_get_opp) ();
@@ -436,10 +419,10 @@ int sm_interrupt_dsp(struct bridge_dev_context *dev_context, u16 mb_val)
 		omap_mbox_restore_ctx(dev_context->mbox);
 
 		/* Access MMU SYS CONFIG register to generate a short wakeup */
-		iommu_read_reg(dev_context->dsp_mmu, MMU_SYSCONFIG);
+		temp = readl(resources->dmmu_base + 0x10);
 
-		dev_context->dw_brd_state = BRD_RUNNING;
-	} else if (dev_context->dw_brd_state == BRD_RETENTION) {
+		dev_context->brd_state = BRD_RUNNING;
+	} else if (dev_context->brd_state == BRD_RETENTION) {
 		/* Restart the peripheral clocks */
 		dsp_clock_enable_all(dev_context->dsp_per_clks);
 	}

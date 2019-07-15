@@ -23,7 +23,7 @@ OUTPUT_ARCH(sh)
 ENTRY(_start)
 SECTIONS
 {
-	. = PAGE_OFFSET + MEMORY_OFFSET + CONFIG_ZERO_PAGE_OFFSET;
+	. = PAGE_OFFSET + MEMORY_OFFSET + PHYSICAL_OFFSET + CONFIG_ZERO_PAGE_OFFSET;
 
 	_text = .;		/* Text and read-only data */
 
@@ -66,7 +66,7 @@ SECTIONS
 		__machvec_end = .;
 	}
 
-	PERCPU(PAGE_SIZE)
+	PERCPU_SECTION(L1_CACHE_BYTES)
 
 	/*
 	 * .exit.text is discarded at runtime, not link time, to deal with
@@ -78,7 +78,6 @@ SECTIONS
 	. = ALIGN(PAGE_SIZE);
 	__init_end = .;
 	BSS_SECTION(0, PAGE_SIZE, 4)
-	_ebss = .;			/* uClinux MTD sucks */
 	_end = . ;
 
 	STABS_DEBUG

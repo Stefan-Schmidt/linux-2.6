@@ -13,6 +13,7 @@
 #define _LINUX_KEY_TYPE_H
 
 #include <linux/key.h>
+#include <linux/errno.h>
 
 #ifdef CONFIG_KEYS
 
@@ -40,6 +41,9 @@ struct key_type {
 	 *   function only needs to be called if the real datalen is different
 	 */
 	size_t def_datalen;
+
+	/* vet a description */
+	int (*vet_description)(const char *description);
 
 	/* instantiate a key of this type
 	 * - this method should call key_payload_reserve() to determine if the
@@ -89,6 +93,7 @@ struct key_type {
 
 	/* internal fields */
 	struct list_head	link;		/* link in types list */
+	struct lock_class_key	lock_class;	/* key->sem lock class */
 };
 
 extern struct key_type key_type_keyring;
@@ -102,11 +107,20 @@ extern int key_instantiate_and_link(struct key *key,
 				    size_t datalen,
 				    struct key *keyring,
 				    struct key *instkey);
-extern int key_negate_and_link(struct key *key,
+extern int key_reject_and_link(struct key *key,
 			       unsigned timeout,
+			       unsigned error,
 			       struct key *keyring,
 			       struct key *instkey);
 extern void complete_request_key(struct key_construction *cons, int error);
+
+static inline int key_negate_and_link(struct key *key,
+				      unsigned timeout,
+				      struct key *keyring,
+				      struct key *instkey)
+{
+	return key_reject_and_link(key, timeout, ENOKEY, keyring, instkey);
+}
 
 #endif /* CONFIG_KEYS */
 #endif /* _LINUX_KEY_TYPE_H */

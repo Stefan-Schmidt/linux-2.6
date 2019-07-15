@@ -12,37 +12,51 @@
 
 #include <linux/kernel.h>
 #include <linux/errno.h>
-
-#define ARCH_NR_GPIOS 1024
 #include <linux/sh_pfc.h>
+#include <linux/io.h>
 
 #ifdef CONFIG_GPIOLIB
 
-static inline int gpio_get_value(unsigned gpio)
-{
-	return __gpio_get_value(gpio);
-}
-
-static inline void gpio_set_value(unsigned gpio, int value)
-{
-	__gpio_set_value(gpio, value);
-}
-
-static inline int gpio_cansleep(unsigned gpio)
-{
-	return __gpio_cansleep(gpio);
-}
-
-static inline int gpio_to_irq(unsigned gpio)
+static inline int irq_to_gpio(unsigned int irq)
 {
 	return -ENOSYS;
 }
 
-static inline int irq_to_gpio(unsigned int irq)
-{
-	return -EINVAL;
-}
+#else
+
+#define __ARM_GPIOLIB_COMPLEX
 
 #endif /* CONFIG_GPIOLIB */
+
+/*
+ * FIXME !!
+ *
+ * current gpio frame work doesn't have
+ * the method to control only pull up/down/free.
+ * this function should be replaced by correct gpio function
+ */
+static inline void __init gpio_direction_none(u32 addr)
+{
+	__raw_writeb(0x00, addr);
+}
+
+static inline void __init gpio_request_pullup(u32 addr)
+{
+	u8 data = __raw_readb(addr);
+
+	data &= 0x0F;
+	data |= 0xC0;
+	__raw_writeb(data, addr);
+}
+
+static inline void __init gpio_request_pulldown(u32 addr)
+{
+	u8 data = __raw_readb(addr);
+
+	data &= 0x0F;
+	data |= 0xA0;
+
+	__raw_writeb(data, addr);
+}
 
 #endif /* __ASM_ARCH_GPIO_H */

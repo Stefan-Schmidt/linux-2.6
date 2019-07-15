@@ -14,8 +14,6 @@
  * published by the Free Software Foundation.
  */
 
-#include "cm.h"
-
 /* Bits shared between registers */
 
 /* CM_FCLKEN1_CORE and CM_ICLKEN1_CORE shared bits */
@@ -69,6 +67,7 @@
 #define OMAP3430_EN_IVA2_DPLL_MASK			(0x7 << 0)
 
 /* CM_IDLEST_IVA2 */
+#define OMAP3430_ST_IVA2_SHIFT				0
 #define OMAP3430_ST_IVA2_MASK				(1 << 0)
 
 /* CM_IDLEST_PLL_IVA2 */
@@ -81,7 +80,7 @@
 
 /* CM_CLKSEL1_PLL_IVA2 */
 #define OMAP3430_IVA2_CLK_SRC_SHIFT			19
-#define OMAP3430_IVA2_CLK_SRC_MASK			(0x3 << 19)
+#define OMAP3430_IVA2_CLK_SRC_MASK			(0x7 << 19)
 #define OMAP3430_IVA2_DPLL_MULT_SHIFT			8
 #define OMAP3430_IVA2_DPLL_MULT_MASK			(0x7ff << 8)
 #define OMAP3430_IVA2_DPLL_DIV_SHIFT			0
@@ -126,7 +125,7 @@
 
 /* CM_CLKSEL1_PLL_MPU */
 #define OMAP3430_MPU_CLK_SRC_SHIFT			19
-#define OMAP3430_MPU_CLK_SRC_MASK			(0x3 << 19)
+#define OMAP3430_MPU_CLK_SRC_MASK			(0x7 << 19)
 #define OMAP3430_MPU_DPLL_MULT_SHIFT			8
 #define OMAP3430_MPU_DPLL_MULT_MASK			(0x7ff << 8)
 #define OMAP3430_MPU_DPLL_DIV_SHIFT			0
@@ -171,8 +170,6 @@
 /* AM35XX specific CM_ICLKEN1_CORE bits */
 #define AM35XX_EN_IPSS_MASK				(1 << 4)
 #define AM35XX_EN_IPSS_SHIFT				4
-#define AM35XX_EN_UART4_MASK				(1 << 23)
-#define AM35XX_EN_UART4_SHIFT				23
 
 /* CM_ICLKEN2_CORE */
 #define OMAP3430_EN_PKA_MASK				(1 << 4)
@@ -209,6 +206,8 @@
 #define OMAP3430_ST_DES2_MASK				(1 << 26)
 #define OMAP3430_ST_MSPRO_SHIFT				23
 #define OMAP3430_ST_MSPRO_MASK				(1 << 23)
+#define AM35XX_ST_UART4_SHIFT				23
+#define AM35XX_ST_UART4_MASK				(1 << 23)
 #define OMAP3430_ST_HDQ_SHIFT				22
 #define OMAP3430_ST_HDQ_MASK				(1 << 22)
 #define OMAP3430ES1_ST_FAC_SHIFT			8
@@ -799,5 +798,16 @@
 /* CM_CLKSTST_USBHOST */
 #define OMAP3430ES2_CLKACTIVITY_USBHOST_SHIFT		0
 #define OMAP3430ES2_CLKACTIVITY_USBHOST_MASK		(1 << 0)
+
+/*
+ *
+ */
+
+/* OMAP3XXX CM_CLKSTCTRL_*.CLKTRCTRL_* register bit values */
+#define OMAP34XX_CLKSTCTRL_DISABLE_AUTO		0x0
+#define OMAP34XX_CLKSTCTRL_FORCE_SLEEP		0x1
+#define OMAP34XX_CLKSTCTRL_FORCE_WAKEUP		0x2
+#define OMAP34XX_CLKSTCTRL_ENABLE_AUTO		0x3
+
 
 #endif

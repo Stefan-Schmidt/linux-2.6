@@ -75,8 +75,8 @@ static struct resource smc91x_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= IRQ_GPIO(4),
-		.end	= IRQ_GPIO(4),
+		.start	= PXA_GPIO_TO_IRQ(4),
+		.end	= PXA_GPIO_TO_IRQ(4),
 		.flags	= IORESOURCE_IRQ | IORESOURCE_IRQ_HIGHEDGE,
 	}
 };
@@ -167,7 +167,7 @@ static void __init idp_init(void)
 
 	platform_device_register(&smc91x_device);
 	//platform_device_register(&mst_audio_device);
-	set_pxa_fb_info(&sharp_lm8v31);
+	pxa_set_fb_info(NULL, &sharp_lm8v31);
 	pxa_set_mci_info(&idp_mci_platform_data);
 }
 
@@ -187,7 +187,7 @@ static struct map_desc idp_io_desc[] __initdata = {
 
 static void __init idp_map_io(void)
 {
-	pxa_map_io();
+	pxa25x_map_io();
 	iotable_init(idp_io_desc, ARRAY_SIZE(idp_io_desc));
 }
 
@@ -195,7 +195,10 @@ static void __init idp_map_io(void)
 MACHINE_START(PXA_IDP, "Vibren PXA255 IDP")
 	/* Maintainer: Vibren Technologies */
 	.map_io		= idp_map_io,
+	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa25x_init_irq,
+	.handle_irq	= pxa25x_handle_irq,
 	.timer		= &pxa_timer,
 	.init_machine	= idp_init,
+	.restart	= pxa_restart,
 MACHINE_END

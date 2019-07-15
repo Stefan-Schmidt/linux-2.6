@@ -157,9 +157,27 @@ static struct resource jz4740_nand_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name	= "bank",
+		.name	= "bank1",
 		.start	= 0x18000000,
 		.end	= 0x180C0000 - 1,
+		.flags = IORESOURCE_MEM,
+	},
+	{
+		.name	= "bank2",
+		.start	= 0x14000000,
+		.end	= 0x140C0000 - 1,
+		.flags = IORESOURCE_MEM,
+	},
+	{
+		.name	= "bank3",
+		.start	= 0x0C000000,
+		.end	= 0x0C0C0000 - 1,
+		.flags = IORESOURCE_MEM,
+	},
+	{
+		.name	= "bank4",
+		.start	= 0x08000000,
+		.end	= 0x080C0000 - 1,
 		.flags = IORESOURCE_MEM,
 	},
 };
@@ -208,7 +226,7 @@ struct platform_device jz4740_i2s_device = {
 
 /* PCM */
 struct platform_device jz4740_pcm_device = {
-	.name		= "jz4740-pcm",
+	.name		= "jz4740-pcm-audio",
 	.id		= -1,
 };
 
@@ -289,3 +307,19 @@ void jz4740_serial_device_register(void)
 
 	platform_device_register(&jz4740_uart_device);
 }
+
+/* Watchdog */
+static struct resource jz4740_wdt_resources[] = {
+	{
+		.start = JZ4740_WDT_BASE_ADDR,
+		.end   = JZ4740_WDT_BASE_ADDR + 0x10 - 1,
+		.flags = IORESOURCE_MEM,
+	},
+};
+
+struct platform_device jz4740_wdt_device = {
+	.name          = "jz4740-wdt",
+	.id            = -1,
+	.num_resources = ARRAY_SIZE(jz4740_wdt_resources),
+	.resource      = jz4740_wdt_resources,
+};

@@ -4,6 +4,14 @@ menu "Core Netfilter Configuration"
 config NETFILTER_NETLINK
 	tristate
 
+config NETFILTER_NETLINK_ACCT
+tristate "Netfilter NFACCT over NFNETLINK interface"
+	depends on NETFILTER_ADVANCED
+	select NETFILTER_NETLINK
+	help
+	  If this option is enabled, the kernel will include support
+	  for extended accounting via NFNETLINK.
+
 config NETFILTER_NETLINK_QUEUE
 	tristate "Netfilter NFQUEUE over NFNETLINK interface"
 	depends on NETFILTER_ADVANCED
@@ -75,6 +83,16 @@ config NF_CONNTRACK_ZONES
 
 	  If unsure, say `N'.
 
+config NF_CONNTRACK_PROCFS
+	bool "Supply CT list in procfs (OBSOLETE)"
+	default y
+	depends on PROC_FS
+	---help---
+	This option enables for the list of known conntrack entries
+	to be shown in procfs under net/netfilter/nf_conntrack. This
+	is considered obsolete in favor of using the conntrack(8)
+	tool which uses Netlink.
+
 config NF_CONNTRACK_EVENTS
 	bool "Connection tracking events"
 	depends on NETFILTER_ADVANCED
@@ -82,6 +100,27 @@ config NF_CONNTRACK_EVENTS
 	  If this option is enabled, the connection tracking code will
 	  provide a notifier chain that can be used by other kernel code
 	  to get notified about changes in the connection tracking state.
+
+	  If unsure, say `N'.
+
+config NF_CONNTRACK_TIMEOUT
+	bool  'Connection tracking timeout'
+	depends on NETFILTER_ADVANCED
+	help
+	  This option enables support for connection tracking timeout
+	  extension. This allows you to attach timeout policies to flow
+	  via the CT target.
+
+	  If unsure, say `N'.
+
+config NF_CONNTRACK_TIMESTAMP
+	bool  'Connection tracking timestamping'
+	depends on NETFILTER_ADVANCED
+	help
+	  This option enables support for connection tracking timestamping.
+	  This allows you to store the flow start-time and to obtain
+	  the flow-stop time (once it has been destroyed) via Connection
+	  tracking events.
 
 	  If unsure, say `N'.
 
@@ -185,9 +224,12 @@ config NF_CONNTRACK_IRC
 
 	  To compile it as a module, choose M here.  If unsure, say N.
 
+config NF_CONNTRACK_BROADCAST
+	tristate
+
 config NF_CONNTRACK_NETBIOS_NS
 	tristate "NetBIOS name service protocol support"
-	depends on NETFILTER_ADVANCED
+	select NF_CONNTRACK_BROADCAST
 	help
 	  NetBIOS name service requests are sent as broadcast messages from an
 	  unprivileged port and responded to with unicast messages to the
@@ -201,6 +243,21 @@ config NF_CONNTRACK_NETBIOS_NS
 	  $ ip -4 address show eth0
 	  4: eth0: <BROADCAST,MULTICAST,UP> mtu 1500 qdisc pfifo_fast qlen 1000
 	      inet 172.16.2.252/24 brd 172.16.2.255 scope global eth0
+
+	  To compile it as a module, choose M here.  If unsure, say N.
+
+config NF_CONNTRACK_SNMP
+	tristate "SNMP service protocol support"
+	depends on NETFILTER_ADVANCED
+	select NF_CONNTRACK_BROADCAST
+	help
+	  SNMP service requests are sent as broadcast messages from an
+	  unprivileged port and responded to with unicast messages to the
+	  same port. This make them hard to firewall properly because connection
+	  tracking doesn't deal with broadcasts. This helper tracks locally
+	  originating SNMP service requests and the corresponding
+	  responses. It relies on correct IP address configuration, specifically
+	  netmask and broadcast address.
 
 	  To compile it as a module, choose M here.  If unsure, say N.
 
@@ -267,6 +324,38 @@ config NF_CT_NETLINK
 	help
 	  This option enables support for a netlink-based userspace interface
 
+config NF_CT_NETLINK_TIMEOUT
+	tristate  'Connection tracking timeout tuning via Netlink'
+	select NETFILTER_NETLINK
+	depends on NETFILTER_ADVANCED
+	help
+	  This option enables support for connection tracking timeout
+	  fine-grain tuning. This allows you to attach specific timeout
+	  policies to flows, instead of using the global timeout policy.
+
+	  If unsure, say `N'.
+
+config NF_CT_NETLINK_HELPER
+	tristate 'Connection tracking helpers in user-space via Netlink'
+	select NETFILTER_NETLINK
+	depends on NF_CT_NETLINK
+	depends on NETFILTER_NETLINK_QUEUE
+	depends on NETFILTER_NETLINK_QUEUE_CT
+	depends on NETFILTER_ADVANCED
+	help
+	  This option enables the user-space connection tracking helpers
+	  infrastructure.
+
+	  If unsure, say `N'.
+
+config NETFILTER_NETLINK_QUEUE_CT
+        bool "NFQUEUE integration with Connection Tracking"
+        default n
+        depends on NETFILTER_NETLINK_QUEUE
+	help
+	  If this option is enabled, NFQUEUE can include Connection Tracking
+	  information together with the packet is the enqueued via NFNETLINK.
+
 endif # NF_CONNTRACK
 
 # transparent proxy support
@@ -322,9 +411,31 @@ config NETFILTER_XT_CONNMARK
 	ctmark), similarly to the packet mark (nfmark). Using this
 	target and match, you can set and match on this mark.
 
+config NETFILTER_XT_SET
+	tristate 'set target and match support'
+	depends on IP_SET
+	depends on NETFILTER_ADVANCED
+	help
+	  This option adds the "SET" target and "set" match.
+
+	  Using this target and match, you can add/delete and match
+	  elements in the sets created by ipset(8).
+
+	  To compile it as a module, choose M here.  If unsure, say N.
+
 # alphabetically ordered list of targets
 
 comment "Xtables targets"
+
+config NETFILTER_XT_TARGET_AUDIT
+	tristate "AUDIT target support"
+	depends on AUDIT
+	depends on NETFILTER_ADVANCED
+	---help---
+	  This option adds a 'AUDIT' target, which can be used to create
+	  audit records for packets dropped/accepted.
+
+	  To compileit as a module, choose M here. If unsure, say N.
 
 config NETFILTER_XT_TARGET_CHECKSUM
 	tristate "CHECKSUM target support"
@@ -419,6 +530,21 @@ config NETFILTER_XT_TARGET_HL
 	since you can easily create immortal packets that loop
 	forever on the network.
 
+config NETFILTER_XT_TARGET_HMARK
+	tristate '"HMARK" target support'
+	depends on (IP6_NF_IPTABLES || IP6_NF_IPTABLES=n)
+	depends on NETFILTER_ADVANCED
+	---help---
+	This option adds the "HMARK" target.
+
+	The target allows you to create rules in the "raw" and "mangle" tables
+	which set the skbuff mark by means of hash calculation within a given
+	range. The nfmark can influence the routing method (see "Use netfilter
+	MARK value as routing key") and can also be used by other subsystems to
+	change their behaviour.
+
+	To compile it as a module, choose M here. If unsure, say N.
+
 config NETFILTER_XT_TARGET_IDLETIMER
 	tristate  "IDLETIMER target support"
 	depends on NETFILTER_ADVANCED
@@ -453,7 +579,16 @@ config NETFILTER_XT_TARGET_LED
 	    echo netfilter-ssh > /sys/class/leds/<ledname>/trigger
 
 	  For more information on the LEDs available on your system, see
-	  Documentation/leds-class.txt
+	  Documentation/leds/leds-class.txt
+
+config NETFILTER_XT_TARGET_LOG
+	tristate "LOG target support"
+	default m if NETFILTER_ADVANCED=n
+	help
+	  This option adds a `LOG' target, which allows you to create rules in
+	  any iptables table which records the packet header to the syslog.
+
+	  To compile it as a module, choose M here.  If unsure, say N.
 
 config NETFILTER_XT_TARGET_MARK
 	tristate '"MARK" target support'
@@ -477,6 +612,7 @@ config NETFILTER_XT_TARGET_NFLOG
 config NETFILTER_XT_TARGET_NFQUEUE
 	tristate '"NFQUEUE" target Support'
 	depends on NETFILTER_ADVANCED
+	select NETFILTER_NETLINK_QUEUE
 	help
 	  This target replaced the old obsolete QUEUE target.
 
@@ -489,7 +625,6 @@ config NETFILTER_XT_TARGET_NOTRACK
 	tristate  '"NOTRACK" target support'
 	depends on IP_NF_RAW || IP6_NF_RAW
 	depends on NF_CONNTRACK
-	depends on NETFILTER_ADVANCED
 	help
 	  The NOTRACK target allows a select rule to specify
 	  which packets *not* to enter the conntrack/NAT
@@ -596,6 +731,16 @@ config NETFILTER_XT_TARGET_TCPOPTSTRIP
 
 comment "Xtables matches"
 
+config NETFILTER_XT_MATCH_ADDRTYPE
+	tristate '"addrtype" address type match support'
+	depends on NETFILTER_ADVANCED
+	---help---
+	  This option allows you to match what routing thinks of an address,
+	  eg. UNICAST, LOCAL, BROADCAST, ...
+
+	  If you want to compile it as a module, say M here and read
+	  <file:Documentation/kbuild/modules.txt>.  If unsure, say `N'.
+
 config NETFILTER_XT_MATCH_CLUSTER
 	tristate '"cluster" match support'
 	depends on NF_CONNTRACK
@@ -685,6 +830,15 @@ config NETFILTER_XT_MATCH_DCCP
 	  If you want to compile it as a module, say M here and read
 	  <file:Documentation/kbuild/modules.txt>.  If unsure, say `N'.
 
+config NETFILTER_XT_MATCH_DEVGROUP
+	tristate '"devgroup" match support'
+	depends on NETFILTER_ADVANCED
+	help
+	  This options adds a `devgroup' match, which allows to match on the
+	  device group a network device is assigned to.
+
+	  To compile it as a module, choose M here.  If unsure, say N.
+
 config NETFILTER_XT_MATCH_DSCP
 	tristate '"dscp" and "tos" match support'
 	depends on NETFILTER_ADVANCED
@@ -699,6 +853,15 @@ config NETFILTER_XT_MATCH_DSCP
 	  the same bits as DSCP).
 
 	  To compile it as a module, choose M here.  If unsure, say N.
+
+config NETFILTER_XT_MATCH_ECN
+	tristate '"ecn" match support'
+	depends on NETFILTER_ADVANCED
+	---help---
+	This option adds an "ECN" match, which allows you to match against
+	the IPv4 and TCP header ECN fields.
+
+	To compile it as a module, choose M here. If unsure, say N.
 
 config NETFILTER_XT_MATCH_ESP
 	tristate '"esp" match support'
@@ -809,6 +972,16 @@ config NETFILTER_XT_MATCH_MULTIPORT
 
 	  To compile it as a module, choose M here.  If unsure, say N.
 
+config NETFILTER_XT_MATCH_NFACCT
+	tristate '"nfacct" match support'
+	depends on NETFILTER_ADVANCED
+	select NETFILTER_NETLINK_ACCT
+	help
+	  This option allows you to use the extended accounting through
+	  nfnetlink_acct.
+
+	  To compile it as a module, choose M here.  If unsure, say N.
+
 config NETFILTER_XT_MATCH_OSF
 	tristate '"osf" Passive OS fingerprint match'
 	depends on NETFILTER_ADVANCED && NETFILTER_NETLINK
@@ -886,7 +1059,7 @@ config NETFILTER_XT_MATCH_RATEEST
 config NETFILTER_XT_MATCH_REALM
 	tristate  '"realm" match support'
 	depends on NETFILTER_ADVANCED
-	select NET_CLS_ROUTE
+	select IP_ROUTE_CLASSID
 	help
 	  This option adds a `realm' match, which allows you to use the realm
 	  key from the routing subsystem inside iptables.
@@ -1010,5 +1183,7 @@ config NETFILTER_XT_MATCH_U32
 endif # NETFILTER_XTABLES
 
 endmenu
+
+source "net/netfilter/ipset/Kconfig"
 
 source "net/netfilter/ipvs/Kconfig"

@@ -19,7 +19,6 @@
 #include <sound/ac97_codec.h>
 #include <sound/initval.h>
 #include <sound/soc.h>
-#include <sound/soc-dapm.h>
 
 #include "wm9705.h"
 
@@ -143,7 +142,7 @@ static const struct snd_soc_dapm_widget wm9705_dapm_widgets[] = {
  * constantly enabled, we use the mutes on those inputs to simulate such
  * controls.
  */
-static const struct snd_soc_dapm_route audio_map[] = {
+static const struct snd_soc_dapm_route wm9705_audio_map[] = {
 	/* HP mixer */
 	{"HP Mixer", "PCBeep Playback Switch", "PCBEEP PGA"},
 	{"HP Mixer", "CD Playback Switch", "CD PGA"},
@@ -201,15 +200,6 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"Right ADC", NULL, "ADC PGA"},
 };
 
-static int wm9705_add_widgets(struct snd_soc_codec *codec)
-{
-	snd_soc_dapm_new_controls(codec, wm9705_dapm_widgets,
-					ARRAY_SIZE(wm9705_dapm_widgets));
-	snd_soc_dapm_add_routes(codec, audio_map, ARRAY_SIZE(audio_map));
-
-	return 0;
-}
-
 /* We use a register cache to enhance read performance. */
 static unsigned int ac97_read(struct snd_soc_codec *codec, unsigned int reg)
 {
@@ -246,9 +236,7 @@ static int ac97_write(struct snd_soc_codec *codec, unsigned int reg,
 static int ac97_prepare(struct snd_pcm_substream *substream,
 			struct snd_soc_dai *dai)
 {
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_codec *codec = dai->codec;
 	int reg;
 	u16 vra;
 
@@ -260,7 +248,7 @@ static int ac97_prepare(struct snd_pcm_substream *substream,
 	else
 		reg = AC97_PCM_LR_ADC_RATE;
 
-	return ac97_write(codec, reg, runtime->rate);
+	return ac97_write(codec, reg, substream->runtime->rate);
 }
 
 #define WM9705_AC97_RATES (SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_11025 | \
@@ -268,7 +256,7 @@ static int ac97_prepare(struct snd_pcm_substream *substream,
 			SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_44100 | \
 			SNDRV_PCM_RATE_48000)
 
-static struct snd_soc_dai_ops wm9705_dai_ops = {
+static const struct snd_soc_dai_ops wm9705_dai_ops = {
 	.prepare	= ac97_prepare,
 };
 
@@ -316,7 +304,7 @@ static int wm9705_reset(struct snd_soc_codec *codec)
 }
 
 #ifdef CONFIG_PM
-static int wm9705_soc_suspend(struct snd_soc_codec *codec, pm_message_t msg)
+static int wm9705_soc_suspend(struct snd_soc_codec *codec)
 {
 	soc_ac97_ops.write(codec->ac97, AC97_POWERDOWN, 0xffff);
 
@@ -361,9 +349,8 @@ static int wm9705_soc_probe(struct snd_soc_codec *codec)
 	if (ret)
 		goto reset_err;
 
-	snd_soc_add_controls(codec, wm9705_snd_ac97_controls,
+	snd_soc_add_codec_controls(codec, wm9705_snd_ac97_controls,
 				ARRAY_SIZE(wm9705_snd_ac97_controls));
-	wm9705_add_widgets(codec);
 
 	return 0;
 
@@ -389,6 +376,10 @@ static struct snd_soc_codec_driver soc_codec_dev_wm9705 = {
 	.reg_word_size = sizeof(u16),
 	.reg_cache_step = 2,
 	.reg_cache_default = wm9705_reg,
+	.dapm_widgets = wm9705_dapm_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(wm9705_dapm_widgets),
+	.dapm_routes = wm9705_audio_map,
+	.num_dapm_routes = ARRAY_SIZE(wm9705_audio_map),
 };
 
 static __devinit int wm9705_probe(struct platform_device *pdev)
@@ -413,17 +404,7 @@ static struct platform_driver wm9705_codec_driver = {
 	.remove = __devexit_p(wm9705_remove),
 };
 
-static int __init wm9705_init(void)
-{
-	return platform_driver_register(&wm9705_codec_driver);
-}
-module_init(wm9705_init);
-
-static void __exit wm9705_exit(void)
-{
-	platform_driver_unregister(&wm9705_codec_driver);
-}
-module_exit(wm9705_exit);
+module_platform_driver(wm9705_codec_driver);
 
 MODULE_DESCRIPTION("ASoC WM9705 driver");
 MODULE_AUTHOR("Ian Molton");

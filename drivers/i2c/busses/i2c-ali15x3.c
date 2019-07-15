@@ -318,7 +318,7 @@ static int ali15x3_transaction(struct i2c_adapter *adap)
 
 	/*
 	  Unfortunately the ALI SMB controller maps "no response" and "bus
-	  collision" into a single bit. No reponse is the usual case so don't
+	  collision" into a single bit. No response is the usual case so don't
 	  do a printk.
 	  This means that bus collisions go unreported.
 	*/
@@ -477,7 +477,7 @@ static struct i2c_adapter ali15x3_adapter = {
 	.algo		= &smbus_algorithm,
 };
 
-static const struct pci_device_id ali15x3_ids[] = {
+static DEFINE_PCI_DEVICE_TABLE(ali15x3_ids) = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_AL, PCI_DEVICE_ID_AL_M7101) },
 	{ 0, }
 };
@@ -513,21 +513,10 @@ static struct pci_driver ali15x3_driver = {
 	.remove		= __devexit_p(ali15x3_remove),
 };
 
-static int __init i2c_ali15x3_init(void)
-{
-	return pci_register_driver(&ali15x3_driver);
-}
-
-static void __exit i2c_ali15x3_exit(void)
-{
-	pci_unregister_driver(&ali15x3_driver);
-}
+module_pci_driver(ali15x3_driver);
 
 MODULE_AUTHOR ("Frodo Looijaard <frodol@dds.nl>, "
 		"Philip Edelbrock <phil@netroedge.com>, "
 		"and Mark D. Studebaker <mdsxyz123@yahoo.com>");
 MODULE_DESCRIPTION("ALI15X3 SMBus driver");
 MODULE_LICENSE("GPL");
-
-module_init(i2c_ali15x3_init);
-module_exit(i2c_ali15x3_exit);

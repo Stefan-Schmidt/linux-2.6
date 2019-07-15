@@ -14,6 +14,7 @@
  */
 #undef DEBUG
 
+#include <linux/irq.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/err.h>
@@ -22,6 +23,7 @@
 #include <linux/spinlock.h>
 #include <linux/io.h>
 #include <linux/module.h>
+#include <linux/interrupt.h>
 
 #include <asm/mach-types.h>
 #include <plat/gpmc.h>
@@ -47,6 +49,20 @@
 #define GPMC_ECC_CONTROL	0x1f8
 #define GPMC_ECC_SIZE_CONFIG	0x1fc
 #define GPMC_ECC1_RESULT        0x200
+#define GPMC_ECC_BCH_RESULT_0   0x240   /* not available on OMAP2 */
+
+/* GPMC ECC control settings */
+#define GPMC_ECC_CTRL_ECCCLEAR		0x100
+#define GPMC_ECC_CTRL_ECCDISABLE	0x000
+#define GPMC_ECC_CTRL_ECCREG1		0x001
+#define GPMC_ECC_CTRL_ECCREG2		0x002
+#define GPMC_ECC_CTRL_ECCREG3		0x003
+#define GPMC_ECC_CTRL_ECCREG4		0x004
+#define GPMC_ECC_CTRL_ECCREG5		0x005
+#define GPMC_ECC_CTRL_ECCREG6		0x006
+#define GPMC_ECC_CTRL_ECCREG7		0x007
+#define GPMC_ECC_CTRL_ECCREG8		0x008
+#define GPMC_ECC_CTRL_ECCREG9		0x009
 
 #define GPMC_CS0_OFFSET		0x60
 #define GPMC_CS_SIZE		0x30
@@ -58,7 +74,6 @@
 #define GPMC_CHUNK_SHIFT	24		/* 16 MB */
 #define GPMC_SECTION_SHIFT	28		/* 128 MB */
 
-#define PREFETCH_FIFOTHRESHOLD	(0x40 << 8)
 #define CS_NUM_SHIFT		24
 #define ENABLE_PREFETCH		(0x1 << 7)
 #define DMA_MPU_MODE		2
@@ -99,6 +114,8 @@ static int gpmc_ecc_used = -EINVAL;	/* cs using ecc engine */
 static void __iomem *gpmc_base;
 
 static struct clk *gpmc_l3_clk;
+
+static irqreturn_t gpmc_handle_irq(int irq, void *dev);
 
 static void gpmc_write_reg(int idx, u32 val)
 {
@@ -168,6 +185,16 @@ unsigned int gpmc_ns_to_ticks(unsigned int time_ns)
 	return (time_ns * 1000 + tick_ps - 1) / tick_ps;
 }
 
+unsigned int gpmc_ps_to_ticks(unsigned int time_ps)
+{
+	unsigned long tick_ps;
+
+	/* Calculate in picosecs to yield more exact results */
+	tick_ps = gpmc_get_fclk_period();
+
+	return (time_ps + tick_ps - 1) / tick_ps;
+}
+
 unsigned int gpmc_ticks_to_ns(unsigned int ticks)
 {
 	return ticks * gpmc_get_fclk_period() / 1000;
@@ -235,7 +262,7 @@ int gpmc_cs_calc_divider(int cs, unsigned int sync_clk)
 	int div;
 	u32 l;
 
-	l = sync_clk * 1000 + (gpmc_get_fclk_period() - 1);
+	l = sync_clk + (gpmc_get_fclk_period() - 1);
 	div = l / gpmc_get_fclk_period();
 	if (div > 4)
 		return -1;
@@ -487,6 +514,10 @@ int gpmc_cs_configure(int cs, int cmd, int wval)
 	u32 regval = 0;
 
 	switch (cmd) {
+	case GPMC_ENABLE_IRQ:
+		gpmc_write_reg(GPMC_IRQENABLE, wval);
+		break;
+
 	case GPMC_SET_IRQ_STATUS:
 		gpmc_write_reg(GPMC_IRQSTATUS, wval);
 		break;
@@ -511,7 +542,13 @@ int gpmc_cs_configure(int cs, int cmd, int wval)
 
 	case GPMC_CONFIG_DEV_SIZE:
 		regval  = gpmc_cs_read_reg(cs, GPMC_CS_CONFIG1);
+
+		/* clear 2 target bits */
+		regval &= ~GPMC_CONFIG1_DEVICESIZE(3);
+
+		/* set the proper value */
 		regval |= GPMC_CONFIG1_DEVICESIZE(wval);
+
 		gpmc_cs_write_reg(cs, GPMC_CS_CONFIG1, regval);
 		break;
 
@@ -588,15 +625,19 @@ EXPORT_SYMBOL(gpmc_nand_write);
 /**
  * gpmc_prefetch_enable - configures and starts prefetch transfer
  * @cs: cs (chip select) number
+ * @fifo_th: fifo threshold to be used for read/ write
  * @dma_mode: dma mode enable (1) or disable (0)
  * @u32_count: number of bytes to be transferred
  * @is_write: prefetch read(0) or write post(1) mode
  */
-int gpmc_prefetch_enable(int cs, int dma_mode,
+int gpmc_prefetch_enable(int cs, int fifo_th, int dma_mode,
 				unsigned int u32_count, int is_write)
 {
 
-	if (!(gpmc_read_reg(GPMC_PREFETCH_CONTROL))) {
+	if (fifo_th > PREFETCH_FIFOTHRESHOLD_MAX) {
+		pr_err("gpmc: fifo threshold is not supported\n");
+		return -1;
+	} else if (!(gpmc_read_reg(GPMC_PREFETCH_CONTROL))) {
 		/* Set the amount of bytes to be prefetched */
 		gpmc_write_reg(GPMC_PREFETCH_CONFIG2, u32_count);
 
@@ -604,7 +645,7 @@ int gpmc_prefetch_enable(int cs, int dma_mode,
 		 * enable the engine. Set which cs is has requested for.
 		 */
 		gpmc_write_reg(GPMC_PREFETCH_CONFIG1, ((cs << CS_NUM_SHIFT) |
-					PREFETCH_FIFOTHRESHOLD |
+					PREFETCH_FIFOTHRESHOLD(fifo_th) |
 					ENABLE_PREFETCH |
 					(dma_mode << DMA_MPU_MODE) |
 					(0x1 & is_write)));
@@ -668,9 +709,11 @@ static void __init gpmc_mem_init(void)
 	}
 }
 
-void __init gpmc_init(void)
+static int __init gpmc_init(void)
 {
-	u32 l;
+	u32 l, irq;
+	int cs, ret = -EINVAL;
+	int gpmc_irq;
 	char *ck = NULL;
 
 	if (cpu_is_omap24xx()) {
@@ -679,16 +722,20 @@ void __init gpmc_init(void)
 			l = OMAP2420_GPMC_BASE;
 		else
 			l = OMAP34XX_GPMC_BASE;
+		gpmc_irq = INT_34XX_GPMC_IRQ;
 	} else if (cpu_is_omap34xx()) {
 		ck = "gpmc_fck";
 		l = OMAP34XX_GPMC_BASE;
-	} else if (cpu_is_omap44xx()) {
+		gpmc_irq = INT_34XX_GPMC_IRQ;
+	} else if (cpu_is_omap44xx() || soc_is_omap54xx()) {
+		/* Base address and irq number are same for OMAP4/5 */
 		ck = "gpmc_ck";
 		l = OMAP44XX_GPMC_BASE;
+		gpmc_irq = OMAP44XX_IRQ_GPMC;
 	}
 
 	if (WARN_ON(!ck))
-		return;
+		return ret;
 
 	gpmc_l3_clk = clk_get(NULL, ck);
 	if (IS_ERR(gpmc_l3_clk)) {
@@ -713,6 +760,34 @@ void __init gpmc_init(void)
 	l |= (0x02 << 3) | (1 << 0);
 	gpmc_write_reg(GPMC_SYSCONFIG, l);
 	gpmc_mem_init();
+
+	/* initalize the irq_chained */
+	irq = OMAP_GPMC_IRQ_BASE;
+	for (cs = 0; cs < GPMC_CS_NUM; cs++) {
+		irq_set_chip_and_handler(irq, &dummy_irq_chip,
+						handle_simple_irq);
+		set_irq_flags(irq, IRQF_VALID);
+		irq++;
+	}
+
+	ret = request_irq(gpmc_irq, gpmc_handle_irq, IRQF_SHARED, "gpmc", NULL);
+	if (ret)
+		pr_err("gpmc: irq-%d could not claim: err %d\n",
+						gpmc_irq, ret);
+	return ret;
+}
+postcore_initcall(gpmc_init);
+
+static irqreturn_t gpmc_handle_irq(int irq, void *dev)
+{
+	u8 cs;
+
+	/* check cs to invoke the irq */
+	cs = ((gpmc_read_reg(GPMC_PREFETCH_CONFIG1)) >> CS_NUM_SHIFT) & 0x7;
+	if (OMAP_GPMC_IRQ_BASE+cs <= OMAP_GPMC_IRQ_END)
+		generic_handle_irq(OMAP_GPMC_IRQ_BASE+cs);
+
+	return IRQ_HANDLED;
 }
 
 #ifdef CONFIG_ARCH_OMAP3
@@ -800,8 +875,9 @@ int gpmc_enable_hwecc(int cs, int mode, int dev_width, int ecc_size)
 	gpmc_ecc_used = cs;
 
 	/* clear ecc and enable bits */
-	val = ((0x00000001<<8) | 0x00000001);
-	gpmc_write_reg(GPMC_ECC_CONTROL, val);
+	gpmc_write_reg(GPMC_ECC_CONTROL,
+			GPMC_ECC_CTRL_ECCCLEAR |
+			GPMC_ECC_CTRL_ECCREG1);
 
 	/* program ecc and result sizes */
 	val = ((((ecc_size >> 1) - 1) << 22) | (0x0000000F));
@@ -809,13 +885,15 @@ int gpmc_enable_hwecc(int cs, int mode, int dev_width, int ecc_size)
 
 	switch (mode) {
 	case GPMC_ECC_READ:
-		gpmc_write_reg(GPMC_ECC_CONTROL, 0x101);
+	case GPMC_ECC_WRITE:
+		gpmc_write_reg(GPMC_ECC_CONTROL,
+				GPMC_ECC_CTRL_ECCCLEAR |
+				GPMC_ECC_CTRL_ECCREG1);
 		break;
 	case GPMC_ECC_READSYN:
-		 gpmc_write_reg(GPMC_ECC_CONTROL, 0x100);
-		break;
-	case GPMC_ECC_WRITE:
-		gpmc_write_reg(GPMC_ECC_CONTROL, 0x101);
+		gpmc_write_reg(GPMC_ECC_CONTROL,
+				GPMC_ECC_CTRL_ECCCLEAR |
+				GPMC_ECC_CTRL_ECCDISABLE);
 		break;
 	default:
 		printk(KERN_INFO "Error: Unrecognized Mode[%d]!\n", mode);
@@ -827,6 +905,7 @@ int gpmc_enable_hwecc(int cs, int mode, int dev_width, int ecc_size)
 	gpmc_write_reg(GPMC_ECC_CONFIG, val);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(gpmc_enable_hwecc);
 
 /**
  * gpmc_calculate_ecc - generate non-inverted ecc bytes
@@ -857,3 +936,187 @@ int gpmc_calculate_ecc(int cs, const u_char *dat, u_char *ecc_code)
 	gpmc_ecc_used = -EINVAL;
 	return 0;
 }
+EXPORT_SYMBOL_GPL(gpmc_calculate_ecc);
+
+#ifdef CONFIG_ARCH_OMAP3
+
+/**
+ * gpmc_init_hwecc_bch - initialize hardware BCH ecc functionality
+ * @cs: chip select number
+ * @nsectors: how many 512-byte sectors to process
+ * @nerrors: how many errors to correct per sector (4 or 8)
+ *
+ * This function must be executed before any call to gpmc_enable_hwecc_bch.
+ */
+int gpmc_init_hwecc_bch(int cs, int nsectors, int nerrors)
+{
+	/* check if ecc module is in use */
+	if (gpmc_ecc_used != -EINVAL)
+		return -EINVAL;
+
+	/* support only OMAP3 class */
+	if (!cpu_is_omap34xx()) {
+		printk(KERN_ERR "BCH ecc is not supported on this CPU\n");
+		return -EINVAL;
+	}
+
+	/*
+	 * For now, assume 4-bit mode is only supported on OMAP3630 ES1.x, x>=1.
+	 * Other chips may be added if confirmed to work.
+	 */
+	if ((nerrors == 4) &&
+	    (!cpu_is_omap3630() || (GET_OMAP_REVISION() == 0))) {
+		printk(KERN_ERR "BCH 4-bit mode is not supported on this CPU\n");
+		return -EINVAL;
+	}
+
+	/* sanity check */
+	if (nsectors > 8) {
+		printk(KERN_ERR "BCH cannot process %d sectors (max is 8)\n",
+		       nsectors);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(gpmc_init_hwecc_bch);
+
+/**
+ * gpmc_enable_hwecc_bch - enable hardware BCH ecc functionality
+ * @cs: chip select number
+ * @mode: read/write mode
+ * @dev_width: device bus width(1 for x16, 0 for x8)
+ * @nsectors: how many 512-byte sectors to process
+ * @nerrors: how many errors to correct per sector (4 or 8)
+ */
+int gpmc_enable_hwecc_bch(int cs, int mode, int dev_width, int nsectors,
+			  int nerrors)
+{
+	unsigned int val;
+
+	/* check if ecc module is in use */
+	if (gpmc_ecc_used != -EINVAL)
+		return -EINVAL;
+
+	gpmc_ecc_used = cs;
+
+	/* clear ecc and enable bits */
+	gpmc_write_reg(GPMC_ECC_CONTROL, 0x1);
+
+	/*
+	 * When using BCH, sector size is hardcoded to 512 bytes.
+	 * Here we are using wrapping mode 6 both for reading and writing, with:
+	 *  size0 = 0  (no additional protected byte in spare area)
+	 *  size1 = 32 (skip 32 nibbles = 16 bytes per sector in spare area)
+	 */
+	gpmc_write_reg(GPMC_ECC_SIZE_CONFIG, (32 << 22) | (0 << 12));
+
+	/* BCH configuration */
+	val = ((1                        << 16) | /* enable BCH */
+	       (((nerrors == 8) ? 1 : 0) << 12) | /* 8 or 4 bits */
+	       (0x06                     <<  8) | /* wrap mode = 6 */
+	       (dev_width                <<  7) | /* bus width */
+	       (((nsectors-1) & 0x7)     <<  4) | /* number of sectors */
+	       (cs                       <<  1) | /* ECC CS */
+	       (0x1));                            /* enable ECC */
+
+	gpmc_write_reg(GPMC_ECC_CONFIG, val);
+	gpmc_write_reg(GPMC_ECC_CONTROL, 0x101);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(gpmc_enable_hwecc_bch);
+
+/**
+ * gpmc_calculate_ecc_bch4 - Generate 7 ecc bytes per sector of 512 data bytes
+ * @cs:  chip select number
+ * @dat: The pointer to data on which ecc is computed
+ * @ecc: The ecc output buffer
+ */
+int gpmc_calculate_ecc_bch4(int cs, const u_char *dat, u_char *ecc)
+{
+	int i;
+	unsigned long nsectors, reg, val1, val2;
+
+	if (gpmc_ecc_used != cs)
+		return -EINVAL;
+
+	nsectors = ((gpmc_read_reg(GPMC_ECC_CONFIG) >> 4) & 0x7) + 1;
+
+	for (i = 0; i < nsectors; i++) {
+
+		reg = GPMC_ECC_BCH_RESULT_0 + 16*i;
+
+		/* Read hw-computed remainder */
+		val1 = gpmc_read_reg(reg + 0);
+		val2 = gpmc_read_reg(reg + 4);
+
+		/*
+		 * Add constant polynomial to remainder, in order to get an ecc
+		 * sequence of 0xFFs for a buffer filled with 0xFFs; and
+		 * left-justify the resulting polynomial.
+		 */
+		*ecc++ = 0x28 ^ ((val2 >> 12) & 0xFF);
+		*ecc++ = 0x13 ^ ((val2 >>  4) & 0xFF);
+		*ecc++ = 0xcc ^ (((val2 & 0xF) << 4)|((val1 >> 28) & 0xF));
+		*ecc++ = 0x39 ^ ((val1 >> 20) & 0xFF);
+		*ecc++ = 0x96 ^ ((val1 >> 12) & 0xFF);
+		*ecc++ = 0xac ^ ((val1 >> 4) & 0xFF);
+		*ecc++ = 0x7f ^ ((val1 & 0xF) << 4);
+	}
+
+	gpmc_ecc_used = -EINVAL;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(gpmc_calculate_ecc_bch4);
+
+/**
+ * gpmc_calculate_ecc_bch8 - Generate 13 ecc bytes per block of 512 data bytes
+ * @cs:  chip select number
+ * @dat: The pointer to data on which ecc is computed
+ * @ecc: The ecc output buffer
+ */
+int gpmc_calculate_ecc_bch8(int cs, const u_char *dat, u_char *ecc)
+{
+	int i;
+	unsigned long nsectors, reg, val1, val2, val3, val4;
+
+	if (gpmc_ecc_used != cs)
+		return -EINVAL;
+
+	nsectors = ((gpmc_read_reg(GPMC_ECC_CONFIG) >> 4) & 0x7) + 1;
+
+	for (i = 0; i < nsectors; i++) {
+
+		reg = GPMC_ECC_BCH_RESULT_0 + 16*i;
+
+		/* Read hw-computed remainder */
+		val1 = gpmc_read_reg(reg + 0);
+		val2 = gpmc_read_reg(reg + 4);
+		val3 = gpmc_read_reg(reg + 8);
+		val4 = gpmc_read_reg(reg + 12);
+
+		/*
+		 * Add constant polynomial to remainder, in order to get an ecc
+		 * sequence of 0xFFs for a buffer filled with 0xFFs.
+		 */
+		*ecc++ = 0xef ^ (val4 & 0xFF);
+		*ecc++ = 0x51 ^ ((val3 >> 24) & 0xFF);
+		*ecc++ = 0x2e ^ ((val3 >> 16) & 0xFF);
+		*ecc++ = 0x09 ^ ((val3 >> 8) & 0xFF);
+		*ecc++ = 0xed ^ (val3 & 0xFF);
+		*ecc++ = 0x93 ^ ((val2 >> 24) & 0xFF);
+		*ecc++ = 0x9a ^ ((val2 >> 16) & 0xFF);
+		*ecc++ = 0xc2 ^ ((val2 >> 8) & 0xFF);
+		*ecc++ = 0x97 ^ (val2 & 0xFF);
+		*ecc++ = 0x79 ^ ((val1 >> 24) & 0xFF);
+		*ecc++ = 0xe5 ^ ((val1 >> 16) & 0xFF);
+		*ecc++ = 0x24 ^ ((val1 >> 8) & 0xFF);
+		*ecc++ = 0xb5 ^ (val1 & 0xFF);
+	}
+
+	gpmc_ecc_used = -EINVAL;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(gpmc_calculate_ecc_bch8);
+
+#endif /* CONFIG_ARCH_OMAP3 */

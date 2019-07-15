@@ -33,6 +33,9 @@ struct btrfs_delayed_ref_node {
 	/* the size of the extent */
 	u64 num_bytes;
 
+	/* seq number to keep track of insertion order */
+	u64 seq;
+
 	/* ref count on this data structure */
 	atomic_t refs;
 
@@ -98,19 +101,15 @@ struct btrfs_delayed_ref_head {
 
 struct btrfs_delayed_tree_ref {
 	struct btrfs_delayed_ref_node node;
-	union {
-		u64 root;
-		u64 parent;
-	};
+	u64 root;
+	u64 parent;
 	int level;
 };
 
 struct btrfs_delayed_data_ref {
 	struct btrfs_delayed_ref_node node;
-	union {
-		u64 root;
-		u64 parent;
-	};
+	u64 root;
+	u64 parent;
 	u64 objectid;
 	u64 offset;
 };
@@ -151,31 +150,58 @@ static inline void btrfs_put_delayed_ref(struct btrfs_delayed_ref_node *ref)
 	}
 }
 
-int btrfs_add_delayed_tree_ref(struct btrfs_trans_handle *trans,
+int btrfs_add_delayed_tree_ref(struct btrfs_fs_info *fs_info,
+			       struct btrfs_trans_handle *trans,
 			       u64 bytenr, u64 num_bytes, u64 parent,
 			       u64 ref_root, int level, int action,
-			       struct btrfs_delayed_extent_op *extent_op);
-int btrfs_add_delayed_data_ref(struct btrfs_trans_handle *trans,
+			       struct btrfs_delayed_extent_op *extent_op,
+			       int for_cow);
+int btrfs_add_delayed_data_ref(struct btrfs_fs_info *fs_info,
+			       struct btrfs_trans_handle *trans,
 			       u64 bytenr, u64 num_bytes,
 			       u64 parent, u64 ref_root,
 			       u64 owner, u64 offset, int action,
-			       struct btrfs_delayed_extent_op *extent_op);
-int btrfs_add_delayed_extent_op(struct btrfs_trans_handle *trans,
+			       struct btrfs_delayed_extent_op *extent_op,
+			       int for_cow);
+int btrfs_add_delayed_extent_op(struct btrfs_fs_info *fs_info,
+				struct btrfs_trans_handle *trans,
 				u64 bytenr, u64 num_bytes,
 				struct btrfs_delayed_extent_op *extent_op);
+void btrfs_merge_delayed_refs(struct btrfs_trans_handle *trans,
+			      struct btrfs_fs_info *fs_info,
+			      struct btrfs_delayed_ref_root *delayed_refs,
+			      struct btrfs_delayed_ref_head *head);
 
 struct btrfs_delayed_ref_head *
 btrfs_find_delayed_ref_head(struct btrfs_trans_handle *trans, u64 bytenr);
-int btrfs_delayed_ref_pending(struct btrfs_trans_handle *trans, u64 bytenr);
-int btrfs_update_delayed_ref(struct btrfs_trans_handle *trans,
-			  u64 bytenr, u64 num_bytes, u64 orig_parent,
-			  u64 parent, u64 orig_ref_root, u64 ref_root,
-			  u64 orig_ref_generation, u64 ref_generation,
-			  u64 owner_objectid, int pin);
 int btrfs_delayed_ref_lock(struct btrfs_trans_handle *trans,
 			   struct btrfs_delayed_ref_head *head);
 int btrfs_find_ref_cluster(struct btrfs_trans_handle *trans,
 			   struct list_head *cluster, u64 search_start);
+
+int btrfs_check_delayed_seq(struct btrfs_fs_info *fs_info,
+			    struct btrfs_delayed_ref_root *delayed_refs,
+			    u64 seq);
+
+/*
+ * delayed refs with a ref_seq > 0 must be held back during backref walking.
+ * this only applies to items in one of the fs-trees. for_cow items never need
+ * to be held back, so they won't get a ref_seq number.
+ */
+static inline int need_ref_seq(int for_cow, u64 rootid)
+{
+	if (for_cow)
+		return 0;
+
+	if (rootid == BTRFS_FS_TREE_OBJECTID)
+		return 1;
+
+	if ((s64)rootid >= (s64)BTRFS_FIRST_FREE_OBJECTID)
+		return 1;
+
+	return 0;
+}
+
 /*
  * a node might live in a head or a regular ref, this lets you
  * test for the proper type to use.

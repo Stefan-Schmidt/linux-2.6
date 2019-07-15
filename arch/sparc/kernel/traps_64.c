@@ -22,7 +22,6 @@
 
 #include <asm/smp.h>
 #include <asm/delay.h>
-#include <asm/system.h>
 #include <asm/ptrace.h>
 #include <asm/oplib.h>
 #include <asm/page.h>
@@ -41,6 +40,7 @@
 #include <asm/head.h>
 #include <asm/prom.h>
 #include <asm/memctrl.h>
+#include <asm/cacheflush.h>
 
 #include "entry.h"
 #include "kstack.h"
@@ -622,7 +622,7 @@ static const char CHAFSR_PERR_msg[] =
 static const char CHAFSR_IERR_msg[] =
 	"Internal processor error";
 static const char CHAFSR_ISAP_msg[] =
-	"System request parity error on incoming addresss";
+	"System request parity error on incoming address";
 static const char CHAFSR_UCU_msg[] =
 	"Uncorrectable E-cache ECC error for ifetch/data";
 static const char CHAFSR_UCC_msg[] =
@@ -1804,7 +1804,7 @@ static const char *sun4v_err_type_to_str(u32 type)
 		return "warning resumable";
 	default:
 		return "unknown";
-	};
+	}
 }
 
 static void sun4v_log_error(struct pt_regs *regs, struct sun4v_error_entry *ent, int cpu, const char *pfx, atomic_t *ocnt)
@@ -2054,7 +2054,7 @@ void do_fpieee(struct pt_regs *regs)
 	do_fpe_common(regs);
 }
 
-extern int do_mathemu(struct pt_regs *, struct fpustate *);
+extern int do_mathemu(struct pt_regs *, struct fpustate *, bool);
 
 void do_fpother(struct pt_regs *regs)
 {
@@ -2068,7 +2068,7 @@ void do_fpother(struct pt_regs *regs)
 	switch ((current_thread_info()->xfsr[0] & 0x1c000)) {
 	case (2 << 14): /* unfinished_FPop */
 	case (3 << 14): /* unimplemented_FPop */
-		ret = do_mathemu(regs, f);
+		ret = do_mathemu(regs, f, false);
 		break;
 	}
 	if (ret)
@@ -2152,7 +2152,7 @@ static void user_instruction_dump(unsigned int __user *pc)
 
 void show_stack(struct task_struct *tsk, unsigned long *_ksp)
 {
-	unsigned long fp, thread_base, ksp;
+	unsigned long fp, ksp;
 	struct thread_info *tp;
 	int count = 0;
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
@@ -2173,7 +2173,6 @@ void show_stack(struct task_struct *tsk, unsigned long *_ksp)
 		flushw_all();
 
 	fp = ksp + STACK_BIAS;
-	thread_base = (unsigned long) tp;
 
 	printk("Call Trace:\n");
 	do {
@@ -2309,10 +2308,12 @@ void do_illegal_instruction(struct pt_regs *regs)
 			} else {
 				struct fpustate *f = FPUSTATE;
 
-				/* XXX maybe verify XFSR bits like
-				 * XXX do_fpother() does?
+				/* On UltraSPARC T2 and later, FPU insns which
+				 * are not implemented in HW signal an illegal
+				 * instruction trap and do not set the FP Trap
+				 * Trap in the %fsr to unimplemented_FPop.
 				 */
-				if (do_mathemu(regs, f))
+				if (do_mathemu(regs, f, true))
 					return;
 			}
 		}

@@ -29,7 +29,7 @@
 #include <linux/backlight.h>
 #include <linux/timer.h>
 #include <linux/workqueue.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 
 #define APPLE_VENDOR_ID		0x05AC
 
@@ -88,6 +88,7 @@ static struct workqueue_struct *wq;
 static void appledisplay_complete(struct urb *urb)
 {
 	struct appledisplay *pdata = urb->context;
+	struct device *dev = &pdata->udev->dev;
 	unsigned long flags;
 	int status = urb->status;
 	int retval;
@@ -97,18 +98,18 @@ static void appledisplay_complete(struct urb *urb)
 		/* success */
 		break;
 	case -EOVERFLOW:
-		printk(KERN_ERR "appletouch: OVERFLOW with data "
-			"length %d, actual length is %d\n",
+		dev_err(dev,
+			"OVERFLOW with data length %d, actual length is %d\n",
 			ACD_URB_BUFFER_LEN, pdata->urb->actual_length);
 	case -ECONNRESET:
 	case -ENOENT:
 	case -ESHUTDOWN:
 		/* This urb is terminated, clean up */
-		dbg("%s - urb shuttingdown with status: %d",
+		dev_dbg(dev, "%s - urb shuttingdown with status: %d\n",
 			__func__, status);
 		return;
 	default:
-		dbg("%s - nonzero urb status received: %d",
+		dev_dbg(dev, "%s - nonzero urb status received: %d/n",
 			__func__, status);
 		goto exit;
 	}
@@ -132,8 +133,7 @@ static void appledisplay_complete(struct urb *urb)
 exit:
 	retval = usb_submit_urb(pdata->urb, GFP_ATOMIC);
 	if (retval) {
-		dev_err(&pdata->udev->dev,
-			"%s - usb_submit_urb failed with result %d\n",
+		dev_err(dev, "%s - usb_submit_urb failed with result %d\n",
 			__func__, retval);
 	}
 }
@@ -282,6 +282,7 @@ static int appledisplay_probe(struct usb_interface *iface,
 	snprintf(bl_name, sizeof(bl_name), "appledisplay%d",
 		atomic_inc_return(&count_displays) - 1);
 	memset(&props, 0, sizeof(struct backlight_properties));
+	props.type = BACKLIGHT_RAW;
 	props.max_brightness = 0xff;
 	pdata->bd = backlight_device_register(bl_name, NULL, pdata,
 					      &appledisplay_bl_data, &props);

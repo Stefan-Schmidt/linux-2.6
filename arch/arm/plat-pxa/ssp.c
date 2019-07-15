@@ -28,11 +28,11 @@
 #include <linux/clk.h>
 #include <linux/err.h>
 #include <linux/platform_device.h>
+#include <linux/spi/pxa2xx_spi.h>
 #include <linux/io.h>
 
 #include <asm/irq.h>
 #include <mach/hardware.h>
-#include <plat/ssp.h>
 
 static DEFINE_MUTEX(ssp_lock);
 static LIST_HEAD(ssp_list);
@@ -193,6 +193,7 @@ static const struct platform_device_id ssp_id_table[] = {
 	{ "pxa25x-nssp",	PXA25x_NSSP },
 	{ "pxa27x-ssp",		PXA27x_SSP },
 	{ "pxa168-ssp",		PXA168_SSP },
+	{ "pxa910-ssp",		PXA910_SSP },
 	{ },
 };
 

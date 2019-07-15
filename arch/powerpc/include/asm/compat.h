@@ -100,7 +100,8 @@ struct compat_statfs {
 	compat_fsid_t	f_fsid;
 	int		f_namelen;	/* SunOS ignores this field. */
 	int		f_frsize;
-	int		f_spare[5];
+	int		f_flags;
+	int		f_spare[4];
 };
 
 #define COMPAT_RLIM_OLD_INFINITY	0x7fffffff
@@ -140,7 +141,7 @@ static inline void __user *arch_compat_alloc_user_space(long len)
 	unsigned long usp = regs->gpr[1];
 
 	/*
-	 * We cant access below the stack pointer in the 32bit ABI and
+	 * We can't access below the stack pointer in the 32bit ABI and
 	 * can access 288 bytes in the 64bit ABI
 	 */
 	if (!is_32bit_task())

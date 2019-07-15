@@ -52,6 +52,7 @@ SECTIONS
 
 	EXCEPTION_TABLE(4)
 
+	_sdata = .;
 	RODATA
 
 	. = ALIGN (4);
@@ -72,11 +73,6 @@ SECTIONS
 	INIT_TEXT_SECTION(PAGE_SIZE)
 	.init.data : { INIT_DATA }
 	.init.setup : { INIT_SETUP(16) }
-#ifdef CONFIG_ETRAX_ARCH_V32
-	__start___param = .;
-	__param : { *(__param) }
-	__stop___param = .;
-#endif
 	.initcall.init : {
 		INIT_CALLS
 	}
@@ -107,7 +103,7 @@ SECTIONS
 #endif
 	__vmlinux_end = .;		/* Last address of the physical file. */
 #ifdef CONFIG_ETRAX_ARCH_V32
-	PERCPU(PAGE_SIZE)
+	PERCPU_SECTION(32)
 
 	.init.ramfs : {
 		INIT_RAM_FS

@@ -34,24 +34,32 @@ long cifs_ioctl(struct file *filep, unsigned int command, unsigned long arg)
 {
 	struct inode *inode = filep->f_dentry->d_inode;
 	int rc = -ENOTTY; /* strange error - but the precedent */
-	int xid;
+	unsigned int xid;
 	struct cifs_sb_info *cifs_sb;
 #ifdef CONFIG_CIFS_POSIX
 	struct cifsFileInfo *pSMBFile = filep->private_data;
-	struct cifsTconInfo *tcon = tlink_tcon(pSMBFile->tlink);
+	struct cifs_tcon *tcon;
 	__u64	ExtAttrBits = 0;
 	__u64	ExtAttrMask = 0;
-	__u64   caps = le64_to_cpu(tcon->fsUnixInfo.Capability);
+	__u64   caps;
 #endif /* CONFIG_CIFS_POSIX */
 
-	xid = GetXid();
+	xid = get_xid();
 
 	cFYI(1, "ioctl file %p  cmd %u  arg %lu", filep, command, arg);
 
 	cifs_sb = CIFS_SB(inode->i_sb);
 
 	switch (command) {
+		static bool warned = false;
 		case CIFS_IOC_CHECKUMOUNT:
+			if (!warned) {
+				warned = true;
+				cERROR(1, "the CIFS_IOC_CHECKMOUNT ioctl will "
+					  "be deprecated in 3.7. Please "
+					  "migrate away from the use of "
+					  "umount.cifs");
+			}
 			cFYI(1, "User unmount attempted");
 			if (cifs_sb->mnt_uid == current_uid())
 				rc = 0;
@@ -62,9 +70,11 @@ long cifs_ioctl(struct file *filep, unsigned int command, unsigned long arg)
 			break;
 #ifdef CONFIG_CIFS_POSIX
 		case FS_IOC_GETFLAGS:
+			if (pSMBFile == NULL)
+				break;
+			tcon = tlink_tcon(pSMBFile->tlink);
+			caps = le64_to_cpu(tcon->fsUnixInfo.Capability);
 			if (CIFS_UNIX_EXTATTR_CAP & caps) {
-				if (pSMBFile == NULL)
-					break;
 				rc = CIFSGetExtAttr(xid, tcon, pSMBFile->netfid,
 					&ExtAttrBits, &ExtAttrMask);
 				if (rc == 0)
@@ -75,13 +85,15 @@ long cifs_ioctl(struct file *filep, unsigned int command, unsigned long arg)
 			break;
 
 		case FS_IOC_SETFLAGS:
+			if (pSMBFile == NULL)
+				break;
+			tcon = tlink_tcon(pSMBFile->tlink);
+			caps = le64_to_cpu(tcon->fsUnixInfo.Capability);
 			if (CIFS_UNIX_EXTATTR_CAP & caps) {
 				if (get_user(ExtAttrBits, (int __user *)arg)) {
 					rc = -EFAULT;
 					break;
 				}
-				if (pSMBFile == NULL)
-					break;
 				/* rc= CIFSGetExtAttr(xid,tcon,pSMBFile->netfid,
 					extAttrBits, &ExtAttrMask);*/
 			}
@@ -93,6 +105,6 @@ long cifs_ioctl(struct file *filep, unsigned int command, unsigned long arg)
 			break;
 	}
 
-	FreeXid(xid);
+	free_xid(xid);
 	return rc;
 }

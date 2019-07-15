@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2012, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -173,7 +173,7 @@ typedef u64 acpi_physical_address;
  * to indicate that special precautions must be taken to avoid alignment faults.
  * (IA64 or ia64 is currently used by existing compilers to indicate IPF.)
  *
- * Note: Em64_t and other X86-64 processors support misaligned transfers,
+ * Note: EM64T and other X86-64 processors support misaligned transfers,
  * so there is no need to define this flag.
  */
 #if defined (__IA64__) || defined (__ia64__)
@@ -470,7 +470,6 @@ typedef u64 acpi_integer;
  */
 #define ACPI_FULL_INITIALIZATION        0x00
 #define ACPI_NO_ADDRESS_SPACE_INIT      0x01
-#define ACPI_NO_HARDWARE_INIT           0x02
 #define ACPI_NO_EVENT_INIT              0x04
 #define ACPI_NO_HANDLER_INIT            0x08
 #define ACPI_NO_ACPI_ENABLE             0x10
@@ -500,9 +499,11 @@ typedef u64 acpi_integer;
 #define ACPI_STATE_D0                   (u8) 0
 #define ACPI_STATE_D1                   (u8) 1
 #define ACPI_STATE_D2                   (u8) 2
-#define ACPI_STATE_D3                   (u8) 3
+#define ACPI_STATE_D3_HOT               (u8) 3
+#define ACPI_STATE_D3                   (u8) 4
+#define ACPI_STATE_D3_COLD              ACPI_STATE_D3
 #define ACPI_D_STATES_MAX               ACPI_STATE_D3
-#define ACPI_D_STATE_COUNT              4
+#define ACPI_D_STATE_COUNT              5
 
 #define ACPI_STATE_C0                   (u8) 0
 #define ACPI_STATE_C1                   (u8) 1
@@ -516,6 +517,13 @@ typedef u64 acpi_integer;
  */
 #define ACPI_SLEEP_TYPE_MAX             0x7
 #define ACPI_SLEEP_TYPE_INVALID         0xFF
+
+/*
+ * Sleep/Wake flags
+ */
+#define ACPI_NO_OPTIONAL_METHODS        0x00	/* Do not execute any optional methods */
+#define ACPI_EXECUTE_GTS                0x01	/* For enter sleep interface */
+#define ACPI_EXECUTE_BFS                0x02	/* For leave sleep prep interface */
 
 /*
  * Standard notify values
@@ -532,8 +540,9 @@ typedef u64 acpi_integer;
 #define ACPI_NOTIFY_DEVICE_PLD_CHECK    (u8) 0x09
 #define ACPI_NOTIFY_RESERVED            (u8) 0x0A
 #define ACPI_NOTIFY_LOCALITY_UPDATE     (u8) 0x0B
+#define ACPI_NOTIFY_SHUTDOWN_REQUEST    (u8) 0x0C
 
-#define ACPI_NOTIFY_MAX                 0x0B
+#define ACPI_NOTIFY_MAX                 0x0C
 
 /*
  * Types associated with ACPI names and objects. The first group of
@@ -627,7 +636,7 @@ typedef u32 acpi_event_type;
 #define ACPI_NUM_FIXED_EVENTS           ACPI_EVENT_MAX + 1
 
 /*
- * Event Status - Per event
+ * Event status - Per event
  * -------------
  * The encoding of acpi_event_status is illustrated below.
  * Note that a set bit (1) indicates the property is TRUE
@@ -656,33 +665,34 @@ typedef u32 acpi_event_status;
 #define ACPI_GPE_MAX                    0xFF
 #define ACPI_NUM_GPE                    256
 
-/* Actions for acpi_gpe_wakeup, acpi_hw_low_set_gpe */
+/* Actions for acpi_set_gpe_wake_mask, acpi_hw_low_set_gpe */
 
 #define ACPI_GPE_ENABLE                 0
 #define ACPI_GPE_DISABLE                1
-#define ACPI_GPE_COND_ENABLE            2
+#define ACPI_GPE_CONDITIONAL_ENABLE     2
 
 /*
  * GPE info flags - Per GPE
- * +-------+---+-+-+
- * |  7:4  |3:2|1|0|
- * +-------+---+-+-+
- *     |     |  | |
- *     |     |  | +--- Interrupt type: edge or level triggered
- *     |     |  +----- GPE can wake the system
- *     |     +-------- Type of dispatch:to method, handler, or none
- *     +-------------- <Reserved>
+ * +-------+-+-+---+
+ * |  7:4  |3|2|1:0|
+ * +-------+-+-+---+
+ *     |    | |  |
+ *     |    | |  +-- Type of dispatch:to method, handler, notify, or none
+ *     |    | +----- Interrupt type: edge or level triggered
+ *     |    +------- Is a Wake GPE
+ *     +------------ <Reserved>
  */
-#define ACPI_GPE_XRUPT_TYPE_MASK        (u8) 0x01
-#define ACPI_GPE_LEVEL_TRIGGERED        (u8) 0x01
+#define ACPI_GPE_DISPATCH_NONE          (u8) 0x00
+#define ACPI_GPE_DISPATCH_METHOD        (u8) 0x01
+#define ACPI_GPE_DISPATCH_HANDLER       (u8) 0x02
+#define ACPI_GPE_DISPATCH_NOTIFY        (u8) 0x03
+#define ACPI_GPE_DISPATCH_MASK          (u8) 0x03
+
+#define ACPI_GPE_LEVEL_TRIGGERED        (u8) 0x04
 #define ACPI_GPE_EDGE_TRIGGERED         (u8) 0x00
+#define ACPI_GPE_XRUPT_TYPE_MASK        (u8) 0x04
 
-#define ACPI_GPE_CAN_WAKE		(u8) 0x02
-
-#define ACPI_GPE_DISPATCH_MASK          (u8) 0x0C
-#define ACPI_GPE_DISPATCH_HANDLER       (u8) 0x04
-#define ACPI_GPE_DISPATCH_METHOD        (u8) 0x08
-#define ACPI_GPE_DISPATCH_NOT_USED      (u8) 0x00
+#define ACPI_GPE_CAN_WAKE               (u8) 0x08
 
 /*
  * Flags for GPE and Lock interfaces
@@ -696,8 +706,13 @@ typedef u32 acpi_event_status;
 #define ACPI_DEVICE_NOTIFY              0x2
 #define ACPI_ALL_NOTIFY                 (ACPI_SYSTEM_NOTIFY | ACPI_DEVICE_NOTIFY)
 #define ACPI_MAX_NOTIFY_HANDLER_TYPE    0x3
+#define ACPI_NUM_NOTIFY_TYPES           2
 
-#define ACPI_MAX_SYS_NOTIFY             0x7f
+#define ACPI_MAX_SYS_NOTIFY             0x7F
+#define ACPI_MAX_DEVICE_SPECIFIC_NOTIFY 0xBF
+
+#define ACPI_SYSTEM_HANDLER_LIST        0	/* Used as index, must be SYSTEM_NOTIFY -1 */
+#define ACPI_DEVICE_HANDLER_LIST        1	/* Used as index, must be DEVICE_NOTIFY -1 */
 
 /* Address Space (Operation Region) Types */
 
@@ -711,8 +726,27 @@ typedef u8 acpi_adr_space_type;
 #define ACPI_ADR_SPACE_CMOS             (acpi_adr_space_type) 5
 #define ACPI_ADR_SPACE_PCI_BAR_TARGET   (acpi_adr_space_type) 6
 #define ACPI_ADR_SPACE_IPMI             (acpi_adr_space_type) 7
-#define ACPI_ADR_SPACE_DATA_TABLE       (acpi_adr_space_type) 8
-#define ACPI_ADR_SPACE_FIXED_HARDWARE   (acpi_adr_space_type) 127
+#define ACPI_ADR_SPACE_GPIO             (acpi_adr_space_type) 8
+#define ACPI_ADR_SPACE_GSBUS            (acpi_adr_space_type) 9
+#define ACPI_ADR_SPACE_PLATFORM_COMM    (acpi_adr_space_type) 10
+
+#define ACPI_NUM_PREDEFINED_REGIONS     11
+
+/*
+ * Special Address Spaces
+ *
+ * Note: A Data Table region is a special type of operation region
+ * that has its own AML opcode. However, internally, the AML
+ * interpreter simply creates an operation region with an an address
+ * space type of ACPI_ADR_SPACE_DATA_TABLE.
+ */
+#define ACPI_ADR_SPACE_DATA_TABLE       (acpi_adr_space_type) 0x7E	/* Internal to ACPICA only */
+#define ACPI_ADR_SPACE_FIXED_HARDWARE   (acpi_adr_space_type) 0x7F
+
+/* Values for _REG connection code */
+
+#define ACPI_REG_DISCONNECT             0
+#define ACPI_REG_CONNECT                1
 
 /*
  * bit_register IDs
@@ -766,6 +800,15 @@ typedef u8 acpi_adr_space_type;
 
 #define ACPI_ENABLE_EVENT                       1
 #define ACPI_DISABLE_EVENT                      0
+
+/* Sleep function dispatch */
+
+typedef acpi_status(*ACPI_SLEEP_FUNCTION) (u8 sleep_state);
+
+struct acpi_sleep_functions {
+	ACPI_SLEEP_FUNCTION legacy_function;
+	ACPI_SLEEP_FUNCTION extended_function;
+};
 
 /*
  * External ACPI object definition
@@ -894,7 +937,18 @@ typedef void
 /*
  * Various handlers and callback procedures
  */
+typedef
+void (*ACPI_GBL_EVENT_HANDLER) (u32 event_type,
+			       acpi_handle device,
+			       u32 event_number, void *context);
+
+#define ACPI_EVENT_TYPE_GPE         0
+#define ACPI_EVENT_TYPE_FIXED       1
+
 typedef u32(*acpi_event_handler) (void *context);
+
+typedef
+u32 (*acpi_gpe_handler) (acpi_handle gpe_device, u32 gpe_number, void *context);
 
 typedef
 void (*acpi_notify_handler) (acpi_handle device, u32 value, void *context);
@@ -929,6 +983,14 @@ acpi_status(*acpi_adr_space_handler) (u32 function,
 
 #define ACPI_DEFAULT_HANDLER            NULL
 
+/* Special Context data for generic_serial_bus/general_purpose_io (ACPI 5.0) */
+
+struct acpi_connection_info {
+	u8 *connection;
+	u16 length;
+	u8 access_length;
+};
+
 typedef
 acpi_status(*acpi_adr_space_setup) (acpi_handle region_handle,
 				    u32 function,
@@ -950,6 +1012,10 @@ u32 (*acpi_interface_handler) (acpi_string interface_name, u32 supported);
 
 #define ACPI_INTERRUPT_NOT_HANDLED      0x00
 #define ACPI_INTERRUPT_HANDLED          0x01
+
+/* GPE handler return values */
+
+#define ACPI_REENABLE_GPE               0x80
 
 /* Length of 32-bit EISAID values when converted back to a string */
 

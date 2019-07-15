@@ -25,7 +25,7 @@
 #include <linux/init.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
-#include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <linux/mutex.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -51,7 +51,7 @@ module_param(ac97_clock, int, 0444);
 MODULE_PARM_DESC(ac97_clock, "AC'97 codec clock (default 48000Hz).");
 
 /* just for backward compatibility */
-static int enable;
+static bool enable;
 module_param(enable, bool, 0444);
 
 
@@ -498,7 +498,7 @@ static int snd_atiixp_aclink_reset(struct atiixp_modem *chip)
 		atiixp_read(chip, CMD);
 		msleep(1);
 		atiixp_update(chip, CMD, ATI_REG_CMD_AC_RESET, ATI_REG_CMD_AC_RESET);
-		if (--timeout) {
+		if (!--timeout) {
 			snd_printk(KERN_ERR "atiixp-modem: codec reset timeout\n");
 			break;
 		}
@@ -1117,9 +1117,10 @@ static int __devinit snd_atiixp_mixer_new(struct atiixp_modem *chip, int clock)
 /*
  * power management
  */
-static int snd_atiixp_suspend(struct pci_dev *pci, pm_message_t state)
+static int snd_atiixp_suspend(struct device *dev)
 {
-	struct snd_card *card = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct atiixp_modem *chip = card->private_data;
 	int i;
 
@@ -1133,13 +1134,14 @@ static int snd_atiixp_suspend(struct pci_dev *pci, pm_message_t state)
 
 	pci_disable_device(pci);
 	pci_save_state(pci);
-	pci_set_power_state(pci, pci_choose_state(pci, state));
+	pci_set_power_state(pci, PCI_D3hot);
 	return 0;
 }
 
-static int snd_atiixp_resume(struct pci_dev *pci)
+static int snd_atiixp_resume(struct device *dev)
 {
-	struct snd_card *card = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct atiixp_modem *chip = card->private_data;
 	int i;
 
@@ -1162,8 +1164,12 @@ static int snd_atiixp_resume(struct pci_dev *pci)
 	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
 	return 0;
 }
-#endif /* CONFIG_PM */
 
+static SIMPLE_DEV_PM_OPS(snd_atiixp_pm, snd_atiixp_suspend, snd_atiixp_resume);
+#define SND_ATIIXP_PM_OPS	&snd_atiixp_pm
+#else
+#define SND_ATIIXP_PM_OPS	NULL
+#endif /* CONFIG_PM */
 
 #ifdef CONFIG_PROC_FS
 /*
@@ -1260,7 +1266,7 @@ static int __devinit snd_atiixp_create(struct snd_card *card,
 	}
 
 	if (request_irq(pci->irq, snd_atiixp_interrupt, IRQF_SHARED,
-			card->shortname, chip)) {
+			KBUILD_MODNAME, chip)) {
 		snd_printk(KERN_ERR "unable to grab IRQ %d\n", pci->irq);
 		snd_atiixp_free(chip);
 		return -EBUSY;
@@ -1331,27 +1337,14 @@ static void __devexit snd_atiixp_remove(struct pci_dev *pci)
 	pci_set_drvdata(pci, NULL);
 }
 
-static struct pci_driver driver = {
-	.name = "ATI IXP MC97 controller",
+static struct pci_driver atiixp_modem_driver = {
+	.name = KBUILD_MODNAME,
 	.id_table = snd_atiixp_ids,
 	.probe = snd_atiixp_probe,
 	.remove = __devexit_p(snd_atiixp_remove),
-#ifdef CONFIG_PM
-	.suspend = snd_atiixp_suspend,
-	.resume = snd_atiixp_resume,
-#endif
+	.driver = {
+		.pm = SND_ATIIXP_PM_OPS,
+	},
 };
 
-
-static int __init alsa_card_atiixp_init(void)
-{
-	return pci_register_driver(&driver);
-}
-
-static void __exit alsa_card_atiixp_exit(void)
-{
-	pci_unregister_driver(&driver);
-}
-
-module_init(alsa_card_atiixp_init)
-module_exit(alsa_card_atiixp_exit)
+module_pci_driver(atiixp_modem_driver);

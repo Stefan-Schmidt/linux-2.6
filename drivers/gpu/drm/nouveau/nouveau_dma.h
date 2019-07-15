@@ -48,12 +48,12 @@ void nv50_dma_push(struct nouveau_channel *, struct nouveau_bo *,
 
 /* Hardcoded object assignments to subchannels (subchannel id). */
 enum {
-	NvSubM2MF	= 0,
+	NvSubCtxSurf2D  = 0,
 	NvSubSw		= 1,
-	NvSub2D		= 2,
-	NvSubCtxSurf2D  = 2,
+	NvSubImageBlit  = 2,
+	NvSub2D		= 3,
 	NvSubGdiRect    = 3,
-	NvSubImageBlit  = 4
+	NvSubCopy	= 4,
 };
 
 /* Object handles. */
@@ -61,8 +61,6 @@ enum {
 	NvM2MF		= 0x80000001,
 	NvDmaFB		= 0x80000002,
 	NvDmaTT		= 0x80000003,
-	NvDmaVRAM	= 0x80000004,
-	NvDmaGART	= 0x80000005,
 	NvNotify0       = 0x80000006,
 	Nv2D		= 0x80000007,
 	NvCtxSurf2D	= 0x80000008,
@@ -73,11 +71,16 @@ enum {
 	NvImageBlit	= 0x8000000d,
 	NvSw		= 0x8000000e,
 	NvSema		= 0x8000000f,
+	NvEvoSema0	= 0x80000010,
+	NvEvoSema1	= 0x80000011,
+	NvNotify1       = 0x80000012,
 
 	/* G80+ display objects */
 	NvEvoVRAM	= 0x01000000,
 	NvEvoFB16	= 0x01000001,
-	NvEvoFB32	= 0x01000002
+	NvEvoFB32	= 0x01000002,
+	NvEvoVRAM_LP	= 0x01000003,
+	NvEvoSync	= 0xcafe0000
 };
 
 #define NV_MEMORY_TO_MEMORY_FORMAT                                    0x00000039
@@ -125,9 +128,33 @@ extern void
 OUT_RINGp(struct nouveau_channel *chan, const void *data, unsigned nr_dwords);
 
 static inline void
-BEGIN_RING(struct nouveau_channel *chan, int subc, int mthd, int size)
+BEGIN_NV04(struct nouveau_channel *chan, int subc, int mthd, int size)
 {
-	OUT_RING(chan, (subc << 13) | (size << 18) | mthd);
+	OUT_RING(chan, 0x00000000 | (subc << 13) | (size << 18) | mthd);
+}
+
+static inline void
+BEGIN_NI04(struct nouveau_channel *chan, int subc, int mthd, int size)
+{
+	OUT_RING(chan, 0x40000000 | (subc << 13) | (size << 18) | mthd);
+}
+
+static inline void
+BEGIN_NVC0(struct nouveau_channel *chan, int subc, int mthd, int size)
+{
+	OUT_RING(chan, 0x20000000 | (size << 16) | (subc << 13) | (mthd >> 2));
+}
+
+static inline void
+BEGIN_NIC0(struct nouveau_channel *chan, int subc, int mthd, int size)
+{
+	OUT_RING(chan, 0x60000000 | (size << 16) | (subc << 13) | (mthd >> 2));
+}
+
+static inline void
+BEGIN_IMC0(struct nouveau_channel *chan, int subc, int mthd, u16 data)
+{
+	OUT_RING(chan, 0x80000000 | (data << 16) | (subc << 13) | (mthd >> 2));
 }
 
 #define WRITE_PUT(val) do {                                                    \

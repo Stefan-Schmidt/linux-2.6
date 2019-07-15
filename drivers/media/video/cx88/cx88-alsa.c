@@ -96,7 +96,7 @@ typedef struct cx88_audio_dev snd_cx88_card_t;
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
 static const char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
-static int enable[SNDRV_CARDS] = {1, [1 ... (SNDRV_CARDS - 1)] = 1};
+static bool enable[SNDRV_CARDS] = {1, [1 ... (SNDRV_CARDS - 1)] = 1};
 
 module_param_array(enable, bool, NULL, 0444);
 MODULE_PARM_DESC(enable, "Enable cx88x soundcard. default enabled.");
@@ -113,6 +113,8 @@ MODULE_DESCRIPTION("ALSA driver module for cx2388x based TV cards");
 MODULE_AUTHOR("Ricardo Cerqueira");
 MODULE_AUTHOR("Mauro Carvalho Chehab <mchehab@infradead.org>");
 MODULE_LICENSE("GPL");
+MODULE_VERSION(CX88_VERSION);
+
 MODULE_SUPPORTED_DEVICE("{{Conexant,23881},"
 			"{{Conexant,23882},"
 			"{{Conexant,23883}");
@@ -578,6 +580,27 @@ static int snd_cx88_volume_get(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+static void snd_cx88_wm8775_volume_put(struct snd_kcontrol *kcontrol,
+			       struct snd_ctl_elem_value *value)
+{
+	snd_cx88_card_t *chip = snd_kcontrol_chip(kcontrol);
+	struct cx88_core *core = chip->core;
+	int left = value->value.integer.value[0];
+	int right = value->value.integer.value[1];
+	int v, b;
+
+	/* Pass volume & balance onto any WM8775 */
+	if (left >= right) {
+		v = left << 10;
+		b = left ? (0x8000 * right) / left : 0x8000;
+	} else {
+		v = right << 10;
+		b = right ? 0xffff - (0x8000 * left) / right : 0x8000;
+	}
+	wm8775_s_ctrl(core, V4L2_CID_AUDIO_VOLUME, v);
+	wm8775_s_ctrl(core, V4L2_CID_AUDIO_BALANCE, b);
+}
+
 /* OK - TODO: test it */
 static int snd_cx88_volume_put(struct snd_kcontrol *kcontrol,
 			       struct snd_ctl_elem_value *value)
@@ -587,27 +610,9 @@ static int snd_cx88_volume_put(struct snd_kcontrol *kcontrol,
 	int left, right, v, b;
 	int changed = 0;
 	u32 old;
-	struct v4l2_control client_ctl;
 
-	/* Pass volume & balance onto any WM8775 */
-	if (value->value.integer.value[0] >= value->value.integer.value[1]) {
-		v = value->value.integer.value[0] << 10;
-		b = value->value.integer.value[0] ?
-			(0x8000 * value->value.integer.value[1]) / value->value.integer.value[0] :
-			0x8000;
-	} else {
-		v = value->value.integer.value[1] << 10;
-		b = value->value.integer.value[1] ?
-		0xffff - (0x8000 * value->value.integer.value[0]) / value->value.integer.value[1] :
-		0x8000;
-	}
-	client_ctl.value = v;
-	client_ctl.id = V4L2_CID_AUDIO_VOLUME;
-	call_hw(core, WM8775_GID, core, s_ctrl, &client_ctl);
-
-	client_ctl.value = b;
-	client_ctl.id = V4L2_CID_AUDIO_BALANCE;
-	call_hw(core, WM8775_GID, core, s_ctrl, &client_ctl);
+	if (core->board.audio_chip == V4L2_IDENT_WM8775)
+		snd_cx88_wm8775_volume_put(kcontrol, value);
 
 	left = value->value.integer.value[0] & 0x3f;
 	right = value->value.integer.value[1] & 0x3f;
@@ -673,12 +678,9 @@ static int snd_cx88_switch_put(struct snd_kcontrol *kcontrol,
 		vol ^= bit;
 		cx_swrite(SHADOW_AUD_VOL_CTL, AUD_VOL_CTL, vol);
 		/* Pass mute onto any WM8775 */
-		if ((1<<6) == bit) {
-			struct v4l2_control client_ctl;
-			client_ctl.value = 0 != (vol & bit);
-			client_ctl.id = V4L2_CID_AUDIO_MUTE;
-			call_hw(core, WM8775_GID, core, s_ctrl, &client_ctl);
-		}
+		if ((core->board.audio_chip == V4L2_IDENT_WM8775) &&
+		    ((1<<6) == bit))
+			wm8775_s_ctrl(core, V4L2_CID_AUDIO_MUTE, 0 != (vol & bit));
 		ret = 1;
 	}
 	spin_unlock_irq(&chip->reg_lock);
@@ -708,12 +710,10 @@ static int snd_cx88_alc_get(struct snd_kcontrol *kcontrol,
 {
 	snd_cx88_card_t *chip = snd_kcontrol_chip(kcontrol);
 	struct cx88_core *core = chip->core;
-	struct v4l2_control client_ctl;
+	s32 val;
 
-	client_ctl.id = V4L2_CID_AUDIO_LOUDNESS;
-	call_hw(core, WM8775_GID, core, g_ctrl, &client_ctl);
-	value->value.integer.value[0] = client_ctl.value ? 1 : 0;
-
+	val = wm8775_g_ctrl(core, V4L2_CID_AUDIO_LOUDNESS);
+	value->value.integer.value[0] = val ? 1 : 0;
 	return 0;
 }
 
@@ -724,6 +724,7 @@ static int snd_cx88_alc_put(struct snd_kcontrol *kcontrol,
 	struct cx88_core *core = chip->core;
 	struct v4l2_control client_ctl;
 
+	memset(&client_ctl, 0, sizeof(client_ctl));
 	client_ctl.value = 0 != value->value.integer.value[0];
 	client_ctl.id = V4L2_CID_AUDIO_LOUDNESS;
 	call_hw(core, WM8775_GID, core, s_ctrl, &client_ctl);
@@ -789,7 +790,8 @@ static void snd_cx88_dev_free(struct snd_card * card)
 static int devno;
 static int __devinit snd_cx88_create(struct snd_card *card,
 				     struct pci_dev *pci,
-				     snd_cx88_card_t **rchip)
+				     snd_cx88_card_t **rchip,
+				     struct cx88_core **core_ptr)
 {
 	snd_cx88_card_t   *chip;
 	struct cx88_core  *core;
@@ -815,7 +817,7 @@ static int __devinit snd_cx88_create(struct snd_card *card,
 	if (!pci_dma_supported(pci,DMA_BIT_MASK(32))) {
 		dprintk(0, "%s/1: Oops: no 32bit PCI DMA ???\n",core->name);
 		err = -EIO;
-		cx88_core_put(core,pci);
+		cx88_core_put(core, pci);
 		return err;
 	}
 
@@ -851,6 +853,7 @@ static int __devinit snd_cx88_create(struct snd_card *card,
 	snd_card_set_dev(card, &pci->dev);
 
 	*rchip = chip;
+	*core_ptr = core;
 
 	return 0;
 }
@@ -860,7 +863,7 @@ static int __devinit cx88_audio_initdev(struct pci_dev *pci,
 {
 	struct snd_card  *card;
 	snd_cx88_card_t  *chip;
-	struct v4l2_subdev *sd;
+	struct cx88_core *core = NULL;
 	int              err;
 
 	if (devno >= SNDRV_CARDS)
@@ -878,7 +881,7 @@ static int __devinit cx88_audio_initdev(struct pci_dev *pci,
 
 	card->private_free = snd_cx88_dev_free;
 
-	err = snd_cx88_create(card, pci, &chip);
+	err = snd_cx88_create(card, pci, &chip, &core);
 	if (err < 0)
 		goto error;
 
@@ -897,13 +900,8 @@ static int __devinit cx88_audio_initdev(struct pci_dev *pci,
 		goto error;
 
 	/* If there's a wm8775 then add a Line-In ALC switch */
-	list_for_each_entry(sd, &chip->core->v4l2_dev.subdevs, list) {
-		if (WM8775_GID == sd->grp_id) {
-			snd_ctl_add(card, snd_ctl_new1(&snd_cx88_alc_switch,
-						       chip));
-			break;
-		}
-	}
+	if (core->board.audio_chip == V4L2_IDENT_WM8775)
+		snd_ctl_add(card, snd_ctl_new1(&snd_cx88_alc_switch, chip));
 
 	strcpy (card->driver, "CX88x");
 	sprintf(card->shortname, "Conexant CX%x", pci->device);
@@ -960,14 +958,8 @@ static struct pci_driver cx88_audio_pci_driver = {
  */
 static int __init cx88_audio_init(void)
 {
-	printk(KERN_INFO "cx2388x alsa driver version %d.%d.%d loaded\n",
-	       (CX88_VERSION_CODE >> 16) & 0xff,
-	       (CX88_VERSION_CODE >>  8) & 0xff,
-	       CX88_VERSION_CODE & 0xff);
-#ifdef SNAPSHOT
-	printk(KERN_INFO "cx2388x: snapshot date %04d-%02d-%02d\n",
-	       SNAPSHOT/10000, (SNAPSHOT/100)%100, SNAPSHOT%100);
-#endif
+	printk(KERN_INFO "cx2388x alsa driver version %s loaded\n",
+	       CX88_VERSION);
 	return pci_register_driver(&cx88_audio_pci_driver);
 }
 
@@ -981,10 +973,3 @@ static void __exit cx88_audio_fini(void)
 
 module_init(cx88_audio_init);
 module_exit(cx88_audio_fini);
-
-/* ----------------------------------------------------------- */
-/*
- * Local variables:
- * c-basic-offset: 8
- * End:
- */

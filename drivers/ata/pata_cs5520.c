@@ -29,7 +29,7 @@
  * General Public License for more details.
  *
  * Documentation:
- *	Not publically available.
+ *	Not publicly available.
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -149,8 +149,7 @@ static int __devinit cs5520_init_one(struct pci_dev *pdev, const struct pci_devi
 		ppi[1] = &pi;
 
 	if ((pcicfg & 0x40) == 0) {
-		dev_printk(KERN_WARNING, &pdev->dev,
-			   "DMA mode disabled. Enabling.\n");
+		dev_warn(&pdev->dev, "DMA mode disabled. Enabling.\n");
 		pci_write_config_byte(pdev, 0x60, pcicfg | 0x40);
 	}
 
@@ -303,22 +302,10 @@ static struct pci_driver cs5520_pci_driver = {
 #endif
 };
 
-static int __init cs5520_init(void)
-{
-	return pci_register_driver(&cs5520_pci_driver);
-}
-
-static void __exit cs5520_exit(void)
-{
-	pci_unregister_driver(&cs5520_pci_driver);
-}
+module_pci_driver(cs5520_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for Cyrix CS5510/5520");
 MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pci, pata_cs5520);
 MODULE_VERSION(DRV_VERSION);
-
-module_init(cs5520_init);
-module_exit(cs5520_exit);
-

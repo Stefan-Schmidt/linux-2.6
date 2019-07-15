@@ -13,6 +13,7 @@
 #endif
 #include <linux/types.h>
 #include <linux/compiler.h>
+#include <linux/sysctl.h>
 
 /* Responses from hook functions. */
 #define NF_DROP 0
@@ -24,14 +25,20 @@
 #define NF_MAX_VERDICT NF_STOP
 
 /* we overload the higher bits for encoding auxiliary data such as the queue
- * number. Not nice, but better than additional function arguments. */
-#define NF_VERDICT_MASK 0x0000ffff
-#define NF_VERDICT_BITS 16
+ * number or errno values. Not nice, but better than additional function
+ * arguments. */
+#define NF_VERDICT_MASK 0x000000ff
 
+/* extra verdict flags have mask 0x0000ff00 */
+#define NF_VERDICT_FLAG_QUEUE_BYPASS	0x00008000
+
+/* queue number (NF_QUEUE) or errno (NF_DROP) */
 #define NF_VERDICT_QMASK 0xffff0000
 #define NF_VERDICT_QBITS 16
 
-#define NF_QUEUE_NR(x) ((((x) << NF_VERDICT_BITS) & NF_VERDICT_QMASK) | NF_QUEUE)
+#define NF_QUEUE_NR(x) ((((x) << 16) & NF_VERDICT_QMASK) | NF_QUEUE)
+
+#define NF_DROP_ERR(x) (((-x) << 16) | NF_DROP)
 
 /* only for userspace compatibility */
 #ifndef __KERNEL__
@@ -39,6 +46,9 @@
    <= 0x2000 is used for protocol-flags. */
 #define NFC_UNKNOWN 0x4000
 #define NFC_ALTERED 0x8000
+
+/* NF_VERDICT_BITS should be 8 now, but userspace might break if this changes */
+#define NF_VERDICT_BITS 16
 #endif
 
 enum nf_inet_hooks {
@@ -70,6 +80,10 @@ union nf_inet_addr {
 
 #ifdef __KERNEL__
 #ifdef CONFIG_NETFILTER
+static inline int NF_DROP_GETERR(int verdict)
+{
+	return -(verdict >> NF_VERDICT_QBITS);
+}
 
 static inline int nf_inet_addr_cmp(const union nf_inet_addr *a1,
 				   const union nf_inet_addr *a2)
@@ -78,6 +92,16 @@ static inline int nf_inet_addr_cmp(const union nf_inet_addr *a1,
 	       a1->all[1] == a2->all[1] &&
 	       a1->all[2] == a2->all[2] &&
 	       a1->all[3] == a2->all[3];
+}
+
+static inline void nf_inet_addr_mask(const union nf_inet_addr *a1,
+				     union nf_inet_addr *result,
+				     const union nf_inet_addr *mask)
+{
+	result->all[0] = a1->all[0] & mask->all[0];
+	result->all[1] = a1->all[1] & mask->all[1];
+	result->all[2] = a1->all[2] & mask->all[2];
+	result->all[3] = a1->all[3] & mask->all[3];
 }
 
 extern void netfilter_init(void);
@@ -140,13 +164,25 @@ void nf_unregister_hooks(struct nf_hook_ops *reg, unsigned int n);
 int nf_register_sockopt(struct nf_sockopt_ops *reg);
 void nf_unregister_sockopt(struct nf_sockopt_ops *reg);
 
-#ifdef CONFIG_SYSCTL
-/* Sysctl registration */
-extern struct ctl_path nf_net_netfilter_sysctl_path[];
-extern struct ctl_path nf_net_ipv4_netfilter_sysctl_path[];
-#endif /* CONFIG_SYSCTL */
-
 extern struct list_head nf_hooks[NFPROTO_NUMPROTO][NF_MAX_HOOKS];
+
+#if defined(CONFIG_JUMP_LABEL)
+#include <linux/static_key.h>
+extern struct static_key nf_hooks_needed[NFPROTO_NUMPROTO][NF_MAX_HOOKS];
+static inline bool nf_hooks_active(u_int8_t pf, unsigned int hook)
+{
+	if (__builtin_constant_p(pf) &&
+	    __builtin_constant_p(hook))
+		return static_key_false(&nf_hooks_needed[pf][hook]);
+
+	return !list_empty(&nf_hooks[pf][hook]);
+}
+#else
+static inline bool nf_hooks_active(u_int8_t pf, unsigned int hook)
+{
+	return !list_empty(&nf_hooks[pf][hook]);
+}
+#endif
 
 int nf_hook_slow(u_int8_t pf, unsigned int hook, struct sk_buff *skb,
 		 struct net_device *indev, struct net_device *outdev,
@@ -165,11 +201,9 @@ static inline int nf_hook_thresh(u_int8_t pf, unsigned int hook,
 				 struct net_device *outdev,
 				 int (*okfn)(struct sk_buff *), int thresh)
 {
-#ifndef CONFIG_NETFILTER_DEBUG
-	if (list_empty(&nf_hooks[pf][hook]))
-		return 1;
-#endif
-	return nf_hook_slow(pf, hook, skb, indev, outdev, okfn, thresh);
+	if (nf_hooks_active(pf, hook))
+		return nf_hook_slow(pf, hook, skb, indev, outdev, okfn, thresh);
+	return 1;
 }
 
 static inline int nf_hook(u_int8_t pf, unsigned int hook, struct sk_buff *skb,
@@ -215,7 +249,7 @@ NF_HOOK_COND(uint8_t pf, unsigned int hook, struct sk_buff *skb,
 	int ret;
 
 	if (!cond ||
-	    (ret = nf_hook_thresh(pf, hook, skb, in, out, okfn, INT_MIN) == 1))
+	    ((ret = nf_hook_thresh(pf, hook, skb, in, out, okfn, INT_MIN)) == 1))
 		ret = okfn(skb);
 	return ret;
 }
@@ -257,7 +291,8 @@ struct nf_afinfo {
 					    unsigned int dataoff,
 					    unsigned int len,
 					    u_int8_t protocol);
-	int		(*route)(struct dst_entry **dst, struct flowi *fl);
+	int		(*route)(struct net *net, struct dst_entry **dst,
+				 struct flowi *fl, bool strict);
 	void		(*saveroute)(const struct sk_buff *skb,
 				     struct nf_queue_entry *entry);
 	int		(*reroute)(struct sk_buff *skb,
@@ -265,7 +300,7 @@ struct nf_afinfo {
 	int		route_key_size;
 };
 
-extern const struct nf_afinfo *nf_afinfo[NFPROTO_NUMPROTO];
+extern const struct nf_afinfo __rcu *nf_afinfo[NFPROTO_NUMPROTO];
 static inline const struct nf_afinfo *nf_get_afinfo(unsigned short family)
 {
 	return rcu_dereference(nf_afinfo[family]);
@@ -355,9 +390,25 @@ nf_nat_decode_session(struct sk_buff *skb, struct flowi *fl, u_int8_t family)
 #endif /*CONFIG_NETFILTER*/
 
 #if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)
-extern void (*ip_ct_attach)(struct sk_buff *, struct sk_buff *);
+extern void (*ip_ct_attach)(struct sk_buff *, struct sk_buff *) __rcu;
 extern void nf_ct_attach(struct sk_buff *, struct sk_buff *);
-extern void (*nf_ct_destroy)(struct nf_conntrack *);
+extern void (*nf_ct_destroy)(struct nf_conntrack *) __rcu;
+
+struct nf_conn;
+struct nlattr;
+
+struct nfq_ct_hook {
+	size_t (*build_size)(const struct nf_conn *ct);
+	int (*build)(struct sk_buff *skb, struct nf_conn *ct);
+	int (*parse)(const struct nlattr *attr, struct nf_conn *ct);
+};
+extern struct nfq_ct_hook __rcu *nfq_ct_hook;
+
+struct nfq_ct_nat_hook {
+	void (*seq_adjust)(struct sk_buff *skb, struct nf_conn *ct,
+			   u32 ctinfo, int off);
+};
+extern struct nfq_ct_nat_hook __rcu *nfq_ct_nat_hook;
 #else
 static inline void nf_ct_attach(struct sk_buff *new, struct sk_buff *skb) {}
 #endif

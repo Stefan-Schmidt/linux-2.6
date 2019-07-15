@@ -125,7 +125,7 @@ static int tea6420_probe(struct i2c_client *client,
 	v4l_info(client, "chip found @ 0x%x (%s)\n",
 			client->addr << 1, client->adapter->name);
 
-	sd = kmalloc(sizeof(struct v4l2_subdev), GFP_KERNEL);
+	sd = kzalloc(sizeof(struct v4l2_subdev), GFP_KERNEL);
 	if (sd == NULL)
 		return -ENOMEM;
 	v4l2_i2c_subdev_init(sd, client, &tea6420_ops);
@@ -166,15 +166,4 @@ static struct i2c_driver tea6420_driver = {
 	.id_table	= tea6420_id,
 };
 
-static __init int init_tea6420(void)
-{
-	return i2c_add_driver(&tea6420_driver);
-}
-
-static __exit void exit_tea6420(void)
-{
-	i2c_del_driver(&tea6420_driver);
-}
-
-module_init(init_tea6420);
-module_exit(exit_tea6420);
+module_i2c_driver(tea6420_driver);

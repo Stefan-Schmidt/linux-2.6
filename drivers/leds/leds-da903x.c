@@ -108,7 +108,7 @@ static int __devinit da903x_led_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	led = kzalloc(sizeof(struct da903x_led), GFP_KERNEL);
+	led = devm_kzalloc(&pdev->dev, sizeof(struct da903x_led), GFP_KERNEL);
 	if (led == NULL) {
 		dev_err(&pdev->dev, "failed to alloc memory for LED%d\n", id);
 		return -ENOMEM;
@@ -129,15 +129,11 @@ static int __devinit da903x_led_probe(struct platform_device *pdev)
 	ret = led_classdev_register(led->master, &led->cdev);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to register LED %d\n", id);
-		goto err;
+		return ret;
 	}
 
 	platform_set_drvdata(pdev, led);
 	return 0;
-
-err:
-	kfree(led);
-	return ret;
 }
 
 static int __devexit da903x_led_remove(struct platform_device *pdev)
@@ -145,7 +141,6 @@ static int __devexit da903x_led_remove(struct platform_device *pdev)
 	struct da903x_led *led = platform_get_drvdata(pdev);
 
 	led_classdev_unregister(&led->cdev);
-	kfree(led);
 	return 0;
 }
 
@@ -158,17 +153,7 @@ static struct platform_driver da903x_led_driver = {
 	.remove		= __devexit_p(da903x_led_remove),
 };
 
-static int __init da903x_led_init(void)
-{
-	return platform_driver_register(&da903x_led_driver);
-}
-module_init(da903x_led_init);
-
-static void __exit da903x_led_exit(void)
-{
-	platform_driver_unregister(&da903x_led_driver);
-}
-module_exit(da903x_led_exit);
+module_platform_driver(da903x_led_driver);
 
 MODULE_DESCRIPTION("LEDs driver for Dialog Semiconductor DA9030/DA9034");
 MODULE_AUTHOR("Eric Miao <eric.miao@marvell.com>"

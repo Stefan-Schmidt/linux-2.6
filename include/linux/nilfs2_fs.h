@@ -40,26 +40,8 @@
 
 #include <linux/types.h>
 #include <linux/ioctl.h>
-
-/*
- * Inode flags stored in nilfs_inode and on-memory nilfs inode
- *
- * We define these flags based on ext2-fs because of the
- * compatibility reason; to avoid problems in chattr(1)
- */
-#define NILFS_SECRM_FL		0x00000001 /* Secure deletion */
-#define NILFS_UNRM_FL		0x00000002 /* Undelete */
-#define NILFS_SYNC_FL		0x00000008 /* Synchronous updates */
-#define NILFS_IMMUTABLE_FL	0x00000010 /* Immutable file */
-#define NILFS_APPEND_FL		0x00000020 /* writes to file may only append */
-#define NILFS_NODUMP_FL		0x00000040 /* do not dump file */
-#define NILFS_NOATIME_FL	0x00000080 /* do not update atime */
-/* Reserved for compression usage... */
-#define NILFS_NOTAIL_FL		0x00008000 /* file tail should not be merged */
-#define NILFS_DIRSYNC_FL	0x00010000 /* dirsync behaviour */
-
-#define NILFS_FL_USER_VISIBLE	0x0003DFFF /* User visible flags */
-#define NILFS_FL_USER_MODIFIABLE	0x000380FF /* User modifiable flags */
+#include <linux/magic.h>
+#include <linux/bug.h>
 
 
 #define NILFS_INODE_BMAP_SIZE	7
@@ -126,7 +108,7 @@ struct nilfs_super_root {
 #define NILFS_SR_DAT_OFFSET(inode_size)     NILFS_SR_MDT_OFFSET(inode_size, 0)
 #define NILFS_SR_CPFILE_OFFSET(inode_size)  NILFS_SR_MDT_OFFSET(inode_size, 1)
 #define NILFS_SR_SUFILE_OFFSET(inode_size)  NILFS_SR_MDT_OFFSET(inode_size, 2)
-#define NILFS_SR_BYTES                  (sizeof(struct nilfs_super_root))
+#define NILFS_SR_BYTES(inode_size)	    NILFS_SR_MDT_OFFSET(inode_size, 3)
 
 /*
  * Maximal mount counts
@@ -236,8 +218,10 @@ struct nilfs_super_block {
  * If there is a bit set in the incompatible feature set that the kernel
  * doesn't know about, it should refuse to mount the filesystem.
  */
+#define NILFS_FEATURE_COMPAT_RO_BLOCK_COUNT	0x00000001ULL
+
 #define NILFS_FEATURE_COMPAT_SUPP	0ULL
-#define NILFS_FEATURE_COMPAT_RO_SUPP	0ULL
+#define NILFS_FEATURE_COMPAT_RO_SUPP	NILFS_FEATURE_COMPAT_RO_BLOCK_COUNT
 #define NILFS_FEATURE_INCOMPAT_SUPP	0ULL
 
 /*
@@ -260,7 +244,6 @@ struct nilfs_super_block {
 #define NILFS_USER_INO		11	/* Fisrt user's file inode number */
 
 #define NILFS_SB_OFFSET_BYTES	1024	/* byte offset of nilfs superblock */
-#define NILFS_SUPER_MAGIC	0x3434	/* NILFS filesystem  magic number */
 
 #define NILFS_SEG_MIN_BLOCKS	16	/* Minimum number of blocks in
 					   a full segment */
@@ -310,7 +293,7 @@ struct nilfs_dir_entry {
 	__le64	inode;			/* Inode number */
 	__le16	rec_len;		/* Directory entry length */
 	__u8	name_len;		/* Name length */
-	__u8	file_type;
+	__u8	file_type;		/* Dir entry type (file, dir, etc) */
 	char	name[NILFS_NAME_LEN];	/* File name */
 	char    pad;
 };
@@ -346,17 +329,21 @@ static inline unsigned nilfs_rec_len_from_disk(__le16 dlen)
 {
 	unsigned len = le16_to_cpu(dlen);
 
+#if !defined(__KERNEL__) || (PAGE_CACHE_SIZE >= 65536)
 	if (len == NILFS_MAX_REC_LEN)
 		return 1 << 16;
+#endif
 	return len;
 }
 
 static inline __le16 nilfs_rec_len_to_disk(unsigned len)
 {
+#if !defined(__KERNEL__) || (PAGE_CACHE_SIZE >= 65536)
 	if (len == (1 << 16))
 		return cpu_to_le16(NILFS_MAX_REC_LEN);
 	else if (len > (1 << 16))
 		BUG();
+#endif
 	return cpu_to_le16(len);
 }
 
@@ -408,7 +395,7 @@ union nilfs_binfo {
 };
 
 /**
- * struct nilfs_segment_summary - segment summary
+ * struct nilfs_segment_summary - segment summary header
  * @ss_datasum: checksum of data
  * @ss_sumsum: checksum of segment summary
  * @ss_magic: magic number
@@ -525,7 +512,7 @@ struct nilfs_checkpoint {
 	__le64 cp_create;
 	__le64 cp_nblk_inc;
 	__le64 cp_inodes_count;
-	__le64 cp_blocks_count;		/* Reserved (might be deleted) */
+	__le64 cp_blocks_count;
 
 	/* Do not change the byte offset of ifile inode.
 	   To keep the compatibility of the disk format,
@@ -696,9 +683,9 @@ struct nilfs_sufile_header {
 
 /**
  * nilfs_suinfo - segment usage information
- * @sui_lastmod:
- * @sui_nblocks:
- * @sui_flags:
+ * @sui_lastmod: timestamp of last modification
+ * @sui_nblocks: number of written blocks in segment
+ * @sui_flags: segment usage flags
  */
 struct nilfs_suinfo {
 	__u64 sui_lastmod;
@@ -729,9 +716,10 @@ enum {
 };
 
 /**
- * struct nilfs_cpmode -
- * @cc_cno:
- * @cc_mode:
+ * struct nilfs_cpmode - change checkpoint mode structure
+ * @cm_cno: checkpoint number
+ * @cm_mode: mode of checkpoint
+ * @cm_pad: padding
  */
 struct nilfs_cpmode {
 	__u64 cm_cno;
@@ -741,11 +729,11 @@ struct nilfs_cpmode {
 
 /**
  * struct nilfs_argv - argument vector
- * @v_base:
- * @v_nmembs:
- * @v_size:
- * @v_flags:
- * @v_index:
+ * @v_base: pointer on data array from userspace
+ * @v_nmembs: number of members in data array
+ * @v_size: size of data array in bytes
+ * @v_flags: flags
+ * @v_index: start number of target data items
  */
 struct nilfs_argv {
 	__u64 v_base;
@@ -756,9 +744,9 @@ struct nilfs_argv {
 };
 
 /**
- * struct nilfs_period -
- * @p_start:
- * @p_end:
+ * struct nilfs_period - period of checkpoint numbers
+ * @p_start: start checkpoint number (inclusive)
+ * @p_end: end checkpoint number (exclusive)
  */
 struct nilfs_period {
 	__u64 p_start;
@@ -766,7 +754,7 @@ struct nilfs_period {
 };
 
 /**
- * struct nilfs_cpstat -
+ * struct nilfs_cpstat - checkpoint statistics
  * @cs_cno: checkpoint number
  * @cs_ncps: number of checkpoints
  * @cs_nsss: number of snapshots
@@ -778,7 +766,7 @@ struct nilfs_cpstat {
 };
 
 /**
- * struct nilfs_sustat -
+ * struct nilfs_sustat - segment usage statistics
  * @ss_nsegs: number of segments
  * @ss_ncleansegs: number of clean segments
  * @ss_ndirtysegs: number of dirty segments
@@ -797,10 +785,10 @@ struct nilfs_sustat {
 
 /**
  * struct nilfs_vinfo - virtual block number information
- * @vi_vblocknr:
- * @vi_start:
- * @vi_end:
- * @vi_blocknr:
+ * @vi_vblocknr: virtual block number
+ * @vi_start: start checkpoint number (inclusive)
+ * @vi_end: end checkpoint number (exclusive)
+ * @vi_blocknr: disk block number
  */
 struct nilfs_vinfo {
 	__u64 vi_vblocknr;
@@ -810,7 +798,15 @@ struct nilfs_vinfo {
 };
 
 /**
- * struct nilfs_vdesc -
+ * struct nilfs_vdesc - descriptor of virtual block number
+ * @vd_ino: inode number
+ * @vd_cno: checkpoint number
+ * @vd_vblocknr: virtual block number
+ * @vd_period: period of checkpoint numbers
+ * @vd_blocknr: disk block number
+ * @vd_offset: logical block offset inside a file
+ * @vd_flags: flags (data or node block)
+ * @vd_pad: padding
  */
 struct nilfs_vdesc {
 	__u64 vd_ino;
@@ -824,7 +820,13 @@ struct nilfs_vdesc {
 };
 
 /**
- * struct nilfs_bdesc -
+ * struct nilfs_bdesc - descriptor of disk block number
+ * @bd_ino: inode number
+ * @bd_oblocknr: disk block address (for skipping dead blocks)
+ * @bd_blocknr: disk block address
+ * @bd_offset: logical block offset inside a file
+ * @bd_level: level in the b-tree organization
+ * @bd_pad: padding
  */
 struct nilfs_bdesc {
 	__u64 bd_ino;
@@ -859,5 +861,7 @@ struct nilfs_bdesc {
 	_IOR(NILFS_IOCTL_IDENT, 0x8A, __u64)
 #define NILFS_IOCTL_RESIZE  \
 	_IOW(NILFS_IOCTL_IDENT, 0x8B, __u64)
+#define NILFS_IOCTL_SET_ALLOC_RANGE  \
+	_IOW(NILFS_IOCTL_IDENT, 0x8C, __u64[2])
 
 #endif	/* _LINUX_NILFS_FS_H */

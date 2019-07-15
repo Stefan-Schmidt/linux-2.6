@@ -13,6 +13,7 @@
 #include <linux/errno.h>
 #include <linux/hash.h>
 #include <linux/sunrpc/clnt.h>
+#include <linux/sunrpc/gss_api.h>
 #include <linux/spinlock.h>
 
 #ifdef RPC_DEBUG
@@ -121,6 +122,59 @@ rpcauth_unregister(const struct rpc_authops *ops)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(rpcauth_unregister);
+
+/**
+ * rpcauth_list_flavors - discover registered flavors and pseudoflavors
+ * @array: array to fill in
+ * @size: size of "array"
+ *
+ * Returns the number of array items filled in, or a negative errno.
+ *
+ * The returned array is not sorted by any policy.  Callers should not
+ * rely on the order of the items in the returned array.
+ */
+int
+rpcauth_list_flavors(rpc_authflavor_t *array, int size)
+{
+	rpc_authflavor_t flavor;
+	int result = 0;
+
+	spin_lock(&rpc_authflavor_lock);
+	for (flavor = 0; flavor < RPC_AUTH_MAXFLAVOR; flavor++) {
+		const struct rpc_authops *ops = auth_flavors[flavor];
+		rpc_authflavor_t pseudos[4];
+		int i, len;
+
+		if (result >= size) {
+			result = -ENOMEM;
+			break;
+		}
+
+		if (ops == NULL)
+			continue;
+		if (ops->list_pseudoflavors == NULL) {
+			array[result++] = ops->au_flavor;
+			continue;
+		}
+		len = ops->list_pseudoflavors(pseudos, ARRAY_SIZE(pseudos));
+		if (len < 0) {
+			result = len;
+			break;
+		}
+		for (i = 0; i < len; i++) {
+			if (result >= size) {
+				result = -ENOMEM;
+				break;
+			}
+			array[result++] = pseudos[i];
+		}
+	}
+	spin_unlock(&rpc_authflavor_lock);
+
+	dprintk("RPC:       %s returns %d\n", __func__, result);
+	return result;
+}
+EXPORT_SYMBOL_GPL(rpcauth_list_flavors);
 
 struct rpc_auth *
 rpcauth_create(rpc_authflavor_t pseudoflavor, struct rpc_clnt *clnt)
@@ -326,10 +380,12 @@ rpcauth_prune_expired(struct list_head *free, int nr_to_scan)
  * Run memory cache shrinker.
  */
 static int
-rpcauth_cache_shrinker(struct shrinker *shrink, int nr_to_scan, gfp_t gfp_mask)
+rpcauth_cache_shrinker(struct shrinker *shrink, struct shrink_control *sc)
 {
 	LIST_HEAD(free);
 	int res;
+	int nr_to_scan = sc->nr_to_scan;
+	gfp_t gfp_mask = sc->gfp_mask;
 
 	if ((gfp_mask & GFP_KERNEL) != GFP_KERNEL)
 		return (nr_to_scan == 0) ? 0 : -1;
@@ -563,8 +619,17 @@ rpcauth_checkverf(struct rpc_task *task, __be32 *p)
 	return cred->cr_ops->crvalidate(task, p);
 }
 
+static void rpcauth_wrap_req_encode(kxdreproc_t encode, struct rpc_rqst *rqstp,
+				   __be32 *data, void *obj)
+{
+	struct xdr_stream xdr;
+
+	xdr_init_encode(&xdr, &rqstp->rq_snd_buf, data);
+	encode(rqstp, &xdr, obj);
+}
+
 int
-rpcauth_wrap_req(struct rpc_task *task, kxdrproc_t encode, void *rqstp,
+rpcauth_wrap_req(struct rpc_task *task, kxdreproc_t encode, void *rqstp,
 		__be32 *data, void *obj)
 {
 	struct rpc_cred *cred = task->tk_rqstp->rq_cred;
@@ -574,11 +639,22 @@ rpcauth_wrap_req(struct rpc_task *task, kxdrproc_t encode, void *rqstp,
 	if (cred->cr_ops->crwrap_req)
 		return cred->cr_ops->crwrap_req(task, encode, rqstp, data, obj);
 	/* By default, we encode the arguments normally. */
-	return encode(rqstp, data, obj);
+	rpcauth_wrap_req_encode(encode, rqstp, data, obj);
+	return 0;
+}
+
+static int
+rpcauth_unwrap_req_decode(kxdrdproc_t decode, struct rpc_rqst *rqstp,
+			  __be32 *data, void *obj)
+{
+	struct xdr_stream xdr;
+
+	xdr_init_decode(&xdr, &rqstp->rq_rcv_buf, data);
+	return decode(rqstp, &xdr, obj);
 }
 
 int
-rpcauth_unwrap_resp(struct rpc_task *task, kxdrproc_t decode, void *rqstp,
+rpcauth_unwrap_resp(struct rpc_task *task, kxdrdproc_t decode, void *rqstp,
 		__be32 *data, void *obj)
 {
 	struct rpc_cred *cred = task->tk_rqstp->rq_cred;
@@ -589,7 +665,7 @@ rpcauth_unwrap_resp(struct rpc_task *task, kxdrproc_t decode, void *rqstp,
 		return cred->cr_ops->crunwrap_resp(task, decode, rqstp,
 						   data, obj);
 	/* By default, we decode the arguments normally. */
-	return decode(rqstp, data, obj);
+	return rpcauth_unwrap_req_decode(decode, rqstp, data, obj);
 }
 
 int
@@ -604,7 +680,7 @@ rpcauth_refreshcred(struct rpc_task *task)
 		if (err < 0)
 			goto out;
 		cred = task->tk_rqstp->rq_cred;
-	};
+	}
 	dprintk("RPC: %5u refreshing %s cred %p\n",
 		task->tk_pid, cred->cr_auth->au_ops->au_name, cred);
 

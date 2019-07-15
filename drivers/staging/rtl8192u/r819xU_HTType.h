@@ -65,7 +65,7 @@ typedef enum _HT_CHANNEL_WIDTH{
 }HT_CHANNEL_WIDTH, *PHT_CHANNEL_WIDTH;
 
 //
-// Represent Extention Channel Offset in HT Capabilities
+// Represent Extension Channel Offset in HT Capabilities
 // This is available only in 40Mhz mode.
 //
 typedef enum _HT_EXTCHNL_OFFSET{
@@ -211,7 +211,7 @@ typedef struct _RT_HIGH_THROUGHPUT{
 	u8				bEnableHT;
 	u8				bCurrentHTSupport;
 
-	u8				bRegBW40MHz;				// Tx 40MHz channel capablity
+	u8				bRegBW40MHz;				// Tx 40MHz channel capability
 	u8				bCurBW40MHz;				// Tx 40MHz channel capability
 
 	u8				bRegShortGI40MHz;			// Tx Short GI for 40Mhz

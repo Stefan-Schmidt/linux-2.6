@@ -1,7 +1,7 @@
 /*
  *  Collaborative memory management interface.
  *
- *    Copyright IBM Corp 2003,2010
+ *    Copyright IBM Corp 2003, 2010
  *    Author(s): Martin Schwidefsky <schwidefsky@de.ibm.com>,
  *
  */
@@ -91,7 +91,7 @@ static long cmm_alloc_pages(long nr, long *counter,
 			} else
 				free_page((unsigned long) npa);
 		}
-		diag10(addr);
+		diag10_range(addr >> PAGE_SHIFT, 1);
 		pa->pages[pa->index++] = addr;
 		(*counter)++;
 		spin_unlock(&cmm_lock);

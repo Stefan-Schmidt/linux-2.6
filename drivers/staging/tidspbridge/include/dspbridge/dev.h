@@ -23,10 +23,11 @@
 #include <dspbridge/chnldefs.h>
 #include <dspbridge/cmm.h>
 #include <dspbridge/cod.h>
-#include <dspbridge/dehdefs.h>
+#include <dspbridge/dspdeh.h>
 #include <dspbridge/nodedefs.h>
-#include <dspbridge/dispdefs.h>
+#include <dspbridge/disp.h>
 #include <dspbridge/dspdefs.h>
+#include <dspbridge/dmm.h>
 #include <dspbridge/host_os.h>
 
 /*  ----------------------------------- This */
@@ -94,43 +95,6 @@ extern int dev_create_device(struct dev_object
 				    struct cfg_devnode *dev_node_obj);
 
 /*
- *  ======== dev_create_iva_device ========
- *  Purpose:
- *      Called by the operating system to load the Bridge Driver for IVA.
- *  Parameters:
- *      device_obj:     Ptr to location to receive the device object handle.
- *      driver_file_name: Name of Bridge driver PE DLL file to load.  If the
- *                      absolute path is not provided, the file is loaded
- *                      through 'Bridge's module search path.
- *      host_config:    Host configuration information, to be passed down
- *                      to the Bridge driver when bridge_dev_create() is called.
- *      pDspConfig:     DSP resources, to be passed down to the Bridge driver
- *                      when bridge_dev_create() is called.
- *      dev_node_obj:       Platform specific device node.
- *  Returns:
- *      0:            Module is loaded, device object has been created
- *      -ENOMEM:        Insufficient memory to create needed resources.
- *      -EPERM:              Unable to find Bridge driver entry point function.
- *      -ESPIPE:   Unable to load ZL DLL.
- *  Requires:
- *      DEV Initialized.
- *      device_obj != NULL.
- *      driver_file_name != NULL.
- *      host_config != NULL.
- *      pDspConfig != NULL.
- *  Ensures:
- *      0:  *device_obj will contain handle to the new device object.
- *      Otherwise, does not create the device object, ensures the Bridge driver
- *      module is unloaded, and sets *device_obj to NULL.
- */
-extern int dev_create_iva_device(struct dev_object
-					**device_obj,
-					const char *driver_file_name,
-					const struct cfg_hostres
-					*host_config,
-					struct cfg_devnode *dev_node_obj);
-
-/*
  *  ======== dev_create2 ========
  *  Purpose:
  *      After successful loading of the image from api_init_complete2
@@ -145,8 +109,8 @@ extern int dev_create_iva_device(struct dev_object
  *      DEV Initialized
  *      Valid hdev_obj
  *  Ensures:
- *      0 and hdev_obj->hnode_mgr != NULL
- *      else    hdev_obj->hnode_mgr == NULL
+ *      0 and hdev_obj->node_mgr != NULL
+ *      else    hdev_obj->node_mgr == NULL
  */
 extern int dev_create2(struct dev_object *hdev_obj);
 
@@ -163,7 +127,7 @@ extern int dev_create2(struct dev_object *hdev_obj);
  *      DEV Initialized
  *      Valid hdev_obj
  *  Ensures:
- *      0 and hdev_obj->hnode_mgr == NULL
+ *      0 and hdev_obj->node_mgr == NULL
  *      else    -EPERM.
  */
 extern int dev_destroy2(struct dev_object *hdev_obj);
@@ -231,6 +195,29 @@ extern int dev_get_chnl_mgr(struct dev_object *hdev_obj,
  */
 extern int dev_get_cmm_mgr(struct dev_object *hdev_obj,
 				  struct cmm_object **mgr);
+
+/*
+ *  ======== dev_get_dmm_mgr ========
+ *  Purpose:
+ *      Retrieve the handle to the dynamic memory manager created for this
+ *      device.
+ *  Parameters:
+ *      hdev_obj:     Handle to device object created with
+ *                      dev_create_device().
+ *      *mgr:           Ptr to location to store handle.
+ *  Returns:
+ *      0:        Success.
+ *      -EFAULT:    Invalid hdev_obj.
+ *  Requires:
+ *      mgr != NULL.
+ *      DEV Initialized.
+ *  Ensures:
+ *      0:        *mgr contains a handle to a channel manager object,
+ *                      or NULL.
+ *      else:           *mgr is NULL.
+ */
+extern int dev_get_dmm_mgr(struct dev_object *hdev_obj,
+				  struct dmm_object **mgr);
 
 /*
  *  ======== dev_get_cod_mgr ========
@@ -489,51 +476,6 @@ extern int dev_get_symbol(struct dev_object *hdev_obj,
 extern int dev_get_bridge_context(struct dev_object *hdev_obj,
 				      struct bridge_dev_context
 				      **phbridge_context);
-
-/*
- *  ======== dev_exit ========
- *  Purpose:
- *      Decrement reference count, and free resources when reference count is
- *      0.
- *  Parameters:
- *  Returns:
- *  Requires:
- *      DEV is initialized.
- *  Ensures:
- *      When reference count == 0, DEV's private resources are freed.
- */
-extern void dev_exit(void);
-
-/*
- *  ======== dev_init ========
- *  Purpose:
- *      Initialize DEV's private state, keeping a reference count on each call.
- *  Parameters:
- *  Returns:
- *      TRUE if initialized; FALSE if error occured.
- *  Requires:
- *  Ensures:
- *      TRUE: A requirement for the other public DEV functions.
- */
-extern bool dev_init(void);
-
-/*
- *  ======== dev_is_locked ========
- *  Purpose:
- *      Predicate function to determine if the device has been
- *      locked by a client for exclusive access.
- *  Parameters:
- *      hdev_obj:     Handle to device object created with
- *                      dev_create_device().
- *  Returns:
- *      0:        TRUE: device has been locked.
- *      0:     FALSE: device not locked.
- *      -EFAULT:    hdev_obj was invalid.
- *  Requires:
- *      DEV Initialized.
- *  Ensures:
- */
-extern int dev_is_locked(struct dev_object *hdev_obj);
 
 /*
  *  ======== dev_insert_proc_object ========

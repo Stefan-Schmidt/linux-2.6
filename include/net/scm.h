@@ -10,11 +10,11 @@
 /* Well, we should have at least one descriptor open
  * to accept passed FDs 8)
  */
-#define SCM_MAX_FD	255
+#define SCM_MAX_FD	253
 
 struct scm_fp_list {
-	struct list_head	list;
-	int			count;
+	short			count;
+	short			max;
 	struct file		*fp[SCM_MAX_FD];
 };
 
@@ -48,7 +48,7 @@ static __inline__ void scm_set_cred(struct scm_cookie *scm,
 				    struct pid *pid, const struct cred *cred)
 {
 	scm->pid  = get_pid(pid);
-	scm->cred = get_cred(cred);
+	scm->cred = cred ? get_cred(cred) : NULL;
 	cred_to_ucred(pid, cred, &scm->creds);
 }
 
@@ -70,10 +70,11 @@ static __inline__ void scm_destroy(struct scm_cookie *scm)
 }
 
 static __inline__ int scm_send(struct socket *sock, struct msghdr *msg,
-			       struct scm_cookie *scm)
+			       struct scm_cookie *scm, bool forcecreds)
 {
-	scm_set_cred(scm, task_tgid(current), current_cred());
-	scm->fp = NULL;
+	memset(scm, 0, sizeof(*scm));
+	if (forcecreds)
+		scm_set_cred(scm, task_tgid(current), current_cred());
 	unix_get_peersec_dgram(sock, scm);
 	if (msg->msg_controllen <= 0)
 		return 0;

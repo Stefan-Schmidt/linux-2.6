@@ -39,8 +39,8 @@ Status: working
 
 Configuration Options:
   [0] - I/O base address
-  [1] - convertion rate
-	Convertion rate  RMS noise  Effective Number Of Bits
+  [1] - conversion rate
+	Conversion rate  RMS noise  Effective Number Of Bits
 	0      3.52kHz        23uV                17
 	1      1.76kHz       3.5uV                20
 	2       880Hz         2uV                21.3
@@ -93,8 +93,8 @@ Configuration Options:
 #define MPC624_DMY_BIT          (1<<30)
 #define MPC624_SGN_BIT          (1<<29)
 
-/* Convertion speeds */
-/* OSR4 OSR3 OSR2 OSR1 OSR0  Convertion rate  RMS noise  ENOB^
+/* Conversion speeds */
+/* OSR4 OSR3 OSR2 OSR1 OSR0  Conversion rate  RMS noise  ENOB^
  *  X    0    0    0    1        3.52kHz        23uV      17
  *  X    0    0    1    0        1.76kHz       3.5uV      20
  *  X    0    0    1    1         880Hz         2uV      21.3
@@ -148,131 +148,6 @@ static const struct comedi_lrange range_mpc624_bipolar10 = {
 	 }
 };
 
-/* -------------------------------------------------------------------------- */
-static int mpc624_attach(struct comedi_device *dev,
-			 struct comedi_devconfig *it);
-static int mpc624_detach(struct comedi_device *dev);
-/* -------------------------------------------------------------------------- */
-static struct comedi_driver driver_mpc624 = {
-	.driver_name = "mpc624",
-	.module = THIS_MODULE,
-	.attach = mpc624_attach,
-	.detach = mpc624_detach
-};
-
-/* -------------------------------------------------------------------------- */
-static int mpc624_ai_rinsn(struct comedi_device *dev,
-			   struct comedi_subdevice *s, struct comedi_insn *insn,
-			   unsigned int *data);
-/* -------------------------------------------------------------------------- */
-static int mpc624_attach(struct comedi_device *dev, struct comedi_devconfig *it)
-{
-	struct comedi_subdevice *s;
-	unsigned long iobase;
-
-	iobase = it->options[0];
-	printk(KERN_INFO "comedi%d: mpc624 [0x%04lx, ", dev->minor, iobase);
-	if (request_region(iobase, MPC624_SIZE, "mpc624") == NULL) {
-		printk(KERN_ERR "I/O port(s) in use\n");
-		return -EIO;
-	}
-
-	dev->iobase = iobase;
-	dev->board_name = "mpc624";
-
-	/*  Private structure initialization */
-	if (alloc_private(dev, sizeof(struct skel_private)) < 0)
-		return -ENOMEM;
-
-	switch (it->options[1]) {
-	case 0:
-		devpriv->ulConvertionRate = MPC624_SPEED_3_52_kHz;
-		printk(KERN_INFO "3.52 kHz, ");
-		break;
-	case 1:
-		devpriv->ulConvertionRate = MPC624_SPEED_1_76_kHz;
-		printk(KERN_INFO "1.76 kHz, ");
-		break;
-	case 2:
-		devpriv->ulConvertionRate = MPC624_SPEED_880_Hz;
-		printk(KERN_INFO "880 Hz, ");
-		break;
-	case 3:
-		devpriv->ulConvertionRate = MPC624_SPEED_440_Hz;
-		printk(KERN_INFO "440 Hz, ");
-		break;
-	case 4:
-		devpriv->ulConvertionRate = MPC624_SPEED_220_Hz;
-		printk(KERN_INFO "220 Hz, ");
-		break;
-	case 5:
-		devpriv->ulConvertionRate = MPC624_SPEED_110_Hz;
-		printk(KERN_INFO "110 Hz, ");
-		break;
-	case 6:
-		devpriv->ulConvertionRate = MPC624_SPEED_55_Hz;
-		printk(KERN_INFO "55 Hz, ");
-		break;
-	case 7:
-		devpriv->ulConvertionRate = MPC624_SPEED_27_5_Hz;
-		printk(KERN_INFO "27.5 Hz, ");
-		break;
-	case 8:
-		devpriv->ulConvertionRate = MPC624_SPEED_13_75_Hz;
-		printk(KERN_INFO "13.75 Hz, ");
-		break;
-	case 9:
-		devpriv->ulConvertionRate = MPC624_SPEED_6_875_Hz;
-		printk(KERN_INFO "6.875 Hz, ");
-		break;
-	default:
-		printk
-		    (KERN_ERR "illegal convertion rate setting!"
-			" Valid numbers are 0..9. Using 9 => 6.875 Hz, ");
-		devpriv->ulConvertionRate = MPC624_SPEED_3_52_kHz;
-	}
-
-	/*  Subdevices structures */
-	if (alloc_subdevices(dev, 1) < 0)
-		return -ENOMEM;
-
-	s = dev->subdevices + 0;
-	s->type = COMEDI_SUBD_AI;
-	s->subdev_flags = SDF_READABLE | SDF_DIFF;
-	s->n_chan = 8;
-	switch (it->options[1]) {
-	default:
-		s->maxdata = 0x3FFFFFFF;
-		printk(KERN_INFO "30 bit, ");
-	}
-
-	switch (it->options[1]) {
-	case 0:
-		s->range_table = &range_mpc624_bipolar1;
-		printk(KERN_INFO "1.01V]: ");
-		break;
-	default:
-		s->range_table = &range_mpc624_bipolar10;
-		printk(KERN_INFO "10.1V]: ");
-	}
-	s->len_chanlist = 1;
-	s->insn_read = mpc624_ai_rinsn;
-
-	printk(KERN_INFO "attached\n");
-
-	return 1;
-}
-
-static int mpc624_detach(struct comedi_device *dev)
-{
-	printk(KERN_INFO "comedi%d: mpc624: remove\n", dev->minor);
-
-	if (dev->iobase)
-		release_region(dev->iobase, MPC624_SIZE);
-
-	return 0;
-}
-
 /* Timeout 200ms */
 #define TIMEOUT 200
 
@@ -296,7 +171,7 @@ static int mpc624_ai_rinsn(struct comedi_device *dev,
 	}
 
 	for (n = 0; n < insn->n; n++) {
-		/*  Trigger the convertion */
+		/*  Trigger the conversion */
 		outb(MPC624_ADSCK, dev->iobase + MPC624_ADC);
 		udelay(1);
 		outb(MPC624_ADCS | MPC624_ADSCK, dev->iobase + MPC624_ADC);
@@ -304,7 +179,7 @@ static int mpc624_ai_rinsn(struct comedi_device *dev,
 		outb(0, dev->iobase + MPC624_ADC);
 		udelay(1);
 
-		/*  Wait for the convertion to end */
+		/*  Wait for the conversion to end */
 		for (i = 0; i < TIMEOUT; i++) {
 			ucPort = inb(dev->iobase + MPC624_ADC);
 			if (ucPort & MPC624_ADBUSY)
@@ -406,18 +281,118 @@ static int mpc624_ai_rinsn(struct comedi_device *dev,
 	return n;
 }
 
-static int __init driver_mpc624_init_module(void)
+static int mpc624_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 {
-	return comedi_driver_register(&driver_mpc624);
+	struct comedi_subdevice *s;
+	unsigned long iobase;
+	int ret;
+
+	iobase = it->options[0];
+	printk(KERN_INFO "comedi%d: mpc624 [0x%04lx, ", dev->minor, iobase);
+	if (request_region(iobase, MPC624_SIZE, "mpc624") == NULL) {
+		printk(KERN_ERR "I/O port(s) in use\n");
+		return -EIO;
+	}
+
+	dev->iobase = iobase;
+	dev->board_name = "mpc624";
+
+	/*  Private structure initialization */
+	if (alloc_private(dev, sizeof(struct skel_private)) < 0)
+		return -ENOMEM;
+
+	switch (it->options[1]) {
+	case 0:
+		devpriv->ulConvertionRate = MPC624_SPEED_3_52_kHz;
+		printk(KERN_INFO "3.52 kHz, ");
+		break;
+	case 1:
+		devpriv->ulConvertionRate = MPC624_SPEED_1_76_kHz;
+		printk(KERN_INFO "1.76 kHz, ");
+		break;
+	case 2:
+		devpriv->ulConvertionRate = MPC624_SPEED_880_Hz;
+		printk(KERN_INFO "880 Hz, ");
+		break;
+	case 3:
+		devpriv->ulConvertionRate = MPC624_SPEED_440_Hz;
+		printk(KERN_INFO "440 Hz, ");
+		break;
+	case 4:
+		devpriv->ulConvertionRate = MPC624_SPEED_220_Hz;
+		printk(KERN_INFO "220 Hz, ");
+		break;
+	case 5:
+		devpriv->ulConvertionRate = MPC624_SPEED_110_Hz;
+		printk(KERN_INFO "110 Hz, ");
+		break;
+	case 6:
+		devpriv->ulConvertionRate = MPC624_SPEED_55_Hz;
+		printk(KERN_INFO "55 Hz, ");
+		break;
+	case 7:
+		devpriv->ulConvertionRate = MPC624_SPEED_27_5_Hz;
+		printk(KERN_INFO "27.5 Hz, ");
+		break;
+	case 8:
+		devpriv->ulConvertionRate = MPC624_SPEED_13_75_Hz;
+		printk(KERN_INFO "13.75 Hz, ");
+		break;
+	case 9:
+		devpriv->ulConvertionRate = MPC624_SPEED_6_875_Hz;
+		printk(KERN_INFO "6.875 Hz, ");
+		break;
+	default:
+		printk
+		    (KERN_ERR "illegal conversion rate setting!"
+			" Valid numbers are 0..9. Using 9 => 6.875 Hz, ");
+		devpriv->ulConvertionRate = MPC624_SPEED_3_52_kHz;
+	}
+
+	ret = comedi_alloc_subdevices(dev, 1);
+	if (ret)
+		return ret;
+
+	s = dev->subdevices + 0;
+	s->type = COMEDI_SUBD_AI;
+	s->subdev_flags = SDF_READABLE | SDF_DIFF;
+	s->n_chan = 8;
+	switch (it->options[1]) {
+	default:
+		s->maxdata = 0x3FFFFFFF;
+		printk(KERN_INFO "30 bit, ");
+	}
+
+	switch (it->options[1]) {
+	case 0:
+		s->range_table = &range_mpc624_bipolar1;
+		printk(KERN_INFO "1.01V]: ");
+		break;
+	default:
+		s->range_table = &range_mpc624_bipolar10;
+		printk(KERN_INFO "10.1V]: ");
+	}
+	s->len_chanlist = 1;
+	s->insn_read = mpc624_ai_rinsn;
+
+	printk(KERN_INFO "attached\n");
+
+	return 1;
 }
 
-static void __exit driver_mpc624_cleanup_module(void)
+static void mpc624_detach(struct comedi_device *dev)
 {
-	comedi_driver_unregister(&driver_mpc624);
+	if (dev->iobase)
+		release_region(dev->iobase, MPC624_SIZE);
 }
 
-module_init(driver_mpc624_init_module);
-module_exit(driver_mpc624_cleanup_module);
+static struct comedi_driver mpc624_driver = {
+	.driver_name	= "mpc624",
+	.module		= THIS_MODULE,
+	.attach		= mpc624_attach,
+	.detach		= mpc624_detach
+};
+module_comedi_driver(mpc624_driver);
 
 MODULE_AUTHOR("Comedi http://www.comedi.org");
 MODULE_DESCRIPTION("Comedi low-level driver");

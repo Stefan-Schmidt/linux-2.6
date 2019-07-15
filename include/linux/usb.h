@@ -20,6 +20,7 @@
 #include <linux/completion.h>	/* for struct completion */
 #include <linux/sched.h>	/* for current && schedule_timeout */
 #include <linux/mutex.h>	/* for struct mutex */
+#include <linux/pm_runtime.h>	/* for runtime PM */
 
 struct usb_device;
 struct usb_driver;
@@ -76,14 +77,15 @@ struct usb_host_endpoint {
 struct usb_host_interface {
 	struct usb_interface_descriptor	desc;
 
+	int extralen;
+	unsigned char *extra;   /* Extra descriptors */
+
 	/* array of desc.bNumEndpoint endpoints associated with this
 	 * interface setting.  these will be in no particular order.
 	 */
 	struct usb_host_endpoint *endpoint;
 
 	char *string;		/* iInterface string, if present */
-	unsigned char *extra;   /* Extra descriptors */
-	int extralen;
 };
 
 enum usb_interface_condition {
@@ -291,6 +293,16 @@ struct usb_host_config {
 	int extralen;
 };
 
+/* USB2.0 and USB3.0 device BOS descriptor set */
+struct usb_host_bos {
+	struct usb_bos_descriptor	*desc;
+
+	/* wireless cap descriptor is handled by wusb */
+	struct usb_ext_cap_descriptor	*ext_cap;
+	struct usb_ss_cap_descriptor	*ss_cap;
+	struct usb_ss_container_id_descriptor	*ss_id;
+};
+
 int __usb_get_extra_descriptor(char *buffer, unsigned size,
 	unsigned char type, void **ptr);
 #define usb_get_extra_descriptor(ifpoint, type, ptr) \
@@ -313,9 +325,18 @@ struct usb_bus {
 	int busnum;			/* Bus number (in order of reg) */
 	const char *bus_name;		/* stable id (PCI slot_name etc) */
 	u8 uses_dma;			/* Does the host controller use DMA? */
+	u8 uses_pio_for_control;	/*
+					 * Does the host controller use PIO
+					 * for control transfers?
+					 */
 	u8 otg_port;			/* 0, or number of OTG/HNP port */
 	unsigned is_b_host:1;		/* true during some HNP roleswitches */
 	unsigned b_hnp_enable:1;	/* OTG: did A-Host enable HNP? */
+	unsigned no_stop_on_short:1;    /*
+					 * Quirk: some controllers don't stop
+					 * the ep queue on a short transfer
+					 * with the URB_SHORT_NOT_OK flag set.
+					 */
 	unsigned sg_tablesize;		/* 0 or largest number of sg list entries */
 
 	int devnum_next;		/* Next open device number in
@@ -335,10 +356,6 @@ struct usb_bus {
 					 */
 	int bandwidth_int_reqs;		/* number of Interrupt requests */
 	int bandwidth_isoc_reqs;	/* number of Isoc. requests */
-
-#ifdef CONFIG_USB_DEVICEFS
-	struct dentry *usbfs_dentry;	/* usbfs dentry entry for the bus */
-#endif
 
 #if defined(CONFIG_USB_MON) || defined(CONFIG_USB_MON_MODULE)
 	struct mon_bus *mon_bus;	/* non-null when associated */
@@ -361,6 +378,51 @@ struct usb_bus {
 
 struct usb_tt;
 
+enum usb_device_removable {
+	USB_DEVICE_REMOVABLE_UNKNOWN = 0,
+	USB_DEVICE_REMOVABLE,
+	USB_DEVICE_FIXED,
+};
+
+/*
+ * USB 3.0 Link Power Management (LPM) parameters.
+ *
+ * PEL and SEL are USB 3.0 Link PM latencies for device-initiated LPM exit.
+ * MEL is the USB 3.0 Link PM latency for host-initiated LPM exit.
+ * All three are stored in nanoseconds.
+ */
+struct usb3_lpm_parameters {
+	/*
+	 * Maximum exit latency (MEL) for the host to send a packet to the
+	 * device (either a Ping for isoc endpoints, or a data packet for
+	 * interrupt endpoints), the hubs to decode the packet, and for all hubs
+	 * in the path to transition the links to U0.
+	 */
+	unsigned int mel;
+	/*
+	 * Maximum exit latency for a device-initiated LPM transition to bring
+	 * all links into U0.  Abbreviated as "PEL" in section 9.4.12 of the USB
+	 * 3.0 spec, with no explanation of what "P" stands for.  "Path"?
+	 */
+	unsigned int pel;
+
+	/*
+	 * The System Exit Latency (SEL) includes PEL, and three other
+	 * latencies.  After a device initiates a U0 transition, it will take
+	 * some time from when the device sends the ERDY to when it will finally
+	 * receive the data packet.  Basically, SEL should be the worse-case
+	 * latency from when a device starts initiating a U0 transition to when
+	 * it will get data.
+	 */
+	unsigned int sel;
+	/*
+	 * The idle timeout value that is currently programmed into the parent
+	 * hub for this device.  When the timer counts to zero, the parent hub
+	 * will initiate an LPM transition to either U1 or U2.
+	 */
+	int timeout;
+};
+
 /**
  * struct usb_device - kernel's representation of a USB device
  * @devnum: device number; address on a USB bus
@@ -376,6 +438,7 @@ struct usb_tt;
  * @ep0: endpoint 0 data (default control pipe)
  * @dev: generic device interface
  * @descriptor: USB device descriptor
+ * @bos: USB device BOS descriptor set
  * @config: all of the device's configs
  * @actconfig: the active configuration
  * @ep_in: array of IN endpoints
@@ -394,6 +457,9 @@ struct usb_tt;
  *	FIXME -- complete doc
  * @authenticated: Crypto authentication passed
  * @wusb: device is Wireless USB
+ * @lpm_capable: device supports LPM
+ * @usb2_hw_lpm_capable: device can perform USB2 hardware LPM
+ * @usb2_hw_lpm_enabled: USB2 hardware LPM enabled
  * @string_langid: language ID for strings
  * @product: iProduct string, if present (static)
  * @manufacturer: iManufacturer string, if present (static)
@@ -407,14 +473,19 @@ struct usb_tt;
  * @quirks: quirks of the whole device
  * @urbnum: number of URBs submitted for the whole device
  * @active_duration: total time device is not suspended
- * @last_busy: time of last use
- * @autosuspend_delay: in jiffies
  * @connect_time: time device was first connected
  * @do_remote_wakeup:  remote wakeup should be enabled
  * @reset_resume: needs reset instead of resume
  * @wusb_dev: if this is a Wireless USB device, link to the WUSB
  *	specific data for the device.
  * @slot_id: Slot ID assigned by xHCI
+ * @removable: Device can be physically removed from this port
+ * @u1_params: exit latencies for USB3 U1 LPM state, and hub-initiated timeout.
+ * @u2_params: exit latencies for USB3 U2 LPM state, and hub-initiated timeout.
+ * @lpm_disable_count: Ref count used by usb_disable_lpm() and usb_enable_lpm()
+ *	to keep track of the number of functions that require USB 3.0 Link Power
+ *	Management to be disabled for this usb_device.  This count should only
+ *	be manipulated by those functions, with the bandwidth_mutex is held.
  *
  * Notes:
  * Usbcore drivers should not set usbdev->state directly.  Instead use
@@ -439,6 +510,7 @@ struct usb_device {
 	struct device dev;
 
 	struct usb_device_descriptor descriptor;
+	struct usb_host_bos *bos;
 	struct usb_host_config *config;
 
 	struct usb_host_config *actconfig;
@@ -457,6 +529,10 @@ struct usb_device {
 	unsigned authorized:1;
 	unsigned authenticated:1;
 	unsigned wusb:1;
+	unsigned lpm_capable:1;
+	unsigned usb2_hw_lpm_capable:1;
+	unsigned usb2_hw_lpm_enabled:1;
+	unsigned usb3_lpm_enabled:1;
 	int string_langid;
 
 	/* static strings from the device */
@@ -465,15 +541,9 @@ struct usb_device {
 	char *serial;
 
 	struct list_head filelist;
-#ifdef CONFIG_USB_DEVICE_CLASS
-	struct device *usb_classdev;
-#endif
-#ifdef CONFIG_USB_DEVICEFS
-	struct dentry *usbfs_dentry;
-#endif
 
 	int maxchild;
-	struct usb_device *children[USB_MAXCHILDREN];
+	struct usb_device **children;
 
 	u32 quirks;
 	atomic_t urbnum;
@@ -481,8 +551,6 @@ struct usb_device {
 	unsigned long active_duration;
 
 #ifdef CONFIG_PM
-	unsigned long last_busy;
-	int autosuspend_delay;
 	unsigned long connect_time;
 
 	unsigned do_remote_wakeup:1;
@@ -490,6 +558,10 @@ struct usb_device {
 #endif
 	struct wusb_dev *wusb_dev;
 	int slot_id;
+	enum usb_device_removable removable;
+	struct usb3_lpm_parameters u1_params;
+	struct usb3_lpm_parameters u2_params;
+	unsigned lpm_disable_count;
 };
 #define	to_usb_device(d) container_of(d, struct usb_device, dev)
 
@@ -527,7 +599,7 @@ extern void usb_autopm_put_interface_no_suspend(struct usb_interface *intf);
 
 static inline void usb_mark_last_busy(struct usb_device *udev)
 {
-	udev->last_busy = jiffies;
+	pm_runtime_mark_last_busy(&udev->dev);
 }
 
 #else
@@ -555,6 +627,23 @@ static inline void usb_autopm_put_interface_no_suspend(
 static inline void usb_mark_last_busy(struct usb_device *udev)
 { }
 #endif
+
+extern int usb_disable_lpm(struct usb_device *udev);
+extern void usb_enable_lpm(struct usb_device *udev);
+/* Same as above, but these functions lock/unlock the bandwidth_mutex. */
+extern int usb_unlocked_disable_lpm(struct usb_device *udev);
+extern void usb_unlocked_enable_lpm(struct usb_device *udev);
+
+extern int usb_disable_ltm(struct usb_device *udev);
+extern void usb_enable_ltm(struct usb_device *udev);
+
+static inline bool usb_device_supports_ltm(struct usb_device *udev)
+{
+	if (udev->speed != USB_SPEED_SUPER || !udev->bos || !udev->bos->ss_cap)
+		return false;
+	return udev->bos->ss_cap->bmAttributes & USB_LTM_SUPPORT;
+}
+
 
 /*-------------------------------------------------------------------------*/
 
@@ -622,7 +711,7 @@ extern struct usb_host_interface *usb_find_alt_setting(
  * USB hubs.  That makes it stay the same until systems are physically
  * reconfigured, by re-cabling a tree of USB devices or by moving USB host
  * controllers.  Adding and removing devices, including virtual root hubs
- * in host controller driver modules, does not change these path identifers;
+ * in host controller driver modules, does not change these path identifiers;
  * neither does rebooting or re-enumerating.  These are more useful identifiers
  * than changeable ("unstable") ones like bus numbers or device addresses.
  *
@@ -704,6 +793,22 @@ static inline int usb_make_path(struct usb_device *dev, char *buf, size_t size)
 	.bInterfaceProtocol = (pr)
 
 /**
+ * USB_DEVICE_INTERFACE_NUMBER - describe a usb device with a specific interface number
+ * @vend: the 16 bit USB Vendor ID
+ * @prod: the 16 bit USB Product ID
+ * @num: bInterfaceNumber value
+ *
+ * This macro is used to create a struct usb_device_id that matches a
+ * specific interface number of devices.
+ */
+#define USB_DEVICE_INTERFACE_NUMBER(vend, prod, num) \
+	.match_flags = USB_DEVICE_ID_MATCH_DEVICE | \
+		       USB_DEVICE_ID_MATCH_INT_NUMBER, \
+	.idVendor = (vend), \
+	.idProduct = (prod), \
+	.bInterfaceNumber = (num)
+
+/**
  * USB_DEVICE_INFO - macro used to describe a class of usb devices
  * @cl: bDeviceClass value
  * @sc: bDeviceSubClass value
@@ -756,6 +861,27 @@ static inline int usb_make_path(struct usb_device *dev, char *buf, size_t size)
 	.bInterfaceSubClass = (sc), \
 	.bInterfaceProtocol = (pr)
 
+/**
+ * USB_VENDOR_AND_INTERFACE_INFO - describe a specific usb vendor with a class of usb interfaces
+ * @vend: the 16 bit USB Vendor ID
+ * @cl: bInterfaceClass value
+ * @sc: bInterfaceSubClass value
+ * @pr: bInterfaceProtocol value
+ *
+ * This macro is used to create a struct usb_device_id that matches a
+ * specific vendor with a specific class of interfaces.
+ *
+ * This is especially useful when explicitly matching devices that have
+ * vendor specific bDeviceClass values, but standards-compliant interfaces.
+ */
+#define USB_VENDOR_AND_INTERFACE_INFO(vend, cl, sc, pr) \
+	.match_flags = USB_DEVICE_ID_MATCH_INT_INFO \
+		| USB_DEVICE_ID_MATCH_VENDOR, \
+	.idVendor = (vend), \
+	.bInterfaceClass = (cl), \
+	.bInterfaceSubClass = (sc), \
+	.bInterfaceProtocol = (pr)
+
 /* ----------------------------------------------------------------------- */
 
 /* Stuff for dynamic usb ids */
@@ -772,6 +898,8 @@ struct usb_dynid {
 extern ssize_t usb_store_new_id(struct usb_dynids *dynids,
 				struct device_driver *driver,
 				const char *buf, size_t count);
+
+extern ssize_t usb_show_dynids(struct usb_dynids *dynids, char *buf);
 
 /**
  * struct usbdrv_wrap - wrapper for driver-model structure
@@ -792,12 +920,12 @@ struct usbdrv_wrap {
  *	usb_set_intfdata() to associate driver-specific data with the
  *	interface.  It may also use usb_set_interface() to specify the
  *	appropriate altsetting.  If unwilling to manage the interface,
- *	return -ENODEV, if genuine IO errors occured, an appropriate
+ *	return -ENODEV, if genuine IO errors occurred, an appropriate
  *	negative errno value.
  * @disconnect: Called when the interface is no longer accessible, usually
  *	because its device has been (or is being) disconnected or the
  *	driver module is being unloaded.
- * @ioctl: Used for drivers that want to talk to userspace through
+ * @unlocked_ioctl: Used for drivers that want to talk to userspace through
  *	the "usbfs" filesystem.  This lets devices provide ways to
  *	expose information to user space regardless of where they
  *	do (or don't) show up otherwise in the filesystem.
@@ -805,8 +933,10 @@ struct usbdrv_wrap {
  * @resume: Called when the device is being resumed by the system.
  * @reset_resume: Called when the suspended device has been reset instead
  *	of being resumed.
- * @pre_reset: Called by usb_reset_device() when the device
- *	is about to be reset.
+ * @pre_reset: Called by usb_reset_device() when the device is about to be
+ *	reset.  This routine must not return until the driver has no active
+ *	URBs for the device, and no more URBs may be submitted until the
+ *	post_reset method is called.
  * @post_reset: Called by usb_reset_device() after the device
  *	has been reset
  * @id_table: USB drivers use ID table to support hotplugging.
@@ -821,6 +951,9 @@ struct usbdrv_wrap {
  *	for interfaces bound to this driver.
  * @soft_unbind: if set to 1, the USB core will not kill URBs and disable
  *	endpoints before calling the driver's disconnect method.
+ * @disable_hub_initiated_lpm: if set to 0, the USB core will not allow hubs
+ *	to initiate lower power link state transitions when an idle timeout
+ *	occurs.  Device-initiated USB 3.0 link PM will still be allowed.
  *
  * USB interface drivers must provide a name, probe() and disconnect()
  * methods, and an id_table.  Other driver fields are optional.
@@ -861,6 +994,7 @@ struct usb_driver {
 	struct usbdrv_wrap drvwrap;
 	unsigned int no_dynamic_id:1;
 	unsigned int supports_autosuspend:1;
+	unsigned int disable_hub_initiated_lpm:1;
 	unsigned int soft_unbind:1;
 };
 #define	to_usb_driver(d) container_of(d, struct usb_driver, drvwrap.driver)
@@ -914,7 +1048,7 @@ extern struct bus_type usb_bus_type;
  */
 struct usb_class_driver {
 	char *name;
-	char *(*devnode)(struct device *dev, mode_t *mode);
+	char *(*devnode)(struct device *dev, umode_t *mode);
 	const struct file_operations *fops;
 	int minor_base;
 };
@@ -925,11 +1059,24 @@ struct usb_class_driver {
  */
 extern int usb_register_driver(struct usb_driver *, struct module *,
 			       const char *);
-static inline int usb_register(struct usb_driver *driver)
-{
-	return usb_register_driver(driver, THIS_MODULE, KBUILD_MODNAME);
-}
+
+/* use a define to avoid include chaining to get THIS_MODULE & friends */
+#define usb_register(driver) \
+	usb_register_driver(driver, THIS_MODULE, KBUILD_MODNAME)
+
 extern void usb_deregister(struct usb_driver *);
+
+/**
+ * module_usb_driver() - Helper macro for registering a USB driver
+ * @__usb_driver: usb_driver struct
+ *
+ * Helper macro for USB drivers which do not do anything special in module
+ * init/exit. This eliminates a lot of boilerplate. Each module may only
+ * use this macro once, and calling it replaces module_init() and module_exit()
+ */
+#define module_usb_driver(__usb_driver) \
+	module_driver(__usb_driver, usb_register, \
+		       usb_deregister)
 
 extern int usb_register_device_driver(struct usb_device_driver *,
 			struct module *);
@@ -975,6 +1122,7 @@ extern int usb_disabled(void);
 #define URB_SETUP_MAP_SINGLE	0x00100000	/* Setup packet DMA mapped */
 #define URB_SETUP_MAP_LOCAL	0x00200000	/* HCD-local setup packet */
 #define URB_DMA_SG_COMBINED	0x00400000	/* S-G entries were combined */
+#define URB_ALIGNED_TEMP_BUFFER	0x00800000	/* Temp buffer was alloc'd */
 
 struct usb_iso_packet_descriptor {
 	unsigned int offset;
@@ -1038,6 +1186,7 @@ typedef void (*usb_complete_t)(struct urb *);
  *	which the host controller driver should use in preference to the
  *	transfer_buffer.
  * @sg: scatter gather buffer list
+ * @num_mapped_sgs: (internal) number of mapped sg entries
  * @num_sgs: number of entries in the sg list
  * @transfer_buffer_length: How big is transfer_buffer.  The transfer may
  *	be broken up into chunks according to the current maximum packet
@@ -1198,6 +1347,7 @@ struct urb {
 	void *transfer_buffer;		/* (in) associated data buffer */
 	dma_addr_t transfer_dma;	/* (in) dma addr for transfer_buffer */
 	struct scatterlist *sg;		/* (in) scatter gather buffer list */
+	int num_mapped_sgs;		/* (internal) mapped sg entries */
 	int num_sgs;			/* (in) number of entries in the sg list */
 	u32 transfer_buffer_length;	/* (in) data buffer length */
 	u32 actual_length;		/* (return) actual transfer length */
@@ -1334,6 +1484,7 @@ extern int usb_unlink_urb(struct urb *urb);
 extern void usb_kill_urb(struct urb *urb);
 extern void usb_poison_urb(struct urb *urb);
 extern void usb_unpoison_urb(struct urb *urb);
+extern void usb_block_urb(struct urb *urb);
 extern void usb_kill_anchored_urbs(struct usb_anchor *anchor);
 extern void usb_poison_anchored_urbs(struct usb_anchor *anchor);
 extern void usb_unpoison_anchored_urbs(struct usb_anchor *anchor);
@@ -1345,6 +1496,8 @@ extern int usb_wait_anchor_empty_timeout(struct usb_anchor *anchor,
 extern struct urb *usb_get_from_anchor(struct usb_anchor *anchor);
 extern void usb_scuttle_anchored_urbs(struct usb_anchor *anchor);
 extern int usb_anchor_empty(struct usb_anchor *anchor);
+
+#define usb_unblock_urb	usb_unpoison_urb
 
 /**
  * usb_urb_dir_in - check if an URB describes an IN transfer
@@ -1570,10 +1723,24 @@ usb_maxpacket(struct usb_device *udev, int pipe, int is_out)
 		return 0;
 
 	/* NOTE:  only 0x07ff bits are for packet size... */
-	return le16_to_cpu(ep->desc.wMaxPacketSize);
+	return usb_endpoint_maxp(&ep->desc);
 }
 
 /* ----------------------------------------------------------------------- */
+
+/* translate USB error codes to codes user space understands */
+static inline int usb_translate_errors(int error_code)
+{
+	switch (error_code) {
+	case 0:
+	case -ENOMEM:
+	case -ENODEV:
+	case -EOPNOTSUPP:
+		return error_code;
+	default:
+		return -EIO;
+	}
+}
 
 /* Events from the usb core */
 #define USB_DEVICE_ADD		0x0001
@@ -1593,9 +1760,6 @@ do {									\
 		printk(KERN_DEBUG "%s: " format "\n", __FILE__, ##arg); \
 } while (0)
 #endif
-
-#define err(format, arg...)					\
-	printk(KERN_ERR KBUILD_MODNAME ": " format "\n", ##arg)
 
 /* debugfs stuff */
 extern struct dentry *usb_debug_root;

@@ -39,6 +39,7 @@
 #include <linux/uaccess.h>
 #include <asm/asm-offsets.h>
 #include <asm/cacheflush.h>
+#include <asm/syscall.h>
 #include <asm/io.h>
 
 /* Returns the address where the register at REG_OFFS in P is stashed away. */
@@ -123,7 +124,7 @@ long arch_ptrace(struct task_struct *child, long request,
 			rval = -EIO;
 
 		if (rval == 0 && request == PTRACE_PEEKUSR)
-			rval = put_user(val, (unsigned long *)data);
+			rval = put_user(val, (unsigned long __user *)data);
 		break;
 	default:
 		rval = ptrace_request(child, request, addr, data);
@@ -135,7 +136,7 @@ asmlinkage long do_syscall_trace_enter(struct pt_regs *regs)
 {
 	long ret = 0;
 
-	secure_computing(regs->r12);
+	secure_computing_strict(regs->r12);
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE) &&
 	    tracehook_report_syscall_entry(regs))
@@ -146,10 +147,8 @@ asmlinkage long do_syscall_trace_enter(struct pt_regs *regs)
 		 */
 		ret = -1L;
 
-	if (unlikely(current->audit_context))
-		audit_syscall_entry(EM_XILINX_MICROBLAZE, regs->r12,
-				    regs->r5, regs->r6,
-				    regs->r7, regs->r8);
+	audit_syscall_entry(EM_MICROBLAZE, regs->r12, regs->r5, regs->r6,
+			    regs->r7, regs->r8);
 
 	return ret ?: regs->r12;
 }
@@ -158,8 +157,7 @@ asmlinkage void do_syscall_trace_leave(struct pt_regs *regs)
 {
 	int step;
 
-	if (unlikely(current->audit_context))
-		audit_syscall_exit(AUDITSC_RESULT(regs->r3), regs->r3);
+	audit_syscall_exit(regs);
 
 	step = test_thread_flag(TIF_SINGLESTEP);
 	if (step || test_thread_flag(TIF_SYSCALL_TRACE))

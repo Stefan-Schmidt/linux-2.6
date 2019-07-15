@@ -8,6 +8,7 @@
  */
 
 #include <linux/device.h>
+#include <linux/export.h>
 #include <linux/platform_device.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
@@ -91,7 +92,7 @@ static struct musb_hdrc_platform_data musb_plat = {
 static u64 musb_dmamask = ~(u32)0;
 
 static struct platform_device musb_device = {
-	.name		= "musb_hdrc",
+	.name		= "musb-blackfin",
 	.id		= 0,
 	.dev = {
 		.dma_mask		= &musb_dmamask,
@@ -193,7 +194,7 @@ static unsigned gpio_addr_inputs[] = {
 	GPIO_PG1, GPIO_PH9, GPIO_PH10
 };
 
-static struct gpio_decoder_platfrom_data spi_decoded_cs = {
+static struct gpio_decoder_platform_data spi_decoded_cs = {
 	.base		= EXP_GPIO_SPISEL_BASE,
 	.input_addrs	= gpio_addr_inputs,
 	.nr_input_addrs = ARRAY_SIZE(gpio_addr_inputs),
@@ -314,29 +315,12 @@ static struct flash_platform_data bfin_spi_flash_data = {
 /* SPI flash chip (m25p64) */
 static struct bfin5xx_spi_chip spi_flash_chip_info = {
 	.enable_dma = 0,         /* use dma transfer with this chip*/
-	.bits_per_word = 8,
-};
-#endif
-
-#if defined(CONFIG_BFIN_SPI_ADC) \
-	|| defined(CONFIG_BFIN_SPI_ADC_MODULE)
-/* SPI ADC chip */
-static struct bfin5xx_spi_chip spi_adc_chip_info = {
-	.enable_dma = 0,         /* use dma transfer with this chip*/
-/*
- * tll6527m V1.0 does not support native spi slave selects
- * hence DMA mode will not be useful since the ADC needs
- * CS to toggle for each sample and cs_change_per_word
- * seems to be removed from spi_bfin5xx.c
- */
-	.bits_per_word = 16,
 };
 #endif
 
 #if defined(CONFIG_MMC_SPI) || defined(CONFIG_MMC_SPI_MODULE)
 static struct bfin5xx_spi_chip  mmc_spi_chip_info = {
 	.enable_dma = 0,
-	.bits_per_word = 8,
 };
 #endif
 
@@ -359,21 +343,6 @@ static const struct ad7879_platform_data bfin_ad7879_ts_info = {
 };
 #endif
 
-#if defined(CONFIG_TOUCHSCREEN_AD7879_SPI) \
-	|| defined(CONFIG_TOUCHSCREEN_AD7879_SPI_MODULE)
-static struct bfin5xx_spi_chip spi_ad7879_chip_info = {
-	.enable_dma = 0,
-	.bits_per_word = 16,
-};
-#endif
-
-#if defined(CONFIG_SPI_SPIDEV) || defined(CONFIG_SPI_SPIDEV_MODULE)
-static struct bfin5xx_spi_chip spidev_chip_info = {
-	.enable_dma = 0,
-	.bits_per_word = 8,
-};
-#endif
-
 #if defined(CONFIG_SND_BF5XX_I2S) || defined(CONFIG_SND_BF5XX_I2S_MODULE)
 static struct platform_device bfin_i2s = {
 	.name = "bfin-i2s",
@@ -382,24 +351,7 @@ static struct platform_device bfin_i2s = {
 };
 #endif
 
-#if defined(CONFIG_FB_BFIN_LQ035Q1) || defined(CONFIG_FB_BFIN_LQ035Q1_MODULE)
-static struct bfin5xx_spi_chip lq035q1_spi_chip_info = {
-	.enable_dma	= 0,
-	.bits_per_word	= 8,
-};
-#endif
-
 #if defined(CONFIG_GPIO_MCP23S08) || defined(CONFIG_GPIO_MCP23S08_MODULE)
-static struct bfin5xx_spi_chip spi_mcp23s08_sys_chip_info = {
-	.enable_dma = 0,
-	.bits_per_word = 8,
-};
-
-static struct bfin5xx_spi_chip spi_mcp23s08_usr_chip_info = {
-	.enable_dma = 0,
-	.bits_per_word = 8,
-};
-
 #include <linux/spi/mcp23s08.h>
 static const struct mcp23s08_platform_data bfin_mcp23s08_sys_gpio_info = {
 	.chip[0].is_present = true,
@@ -429,22 +381,6 @@ static struct spi_board_info bfin_spi_board_info[] __initdata = {
 	},
 #endif
 
-#if defined(CONFIG_BFIN_SPI_ADC)
-	|| defined(CONFIG_BFIN_SPI_ADC_MODULE)
-	{
-		.modalias = "bfin_spi_adc",
-				/* Name of spi_driver for this device */
-		.max_speed_hz = 10000000,
-				/* max spi clock (SCK) speed in HZ */
-		.bus_num = 0, /* Framework bus number */
-		.chip_select = EXP_GPIO_SPISEL_BASE + 0x04 + MAX_CTRL_CS,
-		 /* Framework chip select. */
-		.platform_data = NULL, /* No spi_driver specific config */
-		.controller_data = &spi_adc_chip_info,
-		.mode = SPI_MODE_0,
-	},
-#endif
-
 #if defined(CONFIG_MMC_SPI) || defined(CONFIG_MMC_SPI_MODULE)
 	{
 		.modalias = "mmc_spi",
@@ -470,7 +406,6 @@ static struct spi_board_info bfin_spi_board_info[] __initdata = {
 					/* max spi clock (SCK) speed in HZ */
 		.bus_num = 0,
 		.chip_select = EXP_GPIO_SPISEL_BASE + 0x07 + MAX_CTRL_CS,
-		.controller_data = &spi_ad7879_chip_info,
 		.mode = SPI_CPHA | SPI_CPOL,
 	},
 #endif
@@ -482,7 +417,6 @@ static struct spi_board_info bfin_spi_board_info[] __initdata = {
 		.bus_num = 0,
 		.chip_select = EXP_GPIO_SPISEL_BASE + 0x03 + MAX_CTRL_CS,
 		.mode = SPI_CPHA | SPI_CPOL,
-		.controller_data = &spidev_chip_info,
 	},
 #endif
 #if defined(CONFIG_FB_BFIN_LQ035Q1) || defined(CONFIG_FB_BFIN_LQ035Q1_MODULE)
@@ -491,7 +425,6 @@ static struct spi_board_info bfin_spi_board_info[] __initdata = {
 		.max_speed_hz = 20000000,
 		.bus_num = 0,
 		.chip_select = EXP_GPIO_SPISEL_BASE + 0x06 + MAX_CTRL_CS,
-		.controller_data = &lq035q1_spi_chip_info,
 		.mode = SPI_CPHA | SPI_CPOL,
 	},
 #endif
@@ -502,7 +435,6 @@ static struct spi_board_info bfin_spi_board_info[] __initdata = {
 		.max_speed_hz = 5000000, /* max spi clock (SCK) speed in HZ */
 		.bus_num = 0,
 		.chip_select = EXP_GPIO_SPISEL_BASE + 0x01 + MAX_CTRL_CS,
-		.controller_data = &spi_mcp23s08_sys_chip_info,
 		.mode = SPI_CPHA | SPI_CPOL,
 	},
 	{
@@ -511,13 +443,12 @@ static struct spi_board_info bfin_spi_board_info[] __initdata = {
 		.max_speed_hz = 5000000, /* max spi clock (SCK) speed in HZ */
 		.bus_num = 0,
 		.chip_select = EXP_GPIO_SPISEL_BASE + 0x02 + MAX_CTRL_CS,
-		.controller_data = &spi_mcp23s08_usr_chip_info,
 		.mode = SPI_CPHA | SPI_CPOL,
 	},
 #endif
 };
 
-#if defined(CONFIG_SPI_BFIN) || defined(CONFIG_SPI_BFIN_MODULE)
+#if defined(CONFIG_SPI_BFIN5XX) || defined(CONFIG_SPI_BFIN5XX_MODULE)
 /* SPI controller data */
 static struct bfin5xx_spi_master bfin_spi0_info = {
 	.num_chipselect = EXP_GPIO_SPISEL_BASE + 8 + MAX_CTRL_CS,
@@ -565,8 +496,13 @@ static struct resource bfin_uart0_resources[] = {
 		.flags = IORESOURCE_MEM,
 	},
 	{
+		.start = IRQ_UART0_TX,
+		.end = IRQ_UART0_TX,
+		.flags = IORESOURCE_IRQ,
+	},
+	{
 		.start = IRQ_UART0_RX,
-		.end = IRQ_UART0_RX+1,
+		.end = IRQ_UART0_RX,
 		.flags = IORESOURCE_IRQ,
 	},
 	{
@@ -586,7 +522,7 @@ static struct resource bfin_uart0_resources[] = {
 	},
 };
 
-unsigned short bfin_uart0_peripherals[] = {
+static unsigned short bfin_uart0_peripherals[] = {
 	P_UART0_TX, P_UART0_RX, 0
 };
 
@@ -609,8 +545,13 @@ static struct resource bfin_uart1_resources[] = {
 		.flags = IORESOURCE_MEM,
 	},
 	{
+		.start = IRQ_UART1_TX,
+		.end = IRQ_UART1_TX,
+		.flags = IORESOURCE_IRQ,
+	},
+	{
 		.start = IRQ_UART1_RX,
-		.end = IRQ_UART1_RX+1,
+		.end = IRQ_UART1_RX,
 		.flags = IORESOURCE_IRQ,
 	},
 	{
@@ -642,7 +583,7 @@ static struct resource bfin_uart1_resources[] = {
 #endif
 };
 
-unsigned short bfin_uart1_peripherals[] = {
+static unsigned short bfin_uart1_peripherals[] = {
 	P_UART1_TX, P_UART1_RX, 0
 };
 
@@ -715,6 +656,8 @@ static struct platform_device bfin_sir1_device = {
 #endif
 
 #if defined(CONFIG_I2C_BLACKFIN_TWI) || defined(CONFIG_I2C_BLACKFIN_TWI_MODULE)
+static const u16 bfin_twi0_pins[] = {P_TWI0_SCL, P_TWI0_SDA, 0};
+
 static struct resource bfin_twi0_resource[] = {
 	[0] = {
 		.start = TWI0_REGBASE,
@@ -733,6 +676,9 @@ static struct platform_device i2c_bfin_twi_device = {
 	.id = 0,
 	.num_resources = ARRAY_SIZE(bfin_twi0_resource),
 	.resource = bfin_twi0_resource,
+	.dev = {
+		.platform_data = &bfin_twi0_pins,
+	},
 };
 #endif
 
@@ -799,9 +745,9 @@ static struct resource bfin_sport0_uart_resources[] = {
 	},
 };
 
-unsigned short bfin_sport0_peripherals[] = {
+static unsigned short bfin_sport0_peripherals[] = {
 	P_SPORT0_TFS, P_SPORT0_DTPRI, P_SPORT0_TSCLK, P_SPORT0_RFS,
-	P_SPORT0_DRPRI, P_SPORT0_RSCLK, P_SPORT0_DRSEC, P_SPORT0_DTSEC, 0
+	P_SPORT0_DRPRI, P_SPORT0_RSCLK, 0
 };
 
 static struct platform_device bfin_sport0_uart_device = {
@@ -834,9 +780,9 @@ static struct resource bfin_sport1_uart_resources[] = {
 	},
 };
 
-unsigned short bfin_sport1_peripherals[] = {
+static unsigned short bfin_sport1_peripherals[] = {
 	P_SPORT1_TFS, P_SPORT1_DTPRI, P_SPORT1_TSCLK, P_SPORT1_RFS,
-	P_SPORT1_DRPRI, P_SPORT1_RSCLK, P_SPORT1_DRSEC, P_SPORT1_DTSEC, 0
+	P_SPORT1_DRPRI, P_SPORT1_RSCLK, 0
 };
 
 static struct platform_device bfin_sport1_uart_device = {
@@ -890,7 +836,7 @@ static struct platform_device *tll6527m_devices[] __initdata = {
 	&bfin_mac_device,
 #endif
 
-#if defined(CONFIG_SPI_BFIN) || defined(CONFIG_SPI_BFIN_MODULE)
+#if defined(CONFIG_SPI_BFIN5XX) || defined(CONFIG_SPI_BFIN5XX_MODULE)
 	&bfin_spi0_device,
 #endif
 
@@ -990,7 +936,7 @@ void native_machine_restart(char *cmd)
 		bfin_reset_boot_spi_cs(P_DEFAULT_BOOT_SPI_CS);
 }
 
-void bfin_get_ether_addr(char *addr)
+int bfin_get_ether_addr(char *addr)
 {
 	/* the MAC is stored in OTP memory page 0xDF */
 	u32 ret;
@@ -1004,5 +950,6 @@ void bfin_get_ether_addr(char *addr)
 		for (ret = 0; ret < 6; ++ret)
 			addr[ret] = otp_mac_p[5 - ret];
 	}
+	return 0;
 }
 EXPORT_SYMBOL(bfin_get_ether_addr);

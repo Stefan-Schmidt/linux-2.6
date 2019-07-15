@@ -72,7 +72,7 @@ number of huge pages requested.  This is the most reliable method of
 allocating huge pages as memory has not yet become fragmented.
 
 Some platforms support multiple huge page sizes.  To allocate huge pages
-of a specific size, one must preceed the huge pages boot command parameters
+of a specific size, one must precede the huge pages boot command parameters
 with a huge page size selection parameter "hugepagesz=<size>".  <size> must
 be specified in bytes with optional scale suffix [kKmMgG].  The default huge
 page size may be selected with the "default_hugepagesz=<size>" boot parameter.
@@ -299,11 +299,17 @@ map_hugetlb.c.
 *******************************************************************
 
 /*
- * hugepage-shm:  see Documentation/vm/hugepage-shm.c
+ * map_hugetlb: see tools/testing/selftests/vm/map_hugetlb.c
  */
 
 *******************************************************************
 
 /*
- * hugepage-mmap:  see Documentation/vm/hugepage-mmap.c
+ * hugepage-shm:  see tools/testing/selftests/vm/hugepage-shm.c
+ */
+
+*******************************************************************
+
+/*
+ * hugepage-mmap:  see tools/testing/selftests/vm/hugepage-mmap.c
  */

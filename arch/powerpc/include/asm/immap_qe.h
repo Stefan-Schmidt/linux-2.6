@@ -26,7 +26,9 @@
 struct qe_iram {
 	__be32	iadd;		/* I-RAM Address Register */
 	__be32	idata;		/* I-RAM Data Register */
-	u8	res0[0x78];
+	u8	res0[0x04];
+	__be32	iready;		/* I-RAM Ready Register */
+	u8	res1[0x70];
 } __attribute__ ((packed));
 
 /* QE Interrupt Controller */
@@ -467,13 +469,22 @@ struct qe_immap {
 extern struct qe_immap __iomem *qe_immr;
 extern phys_addr_t get_qe_base(void);
 
-static inline unsigned long immrbar_virt_to_phys(void *address)
+/*
+ * Returns the offset within the QE address space of the given pointer.
+ *
+ * Note that the QE does not support 36-bit physical addresses, so if
+ * get_qe_base() returns a number above 4GB, the caller will probably fail.
+ */
+static inline phys_addr_t immrbar_virt_to_phys(void *address)
 {
-	if ( ((u32)address >= (u32)qe_immr) &&
-			((u32)address < ((u32)qe_immr + QE_IMMAP_SIZE)) )
-		return (unsigned long)(address - (u32)qe_immr +
-				(u32)get_qe_base());
-	return (unsigned long)virt_to_phys(address);
+	void *q = (void *)qe_immr;
+
+	/* Is it a MURAM address? */
+	if ((address >= q) && (address < (q + QE_IMMAP_SIZE)))
+		return get_qe_base() + (address - q);
+
+	/* It's an address returned by kmalloc */
+	return virt_to_phys(address);
 }
 
 #endif /* __KERNEL__ */

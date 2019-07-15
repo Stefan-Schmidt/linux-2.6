@@ -417,7 +417,7 @@ static void __devexit ali1563_remove(struct pci_dev * dev)
 	ali1563_shutdown(dev);
 }
 
-static const struct pci_device_id ali1563_id_table[] __devinitconst = {
+static DEFINE_PCI_DEVICE_TABLE(ali1563_id_table) = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_AL, PCI_DEVICE_ID_AL_M1563) },
 	{},
 };
@@ -431,18 +431,6 @@ static struct pci_driver ali1563_pci_driver = {
 	.remove		= __devexit_p(ali1563_remove),
 };
 
-static int __init ali1563_init(void)
-{
-	return pci_register_driver(&ali1563_pci_driver);
-}
-
-module_init(ali1563_init);
-
-static void __exit ali1563_exit(void)
-{
-	pci_unregister_driver(&ali1563_pci_driver);
-}
-
-module_exit(ali1563_exit);
+module_pci_driver(ali1563_pci_driver);
 
 MODULE_LICENSE("GPL");

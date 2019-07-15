@@ -12,6 +12,7 @@
 #include <linux/notifier.h>
 #include <linux/slab.h>
 #include <linux/err.h>
+#include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/device.h>
 #include <linux/interrupt.h>
@@ -408,8 +409,6 @@ static irqreturn_t ab3100_irq_handler(int irq, void *data)
 	u32 fatevent;
 	int err;
 
-	add_interrupt_randomness(irq);
-
 	err = ab3100_get_register_page_interruptible(ab3100, AB3100_EVENTA1,
 				       event_regs, 3);
 	if (err)
@@ -481,12 +480,6 @@ struct ab3100_get_set_reg_priv {
 	struct ab3100 *ab3100;
 	bool mode;
 };
-
-static int ab3100_get_set_reg_open_file(struct inode *inode, struct file *file)
-{
-	file->private_data = inode->i_private;
-	return 0;
-}
 
 static ssize_t ab3100_get_set_reg(struct file *file,
 				  const char __user *user_buf,
@@ -582,7 +575,7 @@ static ssize_t ab3100_get_set_reg(struct file *file,
 }
 
 static const struct file_operations ab3100_get_set_reg_fops = {
-	.open = ab3100_get_set_reg_open_file,
+	.open = simple_open,
 	.write = ab3100_get_set_reg,
 	.llseek = noop_llseek,
 };
@@ -613,7 +606,7 @@ static void ab3100_setup_debugfs(struct ab3100 *ab3100)
 	ab3100_get_priv.ab3100 = ab3100;
 	ab3100_get_priv.mode = false;
 	ab3100_get_reg_file = debugfs_create_file("get_reg",
-				S_IWUGO, ab3100_dir, &ab3100_get_priv,
+				S_IWUSR, ab3100_dir, &ab3100_get_priv,
 				&ab3100_get_set_reg_fops);
 	if (!ab3100_get_reg_file) {
 		err = -ENOMEM;
@@ -623,7 +616,7 @@ static void ab3100_setup_debugfs(struct ab3100 *ab3100)
 	ab3100_set_priv.ab3100 = ab3100;
 	ab3100_set_priv.mode = true;
 	ab3100_set_reg_file = debugfs_create_file("set_reg",
-				S_IWUGO, ab3100_dir, &ab3100_set_priv,
+				S_IWUSR, ab3100_dir, &ab3100_set_priv,
 				&ab3100_get_set_reg_fops);
 	if (!ab3100_set_reg_file) {
 		err = -ENOMEM;
@@ -809,7 +802,7 @@ struct ab_family_id {
 	char	*name;
 };
 
-static const struct ab_family_id ids[] __devinitdata = {
+static const struct ab_family_id ids[] __devinitconst = {
 	/* AB3100 */
 	{
 		.id = 0xc0,
@@ -872,7 +865,7 @@ static int __devinit ab3100_probe(struct i2c_client *client,
 	int err;
 	int i;
 
-	ab3100 = kzalloc(sizeof(struct ab3100), GFP_KERNEL);
+	ab3100 = devm_kzalloc(&client->dev, sizeof(struct ab3100), GFP_KERNEL);
 	if (!ab3100) {
 		dev_err(&client->dev, "could not allocate AB3100 device\n");
 		return -ENOMEM;
@@ -926,7 +919,7 @@ static int __devinit ab3100_probe(struct i2c_client *client,
 
 	/* Attach a second dummy i2c_client to the test register address */
 	ab3100->testreg_client = i2c_new_dummy(client->adapter,
-						     client->addr + 1);
+					       client->addr + 1);
 	if (!ab3100->testreg_client) {
 		err = -ENOMEM;
 		goto exit_no_testreg_client;
@@ -936,11 +929,9 @@ static int __devinit ab3100_probe(struct i2c_client *client,
 	if (err)
 		goto exit_no_setup;
 
-	err = request_threaded_irq(client->irq, NULL, ab3100_irq_handler,
-				IRQF_ONESHOT, "ab3100-core", ab3100);
-	/* This real unpredictable IRQ is of course sampled for entropy */
-	rand_initialize_irq(client->irq);
-
+	err = devm_request_threaded_irq(&client->dev,
+					client->irq, NULL, ab3100_irq_handler,
+					IRQF_ONESHOT, "ab3100-core", ab3100);
 	if (err)
 		goto exit_no_irq;
 
@@ -951,11 +942,11 @@ static int __devinit ab3100_probe(struct i2c_client *client,
 	/* Set up and register the platform devices. */
 	for (i = 0; i < ARRAY_SIZE(ab3100_devs); i++) {
 		ab3100_devs[i].platform_data = ab3100_plf_data;
-		ab3100_devs[i].data_size = sizeof(struct ab3100_platform_data);
+		ab3100_devs[i].pdata_size = sizeof(struct ab3100_platform_data);
 	}
 
 	err = mfd_add_devices(&client->dev, 0, ab3100_devs,
-		ARRAY_SIZE(ab3100_devs), NULL, 0);
+			      ARRAY_SIZE(ab3100_devs), NULL, 0, NULL);
 
 	ab3100_setup_debugfs(ab3100);
 
@@ -967,7 +958,6 @@ static int __devinit ab3100_probe(struct i2c_client *client,
 	i2c_unregister_device(ab3100->testreg_client);
  exit_no_testreg_client:
  exit_no_detect:
-	kfree(ab3100);
 	return err;
 }
 
@@ -977,16 +967,8 @@ static int __devexit ab3100_remove(struct i2c_client *client)
 
 	/* Unregister subdevices */
 	mfd_remove_devices(&client->dev);
-
 	ab3100_remove_debugfs();
 	i2c_unregister_device(ab3100->testreg_client);
-
-	/*
-	 * At this point, all subscribers should have unregistered
-	 * their notifiers so deactivate IRQ
-	 */
-	free_irq(client->irq, ab3100);
-	kfree(ab3100);
 	return 0;
 }
 

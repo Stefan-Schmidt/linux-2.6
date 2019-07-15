@@ -25,9 +25,6 @@
 #ifndef _BTTVP_H_
 #define _BTTVP_H_
 
-#include <linux/version.h>
-#define BTTV_VERSION_CODE KERNEL_VERSION(0,9,18)
-
 #include <linux/types.h>
 #include <linux/wait.h>
 #include <linux/i2c.h>
@@ -41,7 +38,7 @@
 #include <linux/device.h>
 #include <media/videobuf-dma-sg.h>
 #include <media/tveeprom.h>
-#include <media/ir-common.h>
+#include <media/rc-core.h>
 #include <media/ir-kbd-i2c.h>
 
 #include "bt848.h"
@@ -119,6 +116,33 @@ struct bttv_format {
 	int  flags;
 	int  hshift,vshift;   /* for planar modes   */
 };
+
+struct bttv_ir {
+	struct rc_dev           *dev;
+	struct timer_list       timer;
+
+	char                    name[32];
+	char                    phys[32];
+
+	/* Usual gpio signalling */
+	u32                     mask_keycode;
+	u32                     mask_keydown;
+	u32                     mask_keyup;
+	u32                     polling;
+	u32                     last_gpio;
+	int                     shift_by;
+	int                     start; // What should RC5_START() be
+	int                     addr; // What RC5_ADDR() should be.
+	int                     rc5_remote_gap;
+
+	/* RC5 gpio */
+	bool			rc5_gpio;   /* Is RC5 legacy GPIO enabled? */
+	u32                     last_bit;   /* last raw bit seen */
+	u32                     code;       /* raw code under construction */
+	struct timeval          base_time;  /* time of last seen code */
+	bool                    active;     /* building raw code */
+};
+
 
 /* ---------------------------------------------------------- */
 
@@ -286,9 +310,21 @@ extern unsigned int bttv_gpio;
 extern void bttv_gpio_tracking(struct bttv *btv, char *comment);
 extern int init_bttv_i2c(struct bttv *btv);
 
-#define bttv_printk if (bttv_verbose) printk
-#define dprintk  if (bttv_debug >= 1) printk
-#define d2printk if (bttv_debug >= 2) printk
+#define dprintk(fmt, ...)			\
+do {						\
+	if (bttv_debug >= 1)			\
+		pr_debug(fmt, ##__VA_ARGS__);	\
+} while (0)
+#define dprintk_cont(fmt, ...)			\
+do {						\
+	if (bttv_debug >= 1)			\
+		pr_cont(fmt, ##__VA_ARGS__);	\
+} while (0)
+#define d2printk(fmt, ...)			\
+do {						\
+	if (bttv_debug >= 2)			\
+		printk(fmt, ##__VA_ARGS__);	\
+} while (0)
 
 #define BTTV_MAX_FBUF   0x208000
 #define BTTV_TIMEOUT    msecs_to_jiffies(500)    /* 0.5 seconds */
@@ -305,7 +341,6 @@ struct bttv_pll_info {
 /* for gpio-connected remote control */
 struct bttv_input {
 	struct input_dev      *dev;
-	struct ir_input_state ir;
 	char                  name[32];
 	char                  phys[32];
 	u32                   mask_keycode;
@@ -338,12 +373,10 @@ struct bttv {
 	struct bttv_pll_info pll;
 	int triton1;
 	int gpioirq;
-	int (*custom_irq)(struct bttv *btv);
 
 	int use_i2c_hw;
 
 	/* old gpio interface */
-	wait_queue_head_t gpioq;
 	int shutdown;
 
 	void (*volume_gpio)(struct bttv *btv, __u16 volume);
@@ -368,7 +401,7 @@ struct bttv {
 
 	/* infrared remote */
 	int has_remote;
-	struct card_ir *remote;
+	struct bttv_ir *remote;
 
 	/* I2C remote data */
 	struct IR_i2c_init_data    init_data;
@@ -407,6 +440,7 @@ struct bttv {
 	/* radio data/state */
 	int has_radio;
 	int radio_user;
+	int radio_uses_msp_demodulator;
 
 	/* miro/pinnacle + Aimslab VHX
 	   philips matchbox (tea5757 radio tuner) support */

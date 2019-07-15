@@ -79,7 +79,7 @@ config 29BIT
 
 config 32BIT
 	bool
-	default y if CPU_SH5
+	default y if CPU_SH5 || !MMU
 
 config PMB
 	bool "Support 32-bit physical addressing through PMB"
@@ -142,9 +142,6 @@ config MAX_ACTIVE_REGIONS
 	default "2" if SPARSEMEM && (CPU_SUBTYPE_SH7722 || \
 		       CPU_SUBTYPE_SH7785)
 	default "1"
-
-config ARCH_POPULATES_NODE_MAP
-	def_bool y
 
 config ARCH_SELECT_MEMORY_MODEL
 	def_bool y

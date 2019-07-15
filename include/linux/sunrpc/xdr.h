@@ -33,8 +33,8 @@ struct xdr_netobj {
 };
 
 /*
- * This is the generic XDR function. rqstp is either a rpc_rqst (client
- * side) or svc_rqst pointer (server side).
+ * This is the legacy generic XDR function. rqstp is either a rpc_rqst
+ * (client side) or svc_rqst pointer (server side).
  * Encode functions always assume there's enough room in the buffer.
  */
 typedef int	(*kxdrproc_t)(void *rqstp, __be32 *data, void *obj);
@@ -104,8 +104,6 @@ __be32 *xdr_decode_string_inplace(__be32 *p, char **sp, unsigned int *lenp,
 __be32 *xdr_encode_netobj(__be32 *p, const struct xdr_netobj *);
 __be32 *xdr_decode_netobj(__be32 *p, struct xdr_netobj *);
 
-void	xdr_encode_pages(struct xdr_buf *, struct page **, unsigned int,
-			 unsigned int);
 void	xdr_inline_pages(struct xdr_buf *, unsigned int,
 			 struct page **, unsigned int, unsigned int);
 void	xdr_terminate_string(struct xdr_buf *, const u32);
@@ -191,6 +189,8 @@ extern int xdr_decode_array2(struct xdr_buf *buf, unsigned int base,
 			     struct xdr_array2_desc *desc);
 extern int xdr_encode_array2(struct xdr_buf *buf, unsigned int base,
 			     struct xdr_array2_desc *desc);
+extern void _copy_from_pages(char *p, struct page **pages, size_t pgbase,
+			     size_t len);
 
 /*
  * Provide some simple tools for XDR buffer overflow-checking etc.
@@ -201,16 +201,28 @@ struct xdr_stream {
 
 	__be32 *end;		/* end of available buffer space */
 	struct kvec *iov;	/* pointer to the current kvec */
+	struct kvec scratch;	/* Scratch buffer */
+	struct page **page_ptr;	/* pointer to the current page */
+	unsigned int nwords;	/* Remaining decode buffer length */
 };
+
+/*
+ * These are the xdr_stream style generic XDR encode and decode functions.
+ */
+typedef void	(*kxdreproc_t)(void *rqstp, struct xdr_stream *xdr, void *obj);
+typedef int	(*kxdrdproc_t)(void *rqstp, struct xdr_stream *xdr, void *obj);
 
 extern void xdr_init_encode(struct xdr_stream *xdr, struct xdr_buf *buf, __be32 *p);
 extern __be32 *xdr_reserve_space(struct xdr_stream *xdr, size_t nbytes);
 extern void xdr_write_pages(struct xdr_stream *xdr, struct page **pages,
 		unsigned int base, unsigned int len);
+extern unsigned int xdr_stream_pos(const struct xdr_stream *xdr);
 extern void xdr_init_decode(struct xdr_stream *xdr, struct xdr_buf *buf, __be32 *p);
-extern __be32 *xdr_inline_peek(struct xdr_stream *xdr, size_t nbytes);
+extern void xdr_init_decode_pages(struct xdr_stream *xdr, struct xdr_buf *buf,
+		struct page **pages, unsigned int len);
+extern void xdr_set_scratch_buffer(struct xdr_stream *xdr, void *buf, size_t buflen);
 extern __be32 *xdr_inline_decode(struct xdr_stream *xdr, size_t nbytes);
-extern void xdr_read_pages(struct xdr_stream *xdr, unsigned int len);
+extern unsigned int xdr_read_pages(struct xdr_stream *xdr, unsigned int len);
 extern void xdr_enter_page(struct xdr_stream *xdr, unsigned int len);
 extern int xdr_process_buf(struct xdr_buf *buf, unsigned int offset, unsigned int len, int (*actor)(struct scatterlist *, void *), void *data);
 

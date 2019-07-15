@@ -10,6 +10,8 @@
  *
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -307,8 +309,8 @@ static void jffs2_calc_trigger_levels(struct jffs2_sb_info *c)
 	   trying to GC to make more space. It'll be a fruitless task */
 	c->nospc_dirty_size = c->sector_size + (c->flash_size / 100);
 
-	dbg_fsbuild("JFFS2 trigger levels (size %d KiB, block size %d KiB, %d blocks)\n",
-		  c->flash_size / 1024, c->sector_size / 1024, c->nr_blocks);
+	dbg_fsbuild("trigger levels (size %d KiB, block size %d KiB, %d blocks)\n",
+		    c->flash_size / 1024, c->sector_size / 1024, c->nr_blocks);
 	dbg_fsbuild("Blocks required to allow deletion:    %d (%d KiB)\n",
 		  c->resv_blocks_deletion, c->resv_blocks_deletion*c->sector_size/1024);
 	dbg_fsbuild("Blocks required to allow writes:      %d (%d KiB)\n",
@@ -336,14 +338,13 @@ int jffs2_do_mount_fs(struct jffs2_sb_info *c)
 	size = sizeof(struct jffs2_eraseblock) * c->nr_blocks;
 #ifndef __ECOS
 	if (jffs2_blocks_use_vmalloc(c))
-		c->blocks = vmalloc(size);
+		c->blocks = vzalloc(size);
 	else
 #endif
-		c->blocks = kmalloc(size, GFP_KERNEL);
+		c->blocks = kzalloc(size, GFP_KERNEL);
 	if (!c->blocks)
 		return -ENOMEM;
 
-	memset(c->blocks, 0, size);
 	for (i=0; i<c->nr_blocks; i++) {
 		INIT_LIST_HEAD(&c->blocks[i].list);
 		c->blocks[i].offset = i * c->sector_size;

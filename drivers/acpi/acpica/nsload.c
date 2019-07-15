@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2012, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -63,7 +63,7 @@ static acpi_status acpi_ns_delete_subtree(acpi_handle start_handle);
  * FUNCTION:    acpi_ns_load_table
  *
  * PARAMETERS:  table_index     - Index for table to be loaded
- *              Node            - Owning NS node
+ *              node            - Owning NS node
  *
  * RETURN:      Status
  *
@@ -278,7 +278,7 @@ static acpi_status acpi_ns_delete_subtree(acpi_handle start_handle)
  *
  *  FUNCTION:       acpi_ns_unload_name_space
  *
- *  PARAMETERS:     Handle          - Root of namespace subtree to be deleted
+ *  PARAMETERS:     handle          - Root of namespace subtree to be deleted
  *
  *  RETURN:         Status
  *

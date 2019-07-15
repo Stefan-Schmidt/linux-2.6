@@ -166,6 +166,9 @@ int cx231xx_send_usb_command(struct cx231xx_i2c *i2c_bus,
 	u8 _i2c_nostop = 0;
 	u8 _i2c_reserve = 0;
 
+	if (dev->state & DEV_DISCONNECTED)
+		return -ENODEV;
+
 	/* Get the I2C period, nostop and reserve parameters */
 	_i2c_period = i2c_bus->i2c_period;
 	_i2c_nostop = i2c_bus->i2c_nostop;
@@ -571,6 +574,8 @@ int cx231xx_set_alt_setting(struct cx231xx *dev, u8 index, u8 alt)
 							     alt];
 		break;
 	case INDEX_VANC:
+		if (dev->board.no_alt_vanc)
+			return 0;
 		usb_interface_index =
 		    dev->current_pcb_config.hs_config_info[0].interface_info.
 		    vanc_index + 1;
@@ -600,8 +605,7 @@ int cx231xx_set_alt_setting(struct cx231xx *dev, u8 index, u8 alt)
 		usb_interface_index, alt);
 		/*To workaround error number=-71 on EP0 for videograbber,
 		 need add following codes.*/
-		if (dev->model != CX231XX_BOARD_CNXT_VIDEO_GRABBER &&
-		    dev->model != CX231XX_BOARD_HAUPPAUGE_USBLIVE2)
+		if (dev->board.no_alt_vanc)
 			return -1;
 	}
 
@@ -740,6 +744,9 @@ int cx231xx_set_mode(struct cx231xx *dev, enum cx231xx_mode set_mode)
 		case CX231XX_BOARD_CNXT_RDE_253S:
 		case CX231XX_BOARD_CNXT_RDU_253S:
 		case CX231XX_BOARD_HAUPPAUGE_EXETER:
+		case CX231XX_BOARD_PV_PLAYTV_USB_HYBRID:
+		case CX231XX_BOARD_HAUPPAUGE_USB2_FM_PAL:
+		case CX231XX_BOARD_HAUPPAUGE_USB2_FM_NTSC:
 		errCode = cx231xx_set_agc_analog_digital_mux_select(dev, 0);
 			break;
 		default:
@@ -747,7 +754,7 @@ int cx231xx_set_mode(struct cx231xx *dev, enum cx231xx_mode set_mode)
 		}
 	}
 
-	return 0;
+	return errCode ? -EINVAL : 0;
 }
 EXPORT_SYMBOL_GPL(cx231xx_set_mode);
 
@@ -757,7 +764,7 @@ int cx231xx_ep5_bulkout(struct cx231xx *dev, u8 *firmware, u16 size)
 	int actlen, ret = -ENOMEM;
 	u32 *buffer;
 
-buffer = kzalloc(4096, GFP_KERNEL);
+	buffer = kzalloc(4096, GFP_KERNEL);
 	if (buffer == NULL) {
 		cx231xx_info("out of mem\n");
 		return -ENOMEM;
@@ -765,16 +772,16 @@ buffer = kzalloc(4096, GFP_KERNEL);
 	memcpy(&buffer[0], firmware, 4096);
 
 	ret = usb_bulk_msg(dev->udev, usb_sndbulkpipe(dev->udev, 5),
-				 buffer, 4096, &actlen, 2000);
+			buffer, 4096, &actlen, 2000);
 
 	if (ret)
 		cx231xx_info("bulk message failed: %d (%d/%d)", ret,
-				 size, actlen);
+				size, actlen);
 	else {
 		errCode = actlen != size ? -1 : 0;
 	}
-kfree(buffer);
-	return 0;
+	kfree(buffer);
+	return errCode;
 }
 
 /*****************************************************************
@@ -790,7 +797,7 @@ static void cx231xx_isoc_irq_callback(struct urb *urb)
 	struct cx231xx_video_mode *vmode =
 	    container_of(dma_q, struct cx231xx_video_mode, vidq);
 	struct cx231xx *dev = container_of(vmode, struct cx231xx, video_mode);
-	int rc, i;
+	int i;
 
 	switch (urb->status) {
 	case 0:		/* success */
@@ -807,7 +814,7 @@ static void cx231xx_isoc_irq_callback(struct urb *urb)
 
 	/* Copy data from URB */
 	spin_lock(&dev->video_mode.slock);
-	rc = dev->video_mode.isoc_ctl.isoc_copy(dev, urb);
+	dev->video_mode.isoc_ctl.isoc_copy(dev, urb);
 	spin_unlock(&dev->video_mode.slock);
 
 	/* Reset urb buffers */
@@ -815,7 +822,6 @@ static void cx231xx_isoc_irq_callback(struct urb *urb)
 		urb->iso_frame_desc[i].status = 0;
 		urb->iso_frame_desc[i].actual_length = 0;
 	}
-	urb->status = 0;
 
 	urb->status = usb_submit_urb(urb, GFP_ATOMIC);
 	if (urb->status) {
@@ -836,7 +842,6 @@ static void cx231xx_bulk_irq_callback(struct urb *urb)
 	struct cx231xx_video_mode *vmode =
 	    container_of(dma_q, struct cx231xx_video_mode, vidq);
 	struct cx231xx *dev = container_of(vmode, struct cx231xx, video_mode);
-	int rc;
 
 	switch (urb->status) {
 	case 0:		/* success */
@@ -853,12 +858,10 @@ static void cx231xx_bulk_irq_callback(struct urb *urb)
 
 	/* Copy data from URB */
 	spin_lock(&dev->video_mode.slock);
-	rc = dev->video_mode.bulk_ctl.bulk_copy(dev, urb);
+	dev->video_mode.bulk_ctl.bulk_copy(dev, urb);
 	spin_unlock(&dev->video_mode.slock);
 
 	/* Reset urb buffers */
-	urb->status = 0;
-
 	urb->status = usb_submit_urb(urb, GFP_ATOMIC);
 	if (urb->status) {
 		cx231xx_isocdbg("urb resubmit failed (error=%i)\n",
@@ -1067,7 +1070,7 @@ int cx231xx_init_isoc(struct cx231xx *dev, int max_packets,
 				 sb_size, cx231xx_isoc_irq_callback, dma_q, 1);
 
 		urb->number_of_packets = max_packets;
-		urb->transfer_flags = URB_ISO_ASAP;
+		urb->transfer_flags = URB_ISO_ASAP | URB_NO_TRANSFER_DMA_MAP;
 
 		k = 0;
 		for (j = 0; j < max_packets; j++) {
@@ -1178,7 +1181,7 @@ int cx231xx_init_bulk(struct cx231xx *dev, int max_packets,
 			return -ENOMEM;
 		}
 		dev->video_mode.bulk_ctl.urb[i] = urb;
-		urb->transfer_flags = 0;
+		urb->transfer_flags = URB_NO_TRANSFER_DMA_MAP;
 
 		dev->video_mode.bulk_ctl.transfer_buffer[i] =
 		    usb_alloc_coherent(dev->udev, sb_size, GFP_KERNEL,
@@ -1224,42 +1227,40 @@ int cx231xx_init_bulk(struct cx231xx *dev, int max_packets,
 EXPORT_SYMBOL_GPL(cx231xx_init_bulk);
 void cx231xx_stop_TS1(struct cx231xx *dev)
 {
-	int status = 0;
 	u8 val[4] = { 0, 0, 0, 0 };
 
-			val[0] = 0x00;
-			val[1] = 0x03;
-			val[2] = 0x00;
-			val[3] = 0x00;
-			status = cx231xx_write_ctrl_reg(dev, VRT_SET_REGISTER,
-				 TS_MODE_REG, val, 4);
+	val[0] = 0x00;
+	val[1] = 0x03;
+	val[2] = 0x00;
+	val[3] = 0x00;
+	cx231xx_write_ctrl_reg(dev, VRT_SET_REGISTER,
+			TS_MODE_REG, val, 4);
 
-			val[0] = 0x00;
-			val[1] = 0x70;
-			val[2] = 0x04;
-			val[3] = 0x00;
-			status = cx231xx_write_ctrl_reg(dev, VRT_SET_REGISTER,
-				 TS1_CFG_REG, val, 4);
+	val[0] = 0x00;
+	val[1] = 0x70;
+	val[2] = 0x04;
+	val[3] = 0x00;
+	cx231xx_write_ctrl_reg(dev, VRT_SET_REGISTER,
+			TS1_CFG_REG, val, 4);
 }
 /* EXPORT_SYMBOL_GPL(cx231xx_stop_TS1); */
 void cx231xx_start_TS1(struct cx231xx *dev)
 {
-	int status = 0;
 	u8 val[4] = { 0, 0, 0, 0 };
 
-			val[0] = 0x03;
-			val[1] = 0x03;
-			val[2] = 0x00;
-			val[3] = 0x00;
-			status = cx231xx_write_ctrl_reg(dev, VRT_SET_REGISTER,
-				 TS_MODE_REG, val, 4);
+	val[0] = 0x03;
+	val[1] = 0x03;
+	val[2] = 0x00;
+	val[3] = 0x00;
+	cx231xx_write_ctrl_reg(dev, VRT_SET_REGISTER,
+			TS_MODE_REG, val, 4);
 
-			val[0] = 0x04;
-			val[1] = 0xA3;
-			val[2] = 0x3B;
-			val[3] = 0x00;
-			status = cx231xx_write_ctrl_reg(dev, VRT_SET_REGISTER,
-				 TS1_CFG_REG, val, 4);
+	val[0] = 0x04;
+	val[1] = 0xA3;
+	val[2] = 0x3B;
+	val[3] = 0x00;
+	cx231xx_write_ctrl_reg(dev, VRT_SET_REGISTER,
+			TS1_CFG_REG, val, 4);
 }
 /* EXPORT_SYMBOL_GPL(cx231xx_start_TS1); */
 /*****************************************************************
@@ -1288,7 +1289,7 @@ int cx231xx_dev_init(struct cx231xx *dev)
 	/* Internal Master 3 Bus */
 	dev->i2c_bus[2].nr = 2;
 	dev->i2c_bus[2].dev = dev;
-	dev->i2c_bus[2].i2c_period = I2C_SPEED_400K;	/* 400kHz */
+	dev->i2c_bus[2].i2c_period = I2C_SPEED_100K;	/* 100kHz */
 	dev->i2c_bus[2].i2c_nostop = 0;
 	dev->i2c_bus[2].i2c_reserve = 0;
 
@@ -1300,8 +1301,7 @@ int cx231xx_dev_init(struct cx231xx *dev)
 	/* init hardware */
 	/* Note : with out calling set power mode function,
 	afe can not be set up correctly */
-	if (dev->model == CX231XX_BOARD_CNXT_VIDEO_GRABBER ||
-	    dev->model == CX231XX_BOARD_HAUPPAUGE_USBLIVE2) {
+	if (dev->board.external_av) {
 		errCode = cx231xx_set_power_mode(dev,
 				 POLARIS_AVMODE_ENXTERNAL_AV);
 		if (errCode < 0) {
@@ -1321,11 +1321,9 @@ int cx231xx_dev_init(struct cx231xx *dev)
 		}
 	}
 
-	/* reset the Tuner */
-	if ((dev->model == CX231XX_BOARD_CNXT_CARRAERA) ||
-		(dev->model == CX231XX_BOARD_CNXT_RDE_250) ||
-		(dev->model == CX231XX_BOARD_CNXT_SHELBY) ||
-		(dev->model == CX231XX_BOARD_CNXT_RDU_250))
+	/* reset the Tuner, if it is a Xceive tuner */
+	if ((dev->board.tuner_type == TUNER_XC5000) ||
+	    (dev->board.tuner_type == TUNER_XC2028))
 			cx231xx_gpio_set(dev, dev->board.tuner_gpio);
 
 	/* initialize Colibri block */
@@ -1381,6 +1379,9 @@ int cx231xx_dev_init(struct cx231xx *dev)
 	case CX231XX_BOARD_CNXT_RDE_253S:
 	case CX231XX_BOARD_CNXT_RDU_253S:
 	case CX231XX_BOARD_HAUPPAUGE_EXETER:
+	case CX231XX_BOARD_PV_PLAYTV_USB_HYBRID:
+	case CX231XX_BOARD_HAUPPAUGE_USB2_FM_PAL:
+	case CX231XX_BOARD_HAUPPAUGE_USB2_FM_NTSC:
 	errCode = cx231xx_set_agc_analog_digital_mux_select(dev, 0);
 		break;
 	default:
@@ -1513,7 +1514,7 @@ int cx231xx_read_i2c_master(struct cx231xx *dev, u8 dev_addr, u16 saddr,
 
 	if (saddr_len == 0)
 		saddr = 0;
-	else if (saddr_len == 0)
+	else if (saddr_len == 1)
 		saddr &= 0xff;
 
 	/* prepare xfer_data struct */
@@ -1564,7 +1565,7 @@ int cx231xx_write_i2c_master(struct cx231xx *dev, u8 dev_addr, u16 saddr,
 
 	if (saddr_len == 0)
 		saddr = 0;
-	else if (saddr_len == 0)
+	else if (saddr_len == 1)
 		saddr &= 0xff;
 
 	/* prepare xfer_data struct */
@@ -1598,7 +1599,7 @@ int cx231xx_read_i2c_data(struct cx231xx *dev, u8 dev_addr, u16 saddr,
 
 	if (saddr_len == 0)
 		saddr = 0;
-	else if (saddr_len == 0)
+	else if (saddr_len == 1)
 		saddr &= 0xff;
 
 	/* prepare xfer_data struct */
@@ -1639,7 +1640,7 @@ int cx231xx_write_i2c_data(struct cx231xx *dev, u8 dev_addr, u16 saddr,
 
 	if (saddr_len == 0)
 		saddr = 0;
-	else if (saddr_len == 0)
+	else if (saddr_len == 1)
 		saddr &= 0xff;
 
 	/* prepare xfer_data struct */

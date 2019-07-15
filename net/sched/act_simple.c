@@ -36,19 +36,19 @@ static struct tcf_hashinfo simp_hash_info = {
 };
 
 #define SIMP_MAX_DATA	32
-static int tcf_simp(struct sk_buff *skb, struct tc_action *a, struct tcf_result *res)
+static int tcf_simp(struct sk_buff *skb, const struct tc_action *a,
+		    struct tcf_result *res)
 {
 	struct tcf_defact *d = a->priv;
 
 	spin_lock(&d->tcf_lock);
 	d->tcf_tm.lastuse = jiffies;
-	d->tcf_bstats.bytes += qdisc_pkt_len(skb);
-	d->tcf_bstats.packets++;
+	bstats_update(&d->tcf_bstats, skb);
 
 	/* print policy string followed by _ then packet count
 	 * Example if this was the 3rd packet and the string was "hello"
 	 * then it would look like "hello_3" (without quotes)
-	 **/
+	 */
 	pr_info("simple: %s_%d\n",
 	       (char *)d->tcfd_defdata, d->tcf_bstats.packets);
 	spin_unlock(&d->tcf_lock);
@@ -126,12 +126,15 @@ static int tcf_simp_init(struct nlattr *nla, struct nlattr *est,
 		pc = tcf_hash_create(parm->index, est, a, sizeof(*d), bind,
 				     &simp_idx_gen, &simp_hash_info);
 		if (IS_ERR(pc))
-		    return PTR_ERR(pc);
+			return PTR_ERR(pc);
 
 		d = to_defact(pc);
 		ret = alloc_defdata(d, defdata);
 		if (ret < 0) {
-			kfree(pc);
+			if (est)
+				gen_kill_estimator(&pc->tcfc_bstats,
+						   &pc->tcfc_rate_est);
+			kfree_rcu(pc, tcfc_rcu);
 			return ret;
 		}
 		d->tcf_action = parm->action;
@@ -150,7 +153,7 @@ static int tcf_simp_init(struct nlattr *nla, struct nlattr *est,
 	return ret;
 }
 
-static inline int tcf_simp_cleanup(struct tc_action *a, int bind)
+static int tcf_simp_cleanup(struct tc_action *a, int bind)
 {
 	struct tcf_defact *d = a->priv;
 
@@ -159,8 +162,8 @@ static inline int tcf_simp_cleanup(struct tc_action *a, int bind)
 	return 0;
 }
 
-static inline int tcf_simp_dump(struct sk_buff *skb, struct tc_action *a,
-				int bind, int ref)
+static int tcf_simp_dump(struct sk_buff *skb, struct tc_action *a,
+			 int bind, int ref)
 {
 	unsigned char *b = skb_tail_pointer(skb);
 	struct tcf_defact *d = a->priv;
@@ -172,12 +175,14 @@ static inline int tcf_simp_dump(struct sk_buff *skb, struct tc_action *a,
 	};
 	struct tcf_t t;
 
-	NLA_PUT(skb, TCA_DEF_PARMS, sizeof(opt), &opt);
-	NLA_PUT_STRING(skb, TCA_DEF_DATA, d->tcfd_defdata);
+	if (nla_put(skb, TCA_DEF_PARMS, sizeof(opt), &opt) ||
+	    nla_put_string(skb, TCA_DEF_DATA, d->tcfd_defdata))
+		goto nla_put_failure;
 	t.install = jiffies_to_clock_t(jiffies - d->tcf_tm.install);
 	t.lastuse = jiffies_to_clock_t(jiffies - d->tcf_tm.lastuse);
 	t.expires = jiffies_to_clock_t(d->tcf_tm.expires);
-	NLA_PUT(skb, TCA_DEF_TM, sizeof(t), &t);
+	if (nla_put(skb, TCA_DEF_TM, sizeof(t), &t))
+		goto nla_put_failure;
 	return skb->len;
 
 nla_put_failure:

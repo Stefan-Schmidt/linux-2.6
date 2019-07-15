@@ -37,8 +37,6 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
  * DAMAGE.
  *
- * Send feedback to <socketcan-users@lists.berlios.de>
- *
  */
 
 #include <linux/module.h>
@@ -84,6 +82,7 @@ struct raw_sock {
 	struct notifier_block notifier;
 	int loopback;
 	int recv_own_msgs;
+	int fd_frames;
 	int count;                 /* number of active filters */
 	struct can_filter dfilter; /* default/single filter */
 	struct can_filter *filter; /* pointer to filter(s) */
@@ -120,6 +119,14 @@ static void raw_rcv(struct sk_buff *oskb, void *data)
 	/* check the received tx sock reference */
 	if (!ro->recv_own_msgs && oskb->sk == sk)
 		return;
+
+	/* do not pass frames with DLC > 8 to a legacy socket */
+	if (!ro->fd_frames) {
+		struct canfd_frame *cfd = (struct canfd_frame *)oskb->data;
+
+		if (unlikely(cfd->len > CAN_MAX_DLEN))
+			return;
+	}
 
 	/* clone the given skb to be able to enqueue it into the rcv queue */
 	skb = skb_clone(oskb, GFP_ATOMIC);
@@ -293,6 +300,7 @@ static int raw_init(struct sock *sk)
 	/* set default loopback behaviour */
 	ro->loopback         = 1;
 	ro->recv_own_msgs    = 0;
+	ro->fd_frames        = 0;
 
 	/* set notifier */
 	ro->notifier.notifier_call = raw_notifier;
@@ -305,7 +313,12 @@ static int raw_init(struct sock *sk)
 static int raw_release(struct socket *sock)
 {
 	struct sock *sk = sock->sk;
-	struct raw_sock *ro = raw_sk(sk);
+	struct raw_sock *ro;
+
+	if (!sk)
+		return 0;
+
+	ro = raw_sk(sk);
 
 	unregister_netdevice_notifier(&ro->notifier);
 
@@ -566,6 +579,15 @@ static int raw_setsockopt(struct socket *sock, int level, int optname,
 
 		break;
 
+	case CAN_RAW_FD_FRAMES:
+		if (optlen != sizeof(ro->fd_frames))
+			return -EINVAL;
+
+		if (copy_from_user(&ro->fd_frames, optval, optlen))
+			return -EFAULT;
+
+		break;
+
 	default:
 		return -ENOPROTOOPT;
 	}
@@ -624,6 +646,12 @@ static int raw_getsockopt(struct socket *sock, int level, int optname,
 		val = &ro->recv_own_msgs;
 		break;
 
+	case CAN_RAW_FD_FRAMES:
+		if (len > sizeof(int))
+			len = sizeof(int);
+		val = &ro->fd_frames;
+		break;
+
 	default:
 		return -ENOPROTOOPT;
 	}
@@ -649,6 +677,9 @@ static int raw_sendmsg(struct kiocb *iocb, struct socket *sock,
 		struct sockaddr_can *addr =
 			(struct sockaddr_can *)msg->msg_name;
 
+		if (msg->msg_namelen < sizeof(*addr))
+			return -EINVAL;
+
 		if (addr->can_family != AF_CAN)
 			return -EINVAL;
 
@@ -656,8 +687,13 @@ static int raw_sendmsg(struct kiocb *iocb, struct socket *sock,
 	} else
 		ifindex = ro->ifindex;
 
-	if (size != sizeof(struct can_frame))
-		return -EINVAL;
+	if (ro->fd_frames) {
+		if (unlikely(size != CANFD_MTU && size != CAN_MTU))
+			return -EINVAL;
+	} else {
+		if (unlikely(size != CAN_MTU))
+			return -EINVAL;
+	}
 
 	dev = dev_get_by_index(&init_net, ifindex);
 	if (!dev)
@@ -674,9 +710,6 @@ static int raw_sendmsg(struct kiocb *iocb, struct socket *sock,
 	err = sock_tx_timestamp(sk, &skb_shinfo(skb)->tx_flags);
 	if (err < 0)
 		goto free_skb;
-
-	/* to be able to check the received tx sock reference in raw_rcv() */
-	skb_shinfo(skb)->tx_flags |= SKBTX_DRV_NEEDS_SK_REF;
 
 	skb->dev = dev;
 	skb->sk  = sk;
@@ -702,7 +735,9 @@ static int raw_recvmsg(struct kiocb *iocb, struct socket *sock,
 		       struct msghdr *msg, size_t size, int flags)
 {
 	struct sock *sk = sock->sk;
+	struct raw_sock *ro = raw_sk(sk);
 	struct sk_buff *skb;
+	int rxmtu;
 	int err = 0;
 	int noblock;
 
@@ -713,10 +748,20 @@ static int raw_recvmsg(struct kiocb *iocb, struct socket *sock,
 	if (!skb)
 		return err;
 
-	if (size < skb->len)
+	/*
+	 * when serving a legacy socket the DLC <= 8 is already checked inside
+	 * raw_rcv(). Now check if we need to pass a canfd_frame to a legacy
+	 * socket and cut the possible CANFD_MTU/CAN_MTU length to CAN_MTU
+	 */
+	if (!ro->fd_frames)
+		rxmtu = CAN_MTU;
+	else
+		rxmtu = skb->len;
+
+	if (size < rxmtu)
 		msg->msg_flags |= MSG_TRUNC;
 	else
-		size = skb->len;
+		size = rxmtu;
 
 	err = memcpy_toiovec(msg->msg_iov, skb->data, size);
 	if (err < 0) {
@@ -739,7 +784,7 @@ static int raw_recvmsg(struct kiocb *iocb, struct socket *sock,
 	return size;
 }
 
-static struct proto_ops raw_ops __read_mostly = {
+static const struct proto_ops raw_ops = {
 	.family        = PF_CAN,
 	.release       = raw_release,
 	.bind          = raw_bind,
@@ -748,7 +793,7 @@ static struct proto_ops raw_ops __read_mostly = {
 	.accept        = sock_no_accept,
 	.getname       = raw_getname,
 	.poll          = datagram_poll,
-	.ioctl         = NULL,		/* use can_ioctl() from af_can.c */
+	.ioctl         = can_ioctl,	/* use can_ioctl() from af_can.c */
 	.listen        = sock_no_listen,
 	.shutdown      = sock_no_shutdown,
 	.setsockopt    = raw_setsockopt,
@@ -766,7 +811,7 @@ static struct proto raw_proto __read_mostly = {
 	.init       = raw_init,
 };
 
-static struct can_proto raw_can_proto __read_mostly = {
+static const struct can_proto raw_can_proto = {
 	.type       = SOCK_RAW,
 	.protocol   = CAN_RAW,
 	.ops        = &raw_ops,

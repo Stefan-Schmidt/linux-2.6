@@ -96,8 +96,12 @@ void qib_handle_e_ibstatuschanged(struct qib_pportdata *ppd, u64 ibcs)
 	 * states, or if it transitions from any of the up (INIT or better)
 	 * states into any of the down states (except link recovery), then
 	 * call the chip-specific code to take appropriate actions.
+	 *
+	 * ppd->lflags could be 0 if this is the first time the interrupt
+	 * handlers has been called but the link is already up.
 	 */
-	if (lstate >= IB_PORT_INIT && (ppd->lflags & QIBL_LINKDOWN) &&
+	if (lstate >= IB_PORT_INIT &&
+	    (!ppd->lflags || (ppd->lflags & QIBL_LINKDOWN)) &&
 	    ltstate == IB_PHYSPORTSTATE_LINKUP) {
 		/* transitioned to UP */
 		if (dd->f_ib_updown(ppd, 1, ibcs))
@@ -131,7 +135,8 @@ void qib_handle_e_ibstatuschanged(struct qib_pportdata *ppd, u64 ibcs)
 			/* start a 75msec timer to clear symbol errors */
 			mod_timer(&ppd->symerr_clear_timer,
 				  msecs_to_jiffies(75));
-		} else if (ltstate == IB_PHYSPORTSTATE_LINKUP) {
+		} else if (ltstate == IB_PHYSPORTSTATE_LINKUP &&
+			   !(ppd->lflags & QIBL_LINKACTIVE)) {
 			/* active, but not active defered */
 			qib_hol_up(ppd); /* useful only for 6120 now */
 			*ppd->statusp |=
@@ -219,15 +224,15 @@ void qib_bad_intrstatus(struct qib_devdata *dd)
 	 * We print the message and disable interrupts, in hope of
 	 * having a better chance of debugging the problem.
 	 */
-	qib_dev_err(dd, "Read of chip interrupt status failed"
-		    " disabling interrupts\n");
+	qib_dev_err(dd,
+		"Read of chip interrupt status failed disabling interrupts\n");
 	if (allbits++) {
 		/* disable interrupt delivery, something is very wrong */
 		if (allbits == 2)
 			dd->f_set_intr_state(dd, 0);
 		if (allbits == 3) {
-			qib_dev_err(dd, "2nd bad interrupt status, "
-				    "unregistering interrupts\n");
+			qib_dev_err(dd,
+				"2nd bad interrupt status, unregistering interrupts\n");
 			dd->flags |= QIB_BADINTR;
 			dd->flags &= ~QIB_INITTED;
 			dd->f_free_irq(dd);

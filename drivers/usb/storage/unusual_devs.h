@@ -110,7 +110,7 @@ UNUSUAL_DEV(  0x040d, 0x6205, 0x0003, 0x0003,
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_IGNORE_RESIDUE ),
 
-/* Deduced by Jonathan Woithe <jwoithe@physics.adelaide.edu.au>
+/* Deduced by Jonathan Woithe <jwoithe@just42.net>
  * Entry needed for flags: US_FL_FIX_INQUIRY because initial inquiry message
  * always fails and confuses drive.
  */
@@ -480,6 +480,13 @@ UNUSUAL_DEV(  0x04e8, 0x507c, 0x0220, 0x0220,
 		"YP-U3",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_MAX_SECTORS_64),
+
+/* Reported by Vitaly Kuznetsov <vitty@altlinux.ru> */
+UNUSUAL_DEV(  0x04e8, 0x5122, 0x0000, 0x9999,
+		"Samsung",
+		"YP-CP3",
+		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
+		US_FL_MAX_SECTORS_64 | US_FL_BULK_IGNORE_TAG),
 
 /* Entry and supporting patch by Theodore Kilgore <kilgota@auburn.edu>.
  * Device uses standards-violating 32-byte Bulk Command Block Wrappers and
@@ -1037,6 +1044,15 @@ UNUSUAL_DEV(  0x084d, 0x0011, 0x0110, 0x0110,
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_BULK32),
 
+/* Reported by <ttkspam@free.fr>
+ * The device reports a vendor-specific device class, requiring an
+ * explicit vendor/product match.
+ */
+UNUSUAL_DEV(  0x0851, 0x1542, 0x0002, 0x0002,
+		"MagicPixel",
+		"FW_Omega2",
+		USB_SC_DEVICE, USB_PR_DEVICE, NULL, 0),
+
 /* Andrew Lunn <andrew@lunn.ch>
  * PanDigital Digital Picture Frame. Does not like ALLOW_MEDIUM_REMOVAL
  * on LUN 4.
@@ -1097,6 +1113,16 @@ UNUSUAL_DEV( 0x090c, 0x1132, 0x0000, 0xffff,
 		"5-in-1 Card Reader",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_FIX_CAPACITY ),
+
+/* Reported by Paul Hartman <paul.hartman+linux@gmail.com>
+ * This card reader returns "Illegal Request, Logical Block Address
+ * Out of Range" for the first READ(10) after a new card is inserted.
+ */
+UNUSUAL_DEV(  0x090c, 0x6000, 0x0100, 0x0100,
+		"Feiya",
+		"SD/SDHC Card Reader",
+		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
+		US_FL_INITIAL_READ10 ),
 
 /* This Pentax still camera is not conformant
  * to the USB storage specification: -
@@ -1241,6 +1267,12 @@ UNUSUAL_DEV( 0x0af0, 0xd357, 0x0000, 0x0000,
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		0 ),
 
+/* Reported by Namjae Jeon <namjae.jeon@samsung.com> */
+UNUSUAL_DEV(0x0bc2, 0x2300, 0x0000, 0x9999,
+		"Seagate",
+		"Portable HDD",
+		USB_SC_DEVICE, USB_PR_DEVICE, NULL, US_FL_WRITE_CACHE),
+
 /* Reported by Ben Efros <ben@pc-doctor.com> */
 UNUSUAL_DEV( 0x0bc2, 0x3010, 0x0000, 0x0000,
 		"Seagate",
@@ -1381,6 +1413,13 @@ UNUSUAL_DEV(  0x0f19, 0x0105, 0x0100, 0x0100,
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_IGNORE_RESIDUE ),
 
+/* Submitted by Nick Holloway */
+UNUSUAL_DEV( 0x0f88, 0x042e, 0x0100, 0x0100,
+		"VTech",
+		"Kidizoom",
+		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
+		US_FL_FIX_CAPACITY ),
+
 /* Reported by Michael Stattmann <michael@stattmann.com> */
 UNUSUAL_DEV(  0x0fce, 0xd008, 0x0000, 0x0000,
 		"Sony Ericsson",
@@ -1434,6 +1473,12 @@ UNUSUAL_DEV(  0x1058, 0x0704, 0x0000, 0x9999,
 		"External HDD",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_SANE_SENSE),
+
+/* Reported by Namjae Jeon <namjae.jeon@samsung.com> */
+UNUSUAL_DEV(0x1058, 0x070a, 0x0000, 0x9999,
+		"Western Digital",
+		"My Passport HDD",
+		USB_SC_DEVICE, USB_PR_DEVICE, NULL, US_FL_WRITE_CACHE),
 
 /* Reported by Fabio Venturi <f.venturi@tdnet.it>
  * The device reports a vendor-specific bDeviceClass.
@@ -1821,6 +1866,13 @@ UNUSUAL_DEV(  0x1370, 0x6828, 0x0110, 0x0110,
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_IGNORE_RESIDUE ),
 
+/* Reported by Qinglin Ye <yestyle@gmail.com> */
+UNUSUAL_DEV(  0x13fe, 0x3600, 0x0100, 0x0100,
+		"Kingston",
+		"DT 101 G2",
+		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
+		US_FL_BULK_IGNORE_TAG ),
+
 /* Reported by Francesco Foresti <frafore@tiscali.it> */
 UNUSUAL_DEV(  0x14cd, 0x6600, 0x0201, 0x0201,
 		"Super Top",
@@ -1845,6 +1897,13 @@ UNUSUAL_DEV(  0x1652, 0x6600, 0x0201, 0x0201,
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_IGNORE_RESIDUE ),
 
+/* Reported by Jesse Feddema <jdfeddema@gmail.com> */
+UNUSUAL_DEV(  0x177f, 0x0400, 0x0000, 0x0000,
+		"Yarvik",
+		"PMP400",
+		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
+		US_FL_BULK_IGNORE_TAG | US_FL_MAX_SECTORS_64 ),
+
 /* Reported by Hans de Goede <hdegoede@redhat.com>
  * These Appotech controllers are found in Picture Frames, they provide a
  * (buggy) emulation of a cdrom drive which contains the windows software
@@ -1864,6 +1923,31 @@ UNUSUAL_DEV( 0x1908, 0x3335, 0x0200, 0x0200,
 		"Photo Frame",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_NO_READ_DISC_INFO ),
+
+/* Reported by Sven Geggus <sven-usbst@geggus.net>
+ * This encrypted pen drive returns bogus data for the initial READ(10).
+ */
+UNUSUAL_DEV(  0x1b1c, 0x1ab5, 0x0200, 0x0200,
+		"Corsair",
+		"Padlock v2",
+		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
+		US_FL_INITIAL_READ10 ),
+
+/* Patch by Richard Schütz <r.schtz@t-online.de>
+ * This external hard drive enclosure uses a JMicron chip which
+ * needs the US_FL_IGNORE_RESIDUE flag to work properly. */
+UNUSUAL_DEV(  0x1e68, 0x001b, 0x0000, 0x0000,
+		"TrekStor GmbH & Co. KG",
+		"DataStation maxi g.u",
+		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
+		US_FL_IGNORE_RESIDUE | US_FL_SANE_SENSE ),
+
+/* Reported by Jasper Mackenzie <scarletpimpernal@hotmail.com> */
+UNUSUAL_DEV( 0x1e74, 0x4621, 0x0000, 0x0000,
+		"Coby Electronics",
+		"MP3 Player",
+		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
+		US_FL_BULK_IGNORE_TAG | US_FL_MAX_SECTORS_64 ),
 
 UNUSUAL_DEV( 0x2116, 0x0320, 0x0001, 0x0001,
 		"ST",
@@ -1929,6 +2013,16 @@ UNUSUAL_DEV(  0x4146, 0xba01, 0x0100, 0x0100,
 		"Iomega",
 		"Micro Mini 1GB",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL, US_FL_NOT_LOCKABLE ),
+
+/*
+ * Nick Bowler <nbowler@elliptictech.com>
+ * SCSI stack spams (otherwise harmless) error messages.
+ */
+UNUSUAL_DEV(  0xc251, 0x4003, 0x0100, 0x0100,
+		"Keil Software, Inc.",
+		"V2M MotherBoard",
+		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
+		US_FL_NOT_LOCKABLE),
 
 /* Reported by Andrew Simmons <andrew.simmons@gmail.com> */
 UNUSUAL_DEV(  0xed06, 0x4500, 0x0001, 0x0001,

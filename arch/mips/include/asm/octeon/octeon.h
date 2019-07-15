@@ -215,11 +215,6 @@ struct octeon_cf_data {
 	int		dma_engine;	/* -1 for no DMA */
 };
 
-struct octeon_i2c_data {
-	unsigned int	sys_freq;
-	unsigned int	i2c_freq;
-};
-
 extern void octeon_write_lcd(const char *s);
 extern void octeon_check_cpu_bist(void);
 extern int octeon_get_boot_debug_flag(void);
@@ -256,5 +251,7 @@ static inline uint32_t octeon_npi_read32(uint64_t address)
 extern struct cvmx_bootinfo *octeon_bootinfo;
 
 extern uint64_t octeon_bootloader_entry_addr;
+
+extern void (*octeon_irq_setup_secondary)(void);
 
 #endif /* __ASM_OCTEON_OCTEON_H */

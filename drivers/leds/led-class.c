@@ -15,7 +15,6 @@
 #include <linux/list.h>
 #include <linux/spinlock.h>
 #include <linux/device.h>
-#include <linux/sysdev.h>
 #include <linux/timer.h>
 #include <linux/err.h>
 #include <linux/ctype.h>
@@ -30,7 +29,7 @@ static void led_update_brightness(struct led_classdev *led_cdev)
 		led_cdev->brightness = led_cdev->brightness_get(led_cdev);
 }
 
-static ssize_t led_brightness_show(struct device *dev, 
+static ssize_t led_brightness_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct led_classdev *led_cdev = dev_get_drvdata(dev);
@@ -45,23 +44,18 @@ static ssize_t led_brightness_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t size)
 {
 	struct led_classdev *led_cdev = dev_get_drvdata(dev);
+	unsigned long state;
 	ssize_t ret = -EINVAL;
-	char *after;
-	unsigned long state = simple_strtoul(buf, &after, 10);
-	size_t count = after - buf;
 
-	if (isspace(*after))
-		count++;
+	ret = kstrtoul(buf, 10, &state);
+	if (ret)
+		return ret;
 
-	if (count == size) {
-		ret = count;
+	if (state == LED_OFF)
+		led_trigger_remove(led_cdev);
+	__led_set_brightness(led_cdev, state);
 
-		if (state == LED_OFF)
-			led_trigger_remove(led_cdev);
-		led_set_brightness(led_cdev, state);
-	}
-
-	return ret;
+	return size;
 }
 
 static ssize_t led_max_brightness_show(struct device *dev,
@@ -80,6 +74,55 @@ static struct device_attribute led_class_attrs[] = {
 #endif
 	__ATTR_NULL,
 };
+
+static void led_timer_function(unsigned long data)
+{
+	struct led_classdev *led_cdev = (void *)data;
+	unsigned long brightness;
+	unsigned long delay;
+
+	if (!led_cdev->blink_delay_on || !led_cdev->blink_delay_off) {
+		__led_set_brightness(led_cdev, LED_OFF);
+		return;
+	}
+
+	if (led_cdev->flags & LED_BLINK_ONESHOT_STOP) {
+		led_cdev->flags &= ~LED_BLINK_ONESHOT_STOP;
+		return;
+	}
+
+	brightness = led_get_brightness(led_cdev);
+	if (!brightness) {
+		/* Time to switch the LED on. */
+		brightness = led_cdev->blink_brightness;
+		delay = led_cdev->blink_delay_on;
+	} else {
+		/* Store the current brightness value to be able
+		 * to restore it when the delay_off period is over.
+		 */
+		led_cdev->blink_brightness = brightness;
+		brightness = LED_OFF;
+		delay = led_cdev->blink_delay_off;
+	}
+
+	__led_set_brightness(led_cdev, brightness);
+
+	/* Return in next iteration if led is in one-shot mode and we are in
+	 * the final blink state so that the led is toggled each delay_on +
+	 * delay_off milliseconds in worst case.
+	 */
+	if (led_cdev->flags & LED_BLINK_ONESHOT) {
+		if (led_cdev->flags & LED_BLINK_INVERT) {
+			if (brightness)
+				led_cdev->flags |= LED_BLINK_ONESHOT_STOP;
+		} else {
+			if (!brightness)
+				led_cdev->flags |= LED_BLINK_ONESHOT_STOP;
+		}
+	}
+
+	mod_timer(&led_cdev->blink_timer, jiffies + msecs_to_jiffies(delay));
+}
 
 /**
  * led_classdev_suspend - suspend an led_classdev.
@@ -148,6 +191,10 @@ int led_classdev_register(struct device *parent, struct led_classdev *led_cdev)
 
 	led_update_brightness(led_cdev);
 
+	init_timer(&led_cdev->blink_timer);
+	led_cdev->blink_timer.function = led_timer_function;
+	led_cdev->blink_timer.data = (unsigned long)led_cdev;
+
 #ifdef CONFIG_LEDS_TRIGGERS
 	led_trigger_set_default(led_cdev);
 #endif
@@ -157,7 +204,6 @@ int led_classdev_register(struct device *parent, struct led_classdev *led_cdev)
 
 	return 0;
 }
-
 EXPORT_SYMBOL_GPL(led_classdev_register);
 
 /**
@@ -174,6 +220,9 @@ void led_classdev_unregister(struct led_classdev *led_cdev)
 		led_trigger_set(led_cdev, NULL);
 	up_write(&led_cdev->trigger_lock);
 #endif
+
+	/* Stop blinking */
+	led_set_brightness(led_cdev, LED_OFF);
 
 	device_unregister(led_cdev->dev);
 

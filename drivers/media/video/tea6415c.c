@@ -148,11 +148,11 @@ static int tea6415c_probe(struct i2c_client *client,
 
 	/* let's see whether this adapter can support what we need */
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_WRITE_BYTE))
-		return 0;
+		return -EIO;
 
 	v4l_info(client, "chip found @ 0x%x (%s)\n",
 			client->addr << 1, client->adapter->name);
-	sd = kmalloc(sizeof(struct v4l2_subdev), GFP_KERNEL);
+	sd = kzalloc(sizeof(struct v4l2_subdev), GFP_KERNEL);
 	if (sd == NULL)
 		return -ENOMEM;
 	v4l2_i2c_subdev_init(sd, client, &tea6415c_ops);
@@ -184,15 +184,4 @@ static struct i2c_driver tea6415c_driver = {
 	.id_table	= tea6415c_id,
 };
 
-static __init int init_tea6415c(void)
-{
-	return i2c_add_driver(&tea6415c_driver);
-}
-
-static __exit void exit_tea6415c(void)
-{
-	i2c_del_driver(&tea6415c_driver);
-}
-
-module_init(init_tea6415c);
-module_exit(exit_tea6415c);
+module_i2c_driver(tea6415c_driver);

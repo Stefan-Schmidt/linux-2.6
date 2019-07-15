@@ -55,7 +55,7 @@ typedef struct _S_ETHCS_PKT_INFO
 
 typedef struct _ETH_CS_802_Q_FRAME
 {
-	ETH_HEADER_STRUC EThHdr;
+	struct bcm_eth_header EThHdr;
 	USHORT UserPriority:3;
 	USHORT CFI:1;
 	USHORT VLANID:12;
@@ -64,7 +64,7 @@ typedef struct _ETH_CS_802_Q_FRAME
 
 typedef struct _ETH_CS_802_LLC_FRAME
 {
-	ETH_HEADER_STRUC EThHdr;
+	struct bcm_eth_header EThHdr;
 	unsigned char DSAP;
 	unsigned char SSAP;
 	unsigned char Control;
@@ -72,7 +72,7 @@ typedef struct _ETH_CS_802_LLC_FRAME
 
 typedef struct _ETH_CS_802_LLC_SNAP_FRAME
 {
-	ETH_HEADER_STRUC EThHdr;
+	struct bcm_eth_header EThHdr;
 	unsigned char DSAP;
 	unsigned char SSAP;
 	unsigned char Control;
@@ -82,13 +82,13 @@ typedef struct _ETH_CS_802_LLC_SNAP_FRAME
 
 typedef struct _ETH_CS_ETH2_FRAME
 {
-	ETH_HEADER_STRUC EThHdr;
+	struct bcm_eth_header EThHdr;
 } __attribute__((packed)) ETH_CS_ETH2_FRAME;
 
+#define ETHERNET_FRAMETYPE_IPV4		ntohs(0x0800)
+#define ETHERNET_FRAMETYPE_IPV6 	ntohs(0x86dd)
+#define ETHERNET_FRAMETYPE_802QVLAN 	ntohs(0x8100)
 
-#define ETHERNET_FRAMETYPE_IPV4 ntohs(0x0800)
-#define ETHERNET_FRAMETYPE_IPV6 ntohs(0x86dd)
-#define ETHERNET_FRAMETYPE_802QVLAN 0x8100
 //Per SF CS Specification Encodings
 typedef enum _E_SERVICEFLOW_CS_SPEC_
 {

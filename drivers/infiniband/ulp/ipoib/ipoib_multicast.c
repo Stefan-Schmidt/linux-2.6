@@ -34,6 +34,7 @@
 
 #include <linux/skbuff.h>
 #include <linux/rtnetlink.h>
+#include <linux/moduleparam.h>
 #include <linux/ip.h>
 #include <linux/in.h>
 #include <linux/igmp.h>
@@ -68,28 +69,13 @@ struct ipoib_mcast_iter {
 static void ipoib_mcast_free(struct ipoib_mcast *mcast)
 {
 	struct net_device *dev = mcast->dev;
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
-	struct ipoib_neigh *neigh, *tmp;
 	int tx_dropped = 0;
 
 	ipoib_dbg_mcast(netdev_priv(dev), "deleting multicast group %pI6\n",
 			mcast->mcmember.mgid.raw);
 
-	spin_lock_irq(&priv->lock);
-
-	list_for_each_entry_safe(neigh, tmp, &mcast->neigh_list, list) {
-		/*
-		 * It's safe to call ipoib_put_ah() inside priv->lock
-		 * here, because we know that mcast->ah will always
-		 * hold one more reference, so ipoib_put_ah() will
-		 * never do more than decrement the ref count.
-		 */
-		if (neigh->ah)
-			ipoib_put_ah(neigh->ah);
-		ipoib_neigh_free(dev, neigh);
-	}
-
-	spin_unlock_irq(&priv->lock);
+	/* remove all neigh connected to this mcast */
+	ipoib_del_neighs_by_gid(dev, mcast->mcmember.mgid.raw);
 
 	if (mcast->ah)
 		ipoib_put_ah(mcast->ah);
@@ -239,8 +225,11 @@ static int ipoib_mcast_join_finish(struct ipoib_mcast *mcast,
 		av.grh.dgid = mcast->mcmember.mgid;
 
 		ah = ipoib_create_ah(dev, priv->pd, &av);
-		if (!ah) {
-			ipoib_warn(priv, "ib_address_create failed\n");
+		if (IS_ERR(ah)) {
+			ipoib_warn(priv, "ib_address_create failed %ld\n",
+				-PTR_ERR(ah));
+			/* use original error */
+			return PTR_ERR(ah);
 		} else {
 			spin_lock_irq(&priv->lock);
 			mcast->ah = ah;
@@ -258,17 +247,13 @@ static int ipoib_mcast_join_finish(struct ipoib_mcast *mcast,
 	netif_tx_lock_bh(dev);
 	while (!skb_queue_empty(&mcast->pkt_queue)) {
 		struct sk_buff *skb = skb_dequeue(&mcast->pkt_queue);
+
 		netif_tx_unlock_bh(dev);
 
 		skb->dev = dev;
-
-		if (!skb_dst(skb) || !skb_dst(skb)->neighbour) {
-			/* put pseudoheader back on for next time */
-			skb_push(skb, sizeof (struct ipoib_pseudoheader));
-		}
-
 		if (dev_queue_xmit(skb))
 			ipoib_warn(priv, "dev_queue_xmit failed to requeue packet\n");
+
 		netif_tx_lock_bh(dev);
 	}
 	netif_tx_unlock_bh(dev);
@@ -655,11 +640,12 @@ static int ipoib_mcast_leave(struct net_device *dev, struct ipoib_mcast *mcast)
 	return 0;
 }
 
-void ipoib_mcast_send(struct net_device *dev, void *mgid, struct sk_buff *skb)
+void ipoib_mcast_send(struct net_device *dev, u8 *daddr, struct sk_buff *skb)
 {
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
 	struct ipoib_mcast *mcast;
 	unsigned long flags;
+	void *mgid = daddr + 4;
 
 	spin_lock_irqsave(&priv->lock, flags);
 
@@ -715,21 +701,23 @@ void ipoib_mcast_send(struct net_device *dev, void *mgid, struct sk_buff *skb)
 
 out:
 	if (mcast && mcast->ah) {
-		if (skb_dst(skb)		&&
-		    skb_dst(skb)->neighbour &&
-		    !*to_ipoib_neigh(skb_dst(skb)->neighbour)) {
-			struct ipoib_neigh *neigh = ipoib_neigh_alloc(skb_dst(skb)->neighbour,
-									skb->dev);
+		struct ipoib_neigh *neigh;
 
+		spin_unlock_irqrestore(&priv->lock, flags);
+		neigh = ipoib_neigh_get(dev, daddr);
+		spin_lock_irqsave(&priv->lock, flags);
+		if (!neigh) {
+			neigh = ipoib_neigh_alloc(daddr, dev);
 			if (neigh) {
 				kref_get(&mcast->ah->ref);
 				neigh->ah	= mcast->ah;
 				list_add_tail(&neigh->list, &mcast->neigh_list);
 			}
 		}
-
 		spin_unlock_irqrestore(&priv->lock, flags);
 		ipoib_send(dev, skb, mcast->ah, IB_MULTICAST_QPN);
+		if (neigh)
+			ipoib_neigh_put(neigh);
 		return;
 	}
 

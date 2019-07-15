@@ -168,12 +168,6 @@ static int jz4740_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	return ret;
 }
 
-static int jz4740_rtc_update_irq_enable(struct device *dev, unsigned int enable)
-{
-	struct jz4740_rtc *rtc = dev_get_drvdata(dev);
-	return jz4740_rtc_ctrl_set_bits(rtc, JZ_RTC_CTRL_1HZ_IRQ, enable);
-}
-
 static int jz4740_rtc_alarm_irq_enable(struct device *dev, unsigned int enable)
 {
 	struct jz4740_rtc *rtc = dev_get_drvdata(dev);
@@ -185,7 +179,6 @@ static struct rtc_class_ops jz4740_rtc_ops = {
 	.set_mmss	= jz4740_rtc_set_mmss,
 	.read_alarm	= jz4740_rtc_read_alarm,
 	.set_alarm	= jz4740_rtc_set_alarm,
-	.update_irq_enable = jz4740_rtc_update_irq_enable,
 	.alarm_irq_enable = jz4740_rtc_alarm_irq_enable,
 };
 
@@ -352,7 +345,7 @@ static const struct dev_pm_ops jz4740_pm_ops = {
 #define JZ4740_RTC_PM_OPS NULL
 #endif  /* CONFIG_PM */
 
-struct platform_driver jz4740_rtc_driver = {
+static struct platform_driver jz4740_rtc_driver = {
 	.probe	 = jz4740_rtc_probe,
 	.remove	 = __devexit_p(jz4740_rtc_remove),
 	.driver	 = {
@@ -362,17 +355,7 @@ struct platform_driver jz4740_rtc_driver = {
 	},
 };
 
-static int __init jz4740_rtc_init(void)
-{
-	return platform_driver_register(&jz4740_rtc_driver);
-}
-module_init(jz4740_rtc_init);
-
-static void __exit jz4740_rtc_exit(void)
-{
-	platform_driver_unregister(&jz4740_rtc_driver);
-}
-module_exit(jz4740_rtc_exit);
+module_platform_driver(jz4740_rtc_driver);
 
 MODULE_AUTHOR("Lars-Peter Clausen <lars@metafoo.de>");
 MODULE_LICENSE("GPL");

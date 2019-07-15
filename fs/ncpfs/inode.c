@@ -11,7 +11,6 @@
 
 #include <linux/module.h>
 
-#include <asm/system.h>
 #include <asm/uaccess.h>
 #include <asm/byteorder.h>
 
@@ -26,16 +25,14 @@
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/init.h>
-#include <linux/smp_lock.h>
 #include <linux/vfs.h>
 #include <linux/mount.h>
 #include <linux/seq_file.h>
-
-#include <linux/ncp_fs.h>
+#include <linux/namei.h>
 
 #include <net/sock.h>
 
-#include "ncplib_kernel.h"
+#include "ncp_fs.h"
 #include "getopt.h"
 
 #define NCP_DEFAULT_FILE_MODE 0600
@@ -46,7 +43,7 @@
 static void ncp_evict_inode(struct inode *);
 static void ncp_put_super(struct super_block *);
 static int  ncp_statfs(struct dentry *, struct kstatfs *);
-static int  ncp_show_options(struct seq_file *, struct vfsmount *);
+static int  ncp_show_options(struct seq_file *, struct dentry *);
 
 static struct kmem_cache * ncp_inode_cachep;
 
@@ -59,9 +56,15 @@ static struct inode *ncp_alloc_inode(struct super_block *sb)
 	return &ei->vfs_inode;
 }
 
+static void ncp_i_callback(struct rcu_head *head)
+{
+	struct inode *inode = container_of(head, struct inode, i_rcu);
+	kmem_cache_free(ncp_inode_cachep, NCP_FINFO(inode));
+}
+
 static void ncp_destroy_inode(struct inode *inode)
 {
-	kmem_cache_free(ncp_inode_cachep, NCP_FINFO(inode));
+	call_rcu(&inode->i_rcu, ncp_i_callback);
 }
 
 static void init_once(void *foo)
@@ -223,7 +226,7 @@ static void ncp_set_attr(struct inode *inode, struct ncp_entry_info *nwinfo)
 
 	DDPRINTK("ncp_read_inode: inode->i_mode = %u\n", inode->i_mode);
 
-	inode->i_nlink = 1;
+	set_nlink(inode, 1);
 	inode->i_uid = server->m.uid;
 	inode->i_gid = server->m.gid;
 
@@ -289,7 +292,7 @@ static void
 ncp_evict_inode(struct inode *inode)
 {
 	truncate_inode_pages(&inode->i_data, 0);
-	end_writeback(inode);
+	clear_inode(inode);
 
 	if (S_ISDIR(inode->i_mode)) {
 		DDPRINTK("ncp_evict_inode: put directory %ld\n", inode->i_ino);
@@ -310,12 +313,17 @@ static void ncp_stop_tasks(struct ncp_server *server) {
 	sk->sk_write_space  = server->write_space;
 	release_sock(sk);
 	del_timer_sync(&server->timeout_tm);
-	flush_scheduled_work();
+
+	flush_work_sync(&server->rcv.tq);
+	if (sk->sk_socket->type == SOCK_STREAM)
+		flush_work_sync(&server->tx.tq);
+	else
+		flush_work_sync(&server->timeout_tq);
 }
 
-static int  ncp_show_options(struct seq_file *seq, struct vfsmount *mnt)
+static int  ncp_show_options(struct seq_file *seq, struct dentry *root)
 {
-	struct ncp_server *server = NCP_SBP(mnt->mnt_sb);
+	struct ncp_server *server = NCP_SBP(root->d_sb);
 	unsigned int tmp;
 
 	if (server->m.uid != 0)
@@ -451,7 +459,7 @@ static int ncp_fill_super(struct super_block *sb, void *raw_data, int silent)
 #endif
 	struct ncp_entry_info finfo;
 
-	data.wdog_pid = NULL;
+	memset(&data, 0, sizeof(data));
 	server = kzalloc(sizeof(struct ncp_server), GFP_KERNEL);
 	if (!server)
 		return -ENOMEM;
@@ -486,7 +494,6 @@ static int ncp_fill_super(struct super_block *sb, void *raw_data, int silent)
 				struct ncp_mount_data_v4* md = (struct ncp_mount_data_v4*)raw_data;
 
 				data.flags = md->flags;
-				data.int_flags = 0;
 				data.mounted_uid = md->mounted_uid;
 				data.wdog_pid = find_get_pid(md->wdog_pid);
 				data.ncp_fd = md->ncp_fd;
@@ -497,7 +504,6 @@ static int ncp_fill_super(struct super_block *sb, void *raw_data, int silent)
 				data.file_mode = md->file_mode;
 				data.dir_mode = md->dir_mode;
 				data.info_fd = -1;
-				data.mounted_vol[0] = 0;
 			}
 			break;
 		default:
@@ -532,6 +538,7 @@ static int ncp_fill_super(struct super_block *sb, void *raw_data, int silent)
 	sb->s_blocksize_bits = 10;
 	sb->s_magic = NCP_SUPER_MAGIC;
 	sb->s_op = &ncp_sops;
+	sb->s_d_op = &ncp_dentry_operations;
 	sb->s_bdi = &server->bdi;
 
 	server = NCP_SBP(sb);
@@ -539,7 +546,7 @@ static int ncp_fill_super(struct super_block *sb, void *raw_data, int silent)
 
 	error = bdi_setup_and_register(&server->bdi, "ncpfs", BDI_CAP_MAP_COPY);
 	if (error)
-		goto out_bdi;
+		goto out_fput;
 
 	server->ncp_filp = ncp_filp;
 	server->ncp_sock = sock;
@@ -550,7 +557,7 @@ static int ncp_fill_super(struct super_block *sb, void *raw_data, int silent)
 		error = -EBADF;
 		server->info_filp = fget(data.info_fd);
 		if (!server->info_filp)
-			goto out_fput;
+			goto out_bdi;
 		error = -ENOTSOCK;
 		sock_inode = server->info_filp->f_path.dentry->d_inode;
 		if (!S_ISSOCK(sock_inode->i_mode))
@@ -585,7 +592,7 @@ static int ncp_fill_super(struct super_block *sb, void *raw_data, int silent)
 /*	server->priv.data = NULL;		*/
 
 	server->m = data;
-	/* Althought anything producing this is buggy, it happens
+	/* Although anything producing this is buggy, it happens
 	   now because of PATH_MAX changes.. */
 	if (server->m.time_out < 1) {
 		server->m.time_out = 10;
@@ -708,14 +715,11 @@ static int ncp_fill_super(struct super_block *sb, void *raw_data, int silent)
         if (!root_inode)
 		goto out_disconnect;
 	DPRINTK("ncp_fill_super: root vol=%d\n", NCP_FINFO(root_inode)->volNumber);
-	sb->s_root = d_alloc_root(root_inode);
+	sb->s_root = d_make_root(root_inode);
         if (!sb->s_root)
-		goto out_no_root;
-	sb->s_root->d_op = &ncp_root_dentry_operations;
+		goto out_disconnect;
 	return 0;
 
-out_no_root:
-	iput(root_inode);
 out_disconnect:
 	ncp_lock_server(server);
 	ncp_disconnect(server);
@@ -738,9 +742,9 @@ out_nls:
 out_fput2:
 	if (server->info_filp)
 		fput(server->info_filp);
-out_fput:
-	bdi_destroy(&server->bdi);
 out_bdi:
+	bdi_destroy(&server->bdi);
+out_fput:
 	/* 23/12/1998 Marcin Dalecki <dalecki@cs.net.pl>:
 	 * 
 	 * The previously used put_filp(ncp_filp); was bogus, since

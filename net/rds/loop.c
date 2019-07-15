@@ -61,10 +61,15 @@ static int rds_loop_xmit(struct rds_connection *conn, struct rds_message *rm,
 			 unsigned int hdr_off, unsigned int sg,
 			 unsigned int off)
 {
+	struct scatterlist *sgp = &rm->data.op_sg[sg];
+	int ret = sizeof(struct rds_header) +
+			be32_to_cpu(rm->m_inc.i_hdr.h_len);
+
 	/* Do not send cong updates to loopback */
 	if (rm->m_inc.i_hdr.h_flags & RDS_FLAG_CONG_BITMAP) {
 		rds_cong_map_updated(conn->c_fcong, ~(u64) 0);
-		return sizeof(struct rds_header) + RDS_CONG_MAP_BYTES;
+		ret = min_t(int, ret, sgp->length - conn->c_xmit_data_off);
+		goto out;
 	}
 
 	BUG_ON(hdr_off || sg || off);
@@ -74,14 +79,14 @@ static int rds_loop_xmit(struct rds_connection *conn, struct rds_message *rm,
 	rds_message_addref(rm);
 
 	rds_recv_incoming(conn, conn->c_laddr, conn->c_faddr, &rm->m_inc,
-			  GFP_KERNEL, KM_USER0);
+			  GFP_KERNEL);
 
 	rds_send_drop_acked(conn, be64_to_cpu(rm->m_inc.i_hdr.h_sequence),
 			    NULL);
 
 	rds_inc_put(&rm->m_inc);
-
-	return sizeof(struct rds_header) + be32_to_cpu(rm->m_inc.i_hdr.h_len);
+out:
+	return ret;
 }
 
 /*
@@ -116,7 +121,7 @@ static int rds_loop_conn_alloc(struct rds_connection *conn, gfp_t gfp)
 	struct rds_loop_connection *lc;
 	unsigned long flags;
 
-	lc = kzalloc(sizeof(struct rds_loop_connection), GFP_KERNEL);
+	lc = kzalloc(sizeof(struct rds_loop_connection), gfp);
 	if (!lc)
 		return -ENOMEM;
 
@@ -134,8 +139,12 @@ static int rds_loop_conn_alloc(struct rds_connection *conn, gfp_t gfp)
 static void rds_loop_conn_free(void *arg)
 {
 	struct rds_loop_connection *lc = arg;
+	unsigned long flags;
+
 	rdsdebug("lc %p\n", lc);
+	spin_lock_irqsave(&loop_conns_lock, flags);
 	list_del(&lc->loop_node);
+	spin_unlock_irqrestore(&loop_conns_lock, flags);
 	kfree(lc);
 }
 

@@ -10,8 +10,6 @@
  */
 
 #include <linux/cpumask.h>
-#include <linux/err.h>
-#include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/mutex.h>
 #include <linux/oprofile.h>
@@ -25,27 +23,39 @@
 #include <asm/ptrace.h>
 
 #ifdef CONFIG_HW_PERF_EVENTS
+
+/*
+ * OProfile has a curious naming scheme for the ARM PMUs, but they are
+ * part of the user ABI so we need to map from the perf PMU name for
+ * supported PMUs.
+ */
+static struct op_perf_name {
+	char *perf_name;
+	char *op_name;
+} op_perf_name_map[] = {
+	{ "xscale1",		"arm/xscale1"	},
+	{ "xscale1",		"arm/xscale2"	},
+	{ "v6",			"arm/armv6"	},
+	{ "v6mpcore",		"arm/mpcore"	},
+	{ "ARMv7 Cortex-A8",	"arm/armv7"	},
+	{ "ARMv7 Cortex-A9",	"arm/armv7-ca9"	},
+};
+
 char *op_name_from_perf_id(void)
 {
-	enum arm_perf_pmu_ids id = armpmu_get_pmu_id();
+	int i;
+	struct op_perf_name names;
+	const char *perf_name = perf_pmu_name();
 
-	switch (id) {
-	case ARM_PERF_PMU_ID_XSCALE1:
-		return "arm/xscale1";
-	case ARM_PERF_PMU_ID_XSCALE2:
-		return "arm/xscale2";
-	case ARM_PERF_PMU_ID_V6:
-		return "arm/armv6";
-	case ARM_PERF_PMU_ID_V6MP:
-		return "arm/mpcore";
-	case ARM_PERF_PMU_ID_CA8:
-		return "arm/armv7";
-	case ARM_PERF_PMU_ID_CA9:
-		return "arm/armv7-ca9";
-	default:
-		return NULL;
+	for (i = 0; i < ARRAY_SIZE(op_perf_name_map); ++i) {
+		names = op_perf_name_map[i];
+		if (!strcmp(names.perf_name, perf_name))
+			return names.op_name;
 	}
+
+	return NULL;
 }
+#endif
 
 static int report_trace(struct stackframe *frame, void *d)
 {
@@ -85,7 +95,7 @@ static struct frame_tail* user_backtrace(struct frame_tail *tail)
 
 	/* frame pointers should strictly progress back up the stack
 	 * (towards higher addresses) */
-	if (tail >= buftail[0].fp)
+	if (tail + 1 >= buftail[0].fp)
 		return NULL;
 
 	return buftail[0].fp-1;
@@ -111,20 +121,13 @@ static void arm_backtrace(struct pt_regs * const regs, unsigned int depth)
 
 int __init oprofile_arch_init(struct oprofile_operations *ops)
 {
+	/* provide backtrace support also in timer mode: */
 	ops->backtrace		= arm_backtrace;
 
 	return oprofile_perf_init(ops);
 }
 
-void __exit oprofile_arch_exit(void)
+void oprofile_arch_exit(void)
 {
 	oprofile_perf_exit();
 }
-#else
-int __init oprofile_arch_init(struct oprofile_operations *ops)
-{
-	pr_info("oprofile: hardware counters not available\n");
-	return -ENODEV;
-}
-void __exit oprofile_arch_exit(void) {}
-#endif /* CONFIG_HW_PERF_EVENTS */

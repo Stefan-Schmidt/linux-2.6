@@ -32,6 +32,7 @@
 
 #include <linux/vga_switcheroo.h>
 #include <linux/slab.h>
+#include <linux/acpi.h>
 /*
  * BIOS.
  */
@@ -98,16 +99,81 @@ static bool radeon_read_bios(struct radeon_device *rdev)
 	return true;
 }
 
+#ifdef CONFIG_ACPI
 /* ATRM is used to get the BIOS on the discrete cards in
  * dual-gpu systems.
  */
+/* retrieve the ROM in 4k blocks */
+#define ATRM_BIOS_PAGE 4096
+/**
+ * radeon_atrm_call - fetch a chunk of the vbios
+ *
+ * @atrm_handle: acpi ATRM handle
+ * @bios: vbios image pointer
+ * @offset: offset of vbios image data to fetch
+ * @len: length of vbios image data to fetch
+ *
+ * Executes ATRM to fetch a chunk of the discrete
+ * vbios image on PX systems (all asics).
+ * Returns the length of the buffer fetched.
+ */
+static int radeon_atrm_call(acpi_handle atrm_handle, uint8_t *bios,
+			    int offset, int len)
+{
+	acpi_status status;
+	union acpi_object atrm_arg_elements[2], *obj;
+	struct acpi_object_list atrm_arg;
+	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL};
+
+	atrm_arg.count = 2;
+	atrm_arg.pointer = &atrm_arg_elements[0];
+
+	atrm_arg_elements[0].type = ACPI_TYPE_INTEGER;
+	atrm_arg_elements[0].integer.value = offset;
+
+	atrm_arg_elements[1].type = ACPI_TYPE_INTEGER;
+	atrm_arg_elements[1].integer.value = len;
+
+	status = acpi_evaluate_object(atrm_handle, NULL, &atrm_arg, &buffer);
+	if (ACPI_FAILURE(status)) {
+		printk("failed to evaluate ATRM got %s\n", acpi_format_exception(status));
+		return -ENODEV;
+	}
+
+	obj = (union acpi_object *)buffer.pointer;
+	memcpy(bios+offset, obj->buffer.pointer, obj->buffer.length);
+	len = obj->buffer.length;
+	kfree(buffer.pointer);
+	return len;
+}
+
 static bool radeon_atrm_get_bios(struct radeon_device *rdev)
 {
 	int ret;
-	int size = 64 * 1024;
+	int size = 256 * 1024;
 	int i;
+	struct pci_dev *pdev = NULL;
+	acpi_handle dhandle, atrm_handle;
+	acpi_status status;
+	bool found = false;
 
-	if (!radeon_atrm_supported(rdev->pdev))
+	/* ATRM is for the discrete card only */
+	if (rdev->flags & RADEON_IS_IGP)
+		return false;
+
+	while ((pdev = pci_get_class(PCI_CLASS_DISPLAY_VGA << 8, pdev)) != NULL) {
+		dhandle = DEVICE_ACPI_HANDLE(&pdev->dev);
+		if (!dhandle)
+			continue;
+
+		status = acpi_get_handle(dhandle, "ATRM", &atrm_handle);
+		if (!ACPI_FAILURE(status)) {
+			found = true;
+			break;
+		}
+	}
+
+	if (!found)
 		return false;
 
 	rdev->bios = kmalloc(size, GFP_KERNEL);
@@ -117,10 +183,11 @@ static bool radeon_atrm_get_bios(struct radeon_device *rdev)
 	}
 
 	for (i = 0; i < size / ATRM_BIOS_PAGE; i++) {
-		ret = radeon_atrm_get_bios_chunk(rdev->bios,
-						 (i * ATRM_BIOS_PAGE),
-						 ATRM_BIOS_PAGE);
-		if (ret <= 0)
+		ret = radeon_atrm_call(atrm_handle,
+				       rdev->bios,
+				       (i * ATRM_BIOS_PAGE),
+				       ATRM_BIOS_PAGE);
+		if (ret < ATRM_BIOS_PAGE)
 			break;
 	}
 
@@ -130,6 +197,52 @@ static bool radeon_atrm_get_bios(struct radeon_device *rdev)
 	}
 	return true;
 }
+#else
+static inline bool radeon_atrm_get_bios(struct radeon_device *rdev)
+{
+	return false;
+}
+#endif
+
+static bool ni_read_disabled_bios(struct radeon_device *rdev)
+{
+	u32 bus_cntl;
+	u32 d1vga_control;
+	u32 d2vga_control;
+	u32 vga_render_control;
+	u32 rom_cntl;
+	bool r;
+
+	bus_cntl = RREG32(R600_BUS_CNTL);
+	d1vga_control = RREG32(AVIVO_D1VGA_CONTROL);
+	d2vga_control = RREG32(AVIVO_D2VGA_CONTROL);
+	vga_render_control = RREG32(AVIVO_VGA_RENDER_CONTROL);
+	rom_cntl = RREG32(R600_ROM_CNTL);
+
+	/* enable the rom */
+	WREG32(R600_BUS_CNTL, (bus_cntl & ~R600_BIOS_ROM_DIS));
+	/* Disable VGA mode */
+	WREG32(AVIVO_D1VGA_CONTROL,
+	       (d1vga_control & ~(AVIVO_DVGA_CONTROL_MODE_ENABLE |
+		AVIVO_DVGA_CONTROL_TIMING_SELECT)));
+	WREG32(AVIVO_D2VGA_CONTROL,
+	       (d2vga_control & ~(AVIVO_DVGA_CONTROL_MODE_ENABLE |
+		AVIVO_DVGA_CONTROL_TIMING_SELECT)));
+	WREG32(AVIVO_VGA_RENDER_CONTROL,
+	       (vga_render_control & ~AVIVO_VGA_VSTATUS_CNTL_MASK));
+	WREG32(R600_ROM_CNTL, rom_cntl | R600_SCK_OVERWRITE);
+
+	r = radeon_read_bios(rdev);
+
+	/* restore regs */
+	WREG32(R600_BUS_CNTL, bus_cntl);
+	WREG32(AVIVO_D1VGA_CONTROL, d1vga_control);
+	WREG32(AVIVO_D2VGA_CONTROL, d2vga_control);
+	WREG32(AVIVO_VGA_RENDER_CONTROL, vga_render_control);
+	WREG32(R600_ROM_CNTL, rom_cntl);
+	return r;
+}
+
 static bool r700_read_disabled_bios(struct radeon_device *rdev)
 {
 	uint32_t viph_control;
@@ -143,7 +256,7 @@ static bool r700_read_disabled_bios(struct radeon_device *rdev)
 	bool r;
 
 	viph_control = RREG32(RADEON_VIPH_CONTROL);
-	bus_cntl = RREG32(RADEON_BUS_CNTL);
+	bus_cntl = RREG32(R600_BUS_CNTL);
 	d1vga_control = RREG32(AVIVO_D1VGA_CONTROL);
 	d2vga_control = RREG32(AVIVO_D2VGA_CONTROL);
 	vga_render_control = RREG32(AVIVO_VGA_RENDER_CONTROL);
@@ -152,7 +265,7 @@ static bool r700_read_disabled_bios(struct radeon_device *rdev)
 	/* disable VIP */
 	WREG32(RADEON_VIPH_CONTROL, (viph_control & ~RADEON_VIPH_EN));
 	/* enable the rom */
-	WREG32(RADEON_BUS_CNTL, (bus_cntl & ~RADEON_BUS_BIOS_DIS_ROM));
+	WREG32(R600_BUS_CNTL, (bus_cntl & ~R600_BIOS_ROM_DIS));
 	/* Disable VGA mode */
 	WREG32(AVIVO_D1VGA_CONTROL,
 	       (d1vga_control & ~(AVIVO_DVGA_CONTROL_MODE_ENABLE |
@@ -191,7 +304,7 @@ static bool r700_read_disabled_bios(struct radeon_device *rdev)
 			cg_spll_status = RREG32(R600_CG_SPLL_STATUS);
 	}
 	WREG32(RADEON_VIPH_CONTROL, viph_control);
-	WREG32(RADEON_BUS_CNTL, bus_cntl);
+	WREG32(R600_BUS_CNTL, bus_cntl);
 	WREG32(AVIVO_D1VGA_CONTROL, d1vga_control);
 	WREG32(AVIVO_D2VGA_CONTROL, d2vga_control);
 	WREG32(AVIVO_VGA_RENDER_CONTROL, vga_render_control);
@@ -216,7 +329,7 @@ static bool r600_read_disabled_bios(struct radeon_device *rdev)
 	bool r;
 
 	viph_control = RREG32(RADEON_VIPH_CONTROL);
-	bus_cntl = RREG32(RADEON_BUS_CNTL);
+	bus_cntl = RREG32(R600_BUS_CNTL);
 	d1vga_control = RREG32(AVIVO_D1VGA_CONTROL);
 	d2vga_control = RREG32(AVIVO_D2VGA_CONTROL);
 	vga_render_control = RREG32(AVIVO_VGA_RENDER_CONTROL);
@@ -231,7 +344,7 @@ static bool r600_read_disabled_bios(struct radeon_device *rdev)
 	/* disable VIP */
 	WREG32(RADEON_VIPH_CONTROL, (viph_control & ~RADEON_VIPH_EN));
 	/* enable the rom */
-	WREG32(RADEON_BUS_CNTL, (bus_cntl & ~RADEON_BUS_BIOS_DIS_ROM));
+	WREG32(R600_BUS_CNTL, (bus_cntl & ~R600_BIOS_ROM_DIS));
 	/* Disable VGA mode */
 	WREG32(AVIVO_D1VGA_CONTROL,
 	       (d1vga_control & ~(AVIVO_DVGA_CONTROL_MODE_ENABLE |
@@ -262,7 +375,7 @@ static bool r600_read_disabled_bios(struct radeon_device *rdev)
 
 	/* restore regs */
 	WREG32(RADEON_VIPH_CONTROL, viph_control);
-	WREG32(RADEON_BUS_CNTL, bus_cntl);
+	WREG32(R600_BUS_CNTL, bus_cntl);
 	WREG32(AVIVO_D1VGA_CONTROL, d1vga_control);
 	WREG32(AVIVO_D2VGA_CONTROL, d2vga_control);
 	WREG32(AVIVO_VGA_RENDER_CONTROL, vga_render_control);
@@ -291,7 +404,7 @@ static bool avivo_read_disabled_bios(struct radeon_device *rdev)
 
 	seprom_cntl1 = RREG32(RADEON_SEPROM_CNTL1);
 	viph_control = RREG32(RADEON_VIPH_CONTROL);
-	bus_cntl = RREG32(RADEON_BUS_CNTL);
+	bus_cntl = RREG32(RV370_BUS_CNTL);
 	d1vga_control = RREG32(AVIVO_D1VGA_CONTROL);
 	d2vga_control = RREG32(AVIVO_D2VGA_CONTROL);
 	vga_render_control = RREG32(AVIVO_VGA_RENDER_CONTROL);
@@ -310,7 +423,7 @@ static bool avivo_read_disabled_bios(struct radeon_device *rdev)
 	WREG32(RADEON_VIPH_CONTROL, (viph_control & ~RADEON_VIPH_EN));
 
 	/* enable the rom */
-	WREG32(RADEON_BUS_CNTL, (bus_cntl & ~RADEON_BUS_BIOS_DIS_ROM));
+	WREG32(RV370_BUS_CNTL, (bus_cntl & ~RV370_BUS_BIOS_DIS_ROM));
 
 	/* Disable VGA mode */
 	WREG32(AVIVO_D1VGA_CONTROL,
@@ -327,7 +440,7 @@ static bool avivo_read_disabled_bios(struct radeon_device *rdev)
 	/* restore regs */
 	WREG32(RADEON_SEPROM_CNTL1, seprom_cntl1);
 	WREG32(RADEON_VIPH_CONTROL, viph_control);
-	WREG32(RADEON_BUS_CNTL, bus_cntl);
+	WREG32(RV370_BUS_CNTL, bus_cntl);
 	WREG32(AVIVO_D1VGA_CONTROL, d1vga_control);
 	WREG32(AVIVO_D2VGA_CONTROL, d2vga_control);
 	WREG32(AVIVO_VGA_RENDER_CONTROL, vga_render_control);
@@ -350,7 +463,10 @@ static bool legacy_read_disabled_bios(struct radeon_device *rdev)
 
 	seprom_cntl1 = RREG32(RADEON_SEPROM_CNTL1);
 	viph_control = RREG32(RADEON_VIPH_CONTROL);
-	bus_cntl = RREG32(RADEON_BUS_CNTL);
+	if (rdev->flags & RADEON_IS_PCIE)
+		bus_cntl = RREG32(RV370_BUS_CNTL);
+	else
+		bus_cntl = RREG32(RADEON_BUS_CNTL);
 	crtc_gen_cntl = RREG32(RADEON_CRTC_GEN_CNTL);
 	crtc2_gen_cntl = 0;
 	crtc_ext_cntl = RREG32(RADEON_CRTC_EXT_CNTL);
@@ -372,7 +488,10 @@ static bool legacy_read_disabled_bios(struct radeon_device *rdev)
 	WREG32(RADEON_VIPH_CONTROL, (viph_control & ~RADEON_VIPH_EN));
 
 	/* enable the rom */
-	WREG32(RADEON_BUS_CNTL, (bus_cntl & ~RADEON_BUS_BIOS_DIS_ROM));
+	if (rdev->flags & RADEON_IS_PCIE)
+		WREG32(RV370_BUS_CNTL, (bus_cntl & ~RV370_BUS_BIOS_DIS_ROM));
+	else
+		WREG32(RADEON_BUS_CNTL, (bus_cntl & ~RADEON_BUS_BIOS_DIS_ROM));
 
 	/* Turn off mem requests and CRTC for both controllers */
 	WREG32(RADEON_CRTC_GEN_CNTL,
@@ -399,7 +518,10 @@ static bool legacy_read_disabled_bios(struct radeon_device *rdev)
 	/* restore regs */
 	WREG32(RADEON_SEPROM_CNTL1, seprom_cntl1);
 	WREG32(RADEON_VIPH_CONTROL, viph_control);
-	WREG32(RADEON_BUS_CNTL, bus_cntl);
+	if (rdev->flags & RADEON_IS_PCIE)
+		WREG32(RV370_BUS_CNTL, bus_cntl);
+	else
+		WREG32(RADEON_BUS_CNTL, bus_cntl);
 	WREG32(RADEON_CRTC_GEN_CNTL, crtc_gen_cntl);
 	if (!(rdev->flags & RADEON_SINGLE_CRTC)) {
 		WREG32(RADEON_CRTC2_GEN_CNTL, crtc2_gen_cntl);
@@ -415,6 +537,8 @@ static bool radeon_read_disabled_bios(struct radeon_device *rdev)
 {
 	if (rdev->flags & RADEON_IS_IGP)
 		return igp_read_bios_from_vram(rdev);
+	else if (rdev->family >= CHIP_BARTS)
+		return ni_read_disabled_bios(rdev);
 	else if (rdev->family >= CHIP_RV770)
 		return r700_read_disabled_bios(rdev);
 	else if (rdev->family >= CHIP_R600)
@@ -425,6 +549,61 @@ static bool radeon_read_disabled_bios(struct radeon_device *rdev)
 		return legacy_read_disabled_bios(rdev);
 }
 
+#ifdef CONFIG_ACPI
+static bool radeon_acpi_vfct_bios(struct radeon_device *rdev)
+{
+	bool ret = false;
+	struct acpi_table_header *hdr;
+	acpi_size tbl_size;
+	UEFI_ACPI_VFCT *vfct;
+	GOP_VBIOS_CONTENT *vbios;
+	VFCT_IMAGE_HEADER *vhdr;
+
+	if (!ACPI_SUCCESS(acpi_get_table_with_size("VFCT", 1, &hdr, &tbl_size)))
+		return false;
+	if (tbl_size < sizeof(UEFI_ACPI_VFCT)) {
+		DRM_ERROR("ACPI VFCT table present but broken (too short #1)\n");
+		goto out_unmap;
+	}
+
+	vfct = (UEFI_ACPI_VFCT *)hdr;
+	if (vfct->VBIOSImageOffset + sizeof(VFCT_IMAGE_HEADER) > tbl_size) {
+		DRM_ERROR("ACPI VFCT table present but broken (too short #2)\n");
+		goto out_unmap;
+	}
+
+	vbios = (GOP_VBIOS_CONTENT *)((char *)hdr + vfct->VBIOSImageOffset);
+	vhdr = &vbios->VbiosHeader;
+	DRM_INFO("ACPI VFCT contains a BIOS for %02x:%02x.%d %04x:%04x, size %d\n",
+			vhdr->PCIBus, vhdr->PCIDevice, vhdr->PCIFunction,
+			vhdr->VendorID, vhdr->DeviceID, vhdr->ImageLength);
+
+	if (vhdr->PCIBus != rdev->pdev->bus->number ||
+	    vhdr->PCIDevice != PCI_SLOT(rdev->pdev->devfn) ||
+	    vhdr->PCIFunction != PCI_FUNC(rdev->pdev->devfn) ||
+	    vhdr->VendorID != rdev->pdev->vendor ||
+	    vhdr->DeviceID != rdev->pdev->device) {
+		DRM_INFO("ACPI VFCT table is not for this card\n");
+		goto out_unmap;
+	};
+
+	if (vfct->VBIOSImageOffset + sizeof(VFCT_IMAGE_HEADER) + vhdr->ImageLength > tbl_size) {
+		DRM_ERROR("ACPI VFCT image truncated\n");
+		goto out_unmap;
+	}
+
+	rdev->bios = kmemdup(&vbios->VbiosContent, vhdr->ImageLength, GFP_KERNEL);
+	ret = !!rdev->bios;
+
+out_unmap:
+	return ret;
+}
+#else
+static inline bool radeon_acpi_vfct_bios(struct radeon_device *rdev)
+{
+	return false;
+}
+#endif
 
 bool radeon_get_bios(struct radeon_device *rdev)
 {
@@ -432,6 +611,8 @@ bool radeon_get_bios(struct radeon_device *rdev)
 	uint16_t tmp;
 
 	r = radeon_atrm_get_bios(rdev);
+	if (r == false)
+		r = radeon_acpi_vfct_bios(rdev);
 	if (r == false)
 		r = igp_read_bios_from_vram(rdev);
 	if (r == false)

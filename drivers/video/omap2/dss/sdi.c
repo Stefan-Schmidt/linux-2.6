@@ -20,28 +20,33 @@
 #define DSS_SUBSYS_NAME "SDI"
 
 #include <linux/kernel.h>
-#include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/regulator/consumer.h>
+#include <linux/export.h>
+#include <linux/platform_device.h>
 
-#include <plat/display.h>
-#include <plat/cpu.h>
+#include <video/omapdss.h>
 #include "dss.h"
 
 static struct {
-	bool skip_init;
 	bool update_enabled;
 	struct regulator *vdds_sdi_reg;
+
+	struct dss_lcd_mgr_config mgr_config;
 } sdi;
 
-static void sdi_basic_init(void)
+static void sdi_config_lcd_manager(struct omap_dss_device *dssdev)
 {
-	dispc_set_parallel_interface_mode(OMAP_DSS_PARALLELMODE_BYPASS);
+	sdi.mgr_config.io_pad_mode = DSS_IO_PAD_MODE_BYPASS;
 
-	dispc_set_lcd_display_type(OMAP_DSS_LCD_DISPLAY_TFT);
-	dispc_set_tft_data_lines(24);
-	dispc_lcd_enable_signal_polarity(1);
+	sdi.mgr_config.stallmode = false;
+	sdi.mgr_config.fifohandcheck = false;
+
+	sdi.mgr_config.video_port_width = 24;
+	sdi.mgr_config.lcden_sig_polarity = 1;
+
+	dss_mgr_set_lcd_config(dssdev->manager, &sdi.mgr_config);
 }
 
 int omapdss_sdi_display_enable(struct omap_dss_device *dssdev)
@@ -49,49 +54,39 @@ int omapdss_sdi_display_enable(struct omap_dss_device *dssdev)
 	struct omap_video_timings *t = &dssdev->panel.timings;
 	struct dss_clock_info dss_cinfo;
 	struct dispc_clock_info dispc_cinfo;
-	u16 lck_div, pck_div;
-	unsigned long fck;
 	unsigned long pck;
 	int r;
+
+	if (dssdev->manager == NULL) {
+		DSSERR("failed to enable display: no manager\n");
+		return -ENODEV;
+	}
 
 	r = omap_dss_start_device(dssdev);
 	if (r) {
 		DSSERR("failed to start device\n");
-		goto err0;
+		goto err_start_dev;
 	}
 
 	r = regulator_enable(sdi.vdds_sdi_reg);
 	if (r)
-		goto err1;
+		goto err_reg_enable;
 
-	/* In case of skip_init sdi_init has already enabled the clocks */
-	if (!sdi.skip_init)
-		dss_clk_enable(DSS_CLK_ICK | DSS_CLK_FCK1);
-
-	sdi_basic_init();
+	r = dispc_runtime_get();
+	if (r)
+		goto err_get_dispc;
 
 	/* 15.5.9.1.2 */
-	dssdev->panel.config |= OMAP_DSS_LCD_RF | OMAP_DSS_LCD_ONOFF;
+	dssdev->panel.timings.data_pclk_edge = OMAPDSS_DRIVE_SIG_RISING_EDGE;
+	dssdev->panel.timings.sync_pclk_edge = OMAPDSS_DRIVE_SIG_RISING_EDGE;
 
-	dispc_set_pol_freq(dssdev->panel.config, dssdev->panel.acbi,
-			dssdev->panel.acb);
-
-	if (!sdi.skip_init) {
-		r = dss_calc_clock_div(1, t->pixel_clock * 1000,
-				&dss_cinfo, &dispc_cinfo);
-	} else {
-		r = dss_get_clock_div(&dss_cinfo);
-		r = dispc_get_clock_div(&dispc_cinfo);
-	}
-
+	r = dss_calc_clock_div(t->pixel_clock * 1000, &dss_cinfo, &dispc_cinfo);
 	if (r)
-		goto err2;
+		goto err_calc_clock_div;
 
-	fck = dss_cinfo.fck;
-	lck_div = dispc_cinfo.lck_div;
-	pck_div = dispc_cinfo.pck_div;
+	sdi.mgr_config.clock_info = dispc_cinfo;
 
-	pck = fck / lck_div / pck_div / 1000;
+	pck = dss_cinfo.fck / dispc_cinfo.lck_div / dispc_cinfo.pck_div / 1000;
 
 	if (pck != t->pixel_clock) {
 		DSSWARN("Could not find exact pixel clock. Requested %d kHz, "
@@ -102,46 +97,62 @@ int omapdss_sdi_display_enable(struct omap_dss_device *dssdev)
 	}
 
 
-	dispc_set_lcd_timings(t);
+	dss_mgr_set_timings(dssdev->manager, t);
 
 	r = dss_set_clock_div(&dss_cinfo);
 	if (r)
-		goto err2;
+		goto err_set_dss_clock_div;
 
-	r = dispc_set_clock_div(&dispc_cinfo);
+	sdi_config_lcd_manager(dssdev);
+
+	/*
+	 * LCLK and PCLK divisors are located in shadow registers, and we
+	 * normally write them to DISPC registers when enabling the output.
+	 * However, SDI uses pck-free as source clock for its PLL, and pck-free
+	 * is affected by the divisors. And as we need the PLL before enabling
+	 * the output, we need to write the divisors early.
+	 *
+	 * It seems just writing to the DISPC register is enough, and we don't
+	 * need to care about the shadow register mechanism for pck-free. The
+	 * exact reason for this is unknown.
+	 */
+	dispc_mgr_set_clock_div(dssdev->manager->id,
+			&sdi.mgr_config.clock_info);
+
+	dss_sdi_init(dssdev->phy.sdi.datapairs);
+	r = dss_sdi_enable();
 	if (r)
-		goto err2;
+		goto err_sdi_enable;
+	mdelay(2);
 
-	if (!sdi.skip_init) {
-		dss_sdi_init(dssdev->phy.sdi.datapairs);
-		r = dss_sdi_enable();
-		if (r)
-			goto err1;
-		mdelay(2);
-	}
-
-	dssdev->manager->enable(dssdev->manager);
-
-	sdi.skip_init = 0;
+	r = dss_mgr_enable(dssdev->manager);
+	if (r)
+		goto err_mgr_enable;
 
 	return 0;
-err2:
-	dss_clk_disable(DSS_CLK_ICK | DSS_CLK_FCK1);
+
+err_mgr_enable:
+	dss_sdi_disable();
+err_sdi_enable:
+err_set_dss_clock_div:
+err_calc_clock_div:
+	dispc_runtime_put();
+err_get_dispc:
 	regulator_disable(sdi.vdds_sdi_reg);
-err1:
+err_reg_enable:
 	omap_dss_stop_device(dssdev);
-err0:
+err_start_dev:
 	return r;
 }
 EXPORT_SYMBOL(omapdss_sdi_display_enable);
 
 void omapdss_sdi_display_disable(struct omap_dss_device *dssdev)
 {
-	dssdev->manager->disable(dssdev->manager);
+	dss_mgr_disable(dssdev->manager);
 
 	dss_sdi_disable();
 
-	dss_clk_disable(DSS_CLK_ICK | DSS_CLK_FCK1);
+	dispc_runtime_put();
 
 	regulator_disable(sdi.vdds_sdi_reg);
 
@@ -149,32 +160,78 @@ void omapdss_sdi_display_disable(struct omap_dss_device *dssdev)
 }
 EXPORT_SYMBOL(omapdss_sdi_display_disable);
 
-int sdi_init_display(struct omap_dss_device *dssdev)
+static int __init sdi_init_display(struct omap_dss_device *dssdev)
 {
 	DSSDBG("SDI init\n");
 
-	return 0;
-}
+	if (sdi.vdds_sdi_reg == NULL) {
+		struct regulator *vdds_sdi;
 
-int sdi_init(bool skip_init)
-{
-	/* we store this for first display enable, then clear it */
-	sdi.skip_init = skip_init;
+		vdds_sdi = dss_get_vdds_sdi();
 
-	sdi.vdds_sdi_reg = dss_get_vdds_sdi();
-	if (IS_ERR(sdi.vdds_sdi_reg)) {
-		DSSERR("can't get VDDS_SDI regulator\n");
-		return PTR_ERR(sdi.vdds_sdi_reg);
+		if (IS_ERR(vdds_sdi)) {
+			DSSERR("can't get VDDS_SDI regulator\n");
+			return PTR_ERR(vdds_sdi);
+		}
+
+		sdi.vdds_sdi_reg = vdds_sdi;
 	}
-	/*
-	 * Enable clocks already here, otherwise there would be a toggle
-	 * of them until sdi_display_enable is called.
-	 */
-	if (skip_init)
-		dss_clk_enable(DSS_CLK_ICK | DSS_CLK_FCK1);
+
 	return 0;
 }
 
-void sdi_exit(void)
+static void __init sdi_probe_pdata(struct platform_device *pdev)
 {
+	struct omap_dss_board_info *pdata = pdev->dev.platform_data;
+	int i, r;
+
+	for (i = 0; i < pdata->num_devices; ++i) {
+		struct omap_dss_device *dssdev = pdata->devices[i];
+
+		if (dssdev->type != OMAP_DISPLAY_TYPE_SDI)
+			continue;
+
+		r = sdi_init_display(dssdev);
+		if (r) {
+			DSSERR("device %s init failed: %d\n", dssdev->name, r);
+			continue;
+		}
+
+		r = omap_dss_register_device(dssdev, &pdev->dev, i);
+		if (r)
+			DSSERR("device %s register failed: %d\n",
+					dssdev->name, r);
+	}
+}
+
+static int __init omap_sdi_probe(struct platform_device *pdev)
+{
+	sdi_probe_pdata(pdev);
+
+	return 0;
+}
+
+static int __exit omap_sdi_remove(struct platform_device *pdev)
+{
+	omap_dss_unregister_child_devices(&pdev->dev);
+
+	return 0;
+}
+
+static struct platform_driver omap_sdi_driver = {
+	.remove         = __exit_p(omap_sdi_remove),
+	.driver         = {
+		.name   = "omapdss_sdi",
+		.owner  = THIS_MODULE,
+	},
+};
+
+int __init sdi_init_platform_driver(void)
+{
+	return platform_driver_probe(&omap_sdi_driver, omap_sdi_probe);
+}
+
+void __exit sdi_uninit_platform_driver(void)
+{
+	platform_driver_unregister(&omap_sdi_driver);
 }

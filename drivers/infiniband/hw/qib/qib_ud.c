@@ -116,7 +116,7 @@ static void qib_ud_loopback(struct qib_qp *sqp, struct qib_swqe *swqe)
 	}
 
 	/*
-	 * A GRH is expected to preceed the data even if not
+	 * A GRH is expected to precede the data even if not
 	 * present on the wire.
 	 */
 	length = swqe->length;
@@ -194,11 +194,7 @@ static void qib_ud_loopback(struct qib_qp *sqp, struct qib_swqe *swqe)
 		}
 		length -= len;
 	}
-	while (qp->r_sge.num_sge) {
-		atomic_dec(&qp->r_sge.sge.mr->refcount);
-		if (--qp->r_sge.num_sge)
-			qp->r_sge.sge = *qp->r_sge.sg_list++;
-	}
+	qib_put_ss(&qp->r_sge);
 	if (!test_and_clear_bit(QIB_R_WRID_VALID, &qp->r_aflags))
 		goto bail_unlock;
 	wc.wr_id = qp->r_wr_id;
@@ -321,11 +317,11 @@ int qib_make_ud_req(struct qib_qp *qp)
 
 	if (ah_attr->ah_flags & IB_AH_GRH) {
 		/* Header size in 32-bit words. */
-		qp->s_hdrwords += qib_make_grh(ibp, &qp->s_hdr.u.l.grh,
+		qp->s_hdrwords += qib_make_grh(ibp, &qp->s_hdr->u.l.grh,
 					       &ah_attr->grh,
 					       qp->s_hdrwords, nwords);
 		lrh0 = QIB_LRH_GRH;
-		ohdr = &qp->s_hdr.u.l.oth;
+		ohdr = &qp->s_hdr->u.l.oth;
 		/*
 		 * Don't worry about sending to locally attached multicast
 		 * QPs.  It is unspecified by the spec. what happens.
@@ -333,7 +329,7 @@ int qib_make_ud_req(struct qib_qp *qp)
 	} else {
 		/* Header size in 32-bit words. */
 		lrh0 = QIB_LRH_BTH;
-		ohdr = &qp->s_hdr.u.oth;
+		ohdr = &qp->s_hdr->u.oth;
 	}
 	if (wqe->wr.opcode == IB_WR_SEND_WITH_IMM) {
 		qp->s_hdrwords++;
@@ -346,15 +342,15 @@ int qib_make_ud_req(struct qib_qp *qp)
 		lrh0 |= 0xF000; /* Set VL (see ch. 13.5.3.1) */
 	else
 		lrh0 |= ibp->sl_to_vl[ah_attr->sl] << 12;
-	qp->s_hdr.lrh[0] = cpu_to_be16(lrh0);
-	qp->s_hdr.lrh[1] = cpu_to_be16(ah_attr->dlid);  /* DEST LID */
-	qp->s_hdr.lrh[2] = cpu_to_be16(qp->s_hdrwords + nwords + SIZE_OF_CRC);
+	qp->s_hdr->lrh[0] = cpu_to_be16(lrh0);
+	qp->s_hdr->lrh[1] = cpu_to_be16(ah_attr->dlid);  /* DEST LID */
+	qp->s_hdr->lrh[2] = cpu_to_be16(qp->s_hdrwords + nwords + SIZE_OF_CRC);
 	lid = ppd->lid;
 	if (lid) {
 		lid |= ah_attr->src_path_bits & ((1 << ppd->lmc) - 1);
-		qp->s_hdr.lrh[3] = cpu_to_be16(lid);
+		qp->s_hdr->lrh[3] = cpu_to_be16(lid);
 	} else
-		qp->s_hdr.lrh[3] = IB_LID_PERMISSIVE;
+		qp->s_hdr->lrh[3] = IB_LID_PERMISSIVE;
 	if (wqe->wr.send_flags & IB_SEND_SOLICITED)
 		bth0 |= IB_BTH_SOLICITED;
 	bth0 |= extra_bytes << 20;
@@ -445,13 +441,14 @@ void qib_ud_rcv(struct qib_ibport *ibp, struct qib_ib_header *hdr,
 	qkey = be32_to_cpu(ohdr->u.ud.deth[0]);
 	src_qp = be32_to_cpu(ohdr->u.ud.deth[1]) & QIB_QPN_MASK;
 
-	/* Get the number of bytes the message was padded by. */
+	/*
+	 * Get the number of bytes the message was padded by
+	 * and drop incomplete packets.
+	 */
 	pad = (be32_to_cpu(ohdr->bth[0]) >> 20) & 3;
-	if (unlikely(tlen < (hdrsize + pad + 4))) {
-		/* Drop incomplete packets. */
-		ibp->n_pkt_drops++;
-		goto bail;
-	}
+	if (unlikely(tlen < (hdrsize + pad + 4)))
+		goto drop;
+
 	tlen -= hdrsize + pad + 4;
 
 	/*
@@ -460,10 +457,8 @@ void qib_ud_rcv(struct qib_ibport *ibp, struct qib_ib_header *hdr,
 	 */
 	if (qp->ibqp.qp_num) {
 		if (unlikely(hdr->lrh[1] == IB_LID_PERMISSIVE ||
-			     hdr->lrh[3] == IB_LID_PERMISSIVE)) {
-			ibp->n_pkt_drops++;
-			goto bail;
-		}
+			     hdr->lrh[3] == IB_LID_PERMISSIVE))
+			goto drop;
 		if (qp->ibqp.qp_num > 1) {
 			u16 pkey1, pkey2;
 
@@ -476,7 +471,7 @@ void qib_ud_rcv(struct qib_ibport *ibp, struct qib_ib_header *hdr,
 						0xF,
 					      src_qp, qp->ibqp.qp_num,
 					      hdr->lrh[3], hdr->lrh[1]);
-				goto bail;
+				return;
 			}
 		}
 		if (unlikely(qkey != qp->qkey)) {
@@ -484,30 +479,24 @@ void qib_ud_rcv(struct qib_ibport *ibp, struct qib_ib_header *hdr,
 				      (be16_to_cpu(hdr->lrh[0]) >> 4) & 0xF,
 				      src_qp, qp->ibqp.qp_num,
 				      hdr->lrh[3], hdr->lrh[1]);
-			goto bail;
+			return;
 		}
 		/* Drop invalid MAD packets (see 13.5.3.1). */
 		if (unlikely(qp->ibqp.qp_num == 1 &&
 			     (tlen != 256 ||
-			      (be16_to_cpu(hdr->lrh[0]) >> 12) == 15))) {
-			ibp->n_pkt_drops++;
-			goto bail;
-		}
+			      (be16_to_cpu(hdr->lrh[0]) >> 12) == 15)))
+			goto drop;
 	} else {
 		struct ib_smp *smp;
 
 		/* Drop invalid MAD packets (see 13.5.3.1). */
-		if (tlen != 256 || (be16_to_cpu(hdr->lrh[0]) >> 12) != 15) {
-			ibp->n_pkt_drops++;
-			goto bail;
-		}
+		if (tlen != 256 || (be16_to_cpu(hdr->lrh[0]) >> 12) != 15)
+			goto drop;
 		smp = (struct ib_smp *) data;
 		if ((hdr->lrh[1] == IB_LID_PERMISSIVE ||
 		     hdr->lrh[3] == IB_LID_PERMISSIVE) &&
-		    smp->mgmt_class != IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE) {
-			ibp->n_pkt_drops++;
-			goto bail;
-		}
+		    smp->mgmt_class != IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE)
+			goto drop;
 	}
 
 	/*
@@ -519,17 +508,15 @@ void qib_ud_rcv(struct qib_ibport *ibp, struct qib_ib_header *hdr,
 	    opcode == IB_OPCODE_UD_SEND_ONLY_WITH_IMMEDIATE) {
 		wc.ex.imm_data = ohdr->u.ud.imm_data;
 		wc.wc_flags = IB_WC_WITH_IMM;
-		hdrsize += sizeof(u32);
+		tlen -= sizeof(u32);
 	} else if (opcode == IB_OPCODE_UD_SEND_ONLY) {
 		wc.ex.imm_data = 0;
 		wc.wc_flags = 0;
-	} else {
-		ibp->n_pkt_drops++;
-		goto bail;
-	}
+	} else
+		goto drop;
 
 	/*
-	 * A GRH is expected to preceed the data even if not
+	 * A GRH is expected to precede the data even if not
 	 * present on the wire.
 	 */
 	wc.byte_len = tlen + sizeof(struct ib_grh);
@@ -556,8 +543,7 @@ void qib_ud_rcv(struct qib_ibport *ibp, struct qib_ib_header *hdr,
 	/* Silently drop packets which are too big. */
 	if (unlikely(wc.byte_len > qp->r_len)) {
 		qp->r_flags |= QIB_R_REUSE_SGE;
-		ibp->n_pkt_drops++;
-		return;
+		goto drop;
 	}
 	if (has_grh) {
 		qib_copy_sge(&qp->r_sge, &hdr->u.l.grh,
@@ -566,11 +552,7 @@ void qib_ud_rcv(struct qib_ibport *ibp, struct qib_ib_header *hdr,
 	} else
 		qib_skip_sge(&qp->r_sge, sizeof(struct ib_grh), 1);
 	qib_copy_sge(&qp->r_sge, data, wc.byte_len - sizeof(struct ib_grh), 1);
-	while (qp->r_sge.num_sge) {
-		atomic_dec(&qp->r_sge.sge.mr->refcount);
-		if (--qp->r_sge.num_sge)
-			qp->r_sge.sge = *qp->r_sge.sg_list++;
-	}
+	qib_put_ss(&qp->r_sge);
 	if (!test_and_clear_bit(QIB_R_WRID_VALID, &qp->r_aflags))
 		return;
 	wc.wr_id = qp->r_wr_id;
@@ -594,5 +576,8 @@ void qib_ud_rcv(struct qib_ibport *ibp, struct qib_ib_header *hdr,
 	qib_cq_enter(to_icq(qp->ibqp.recv_cq), &wc,
 		     (ohdr->bth[0] &
 			cpu_to_be32(IB_BTH_SOLICITED)) != 0);
-bail:;
+	return;
+
+drop:
+	ibp->n_pkt_drops++;
 }

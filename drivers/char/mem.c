@@ -26,13 +26,16 @@
 #include <linux/bootmem.h>
 #include <linux/splice.h>
 #include <linux/pfn.h>
+#include <linux/export.h>
+#include <linux/io.h>
 
 #include <asm/uaccess.h>
-#include <asm/io.h>
 
 #ifdef CONFIG_IA64
 # include <linux/efi.h>
 #endif
+
+#define DEVPORT_MINOR	4
 
 static inline unsigned long size_inside_page(unsigned long start,
 					     unsigned long size)
@@ -47,10 +50,7 @@ static inline unsigned long size_inside_page(unsigned long start,
 #ifndef ARCH_HAS_VALID_PHYS_ADDR_RANGE
 static inline int valid_phys_addr_range(unsigned long addr, size_t count)
 {
-	if (addr + count > __pa(high_memory))
-		return 0;
-
-	return 1;
+	return addr + count <= __pa(high_memory);
 }
 
 static inline int valid_mmap_phys_addr_range(unsigned long pfn, size_t size)
@@ -809,35 +809,9 @@ static const struct file_operations oldmem_fops = {
 };
 #endif
 
-static ssize_t kmsg_write(struct file *file, const char __user *buf,
-			  size_t count, loff_t *ppos)
-{
-	char *tmp;
-	ssize_t ret;
-
-	tmp = kmalloc(count + 1, GFP_KERNEL);
-	if (tmp == NULL)
-		return -ENOMEM;
-	ret = -EFAULT;
-	if (!copy_from_user(tmp, buf, count)) {
-		tmp[count] = 0;
-		ret = printk("%s", tmp);
-		if (ret > count)
-			/* printk can add a prefix */
-			ret = count;
-	}
-	kfree(tmp);
-	return ret;
-}
-
-static const struct file_operations kmsg_fops = {
-	.write = kmsg_write,
-	.llseek = noop_llseek,
-};
-
 static const struct memdev {
 	const char *name;
-	mode_t mode;
+	umode_t mode;
 	const struct file_operations *fops;
 	struct backing_dev_info *dev_info;
 } devlist[] = {
@@ -853,7 +827,9 @@ static const struct memdev {
 	 [7] = { "full", 0666, &full_fops, NULL },
 	 [8] = { "random", 0666, &random_fops, NULL },
 	 [9] = { "urandom", 0666, &urandom_fops, NULL },
-	[11] = { "kmsg", 0, &kmsg_fops, NULL },
+#ifdef CONFIG_PRINTK
+	[11] = { "kmsg", 0644, &kmsg_fops, NULL },
+#endif
 #ifdef CONFIG_CRASH_DUMP
 	[12] = { "oldmem", 0, &oldmem_fops, NULL },
 #endif
@@ -891,7 +867,7 @@ static const struct file_operations memory_fops = {
 	.llseek = noop_llseek,
 };
 
-static char *mem_devnode(struct device *dev, mode_t *mode)
+static char *mem_devnode(struct device *dev, umode_t *mode)
 {
 	if (mode && devlist[MINOR(dev->devt)].mode)
 		*mode = devlist[MINOR(dev->devt)].mode;
@@ -920,6 +896,13 @@ static int __init chr_dev_init(void)
 	for (minor = 1; minor < ARRAY_SIZE(devlist); minor++) {
 		if (!devlist[minor].name)
 			continue;
+
+		/*
+		 * Create /dev/port? 
+		 */
+		if ((minor == DEVPORT_MINOR) && !arch_has_dev_port())
+			continue;
+
 		device_create(mem_class, NULL, MKDEV(MEM_MAJOR, minor),
 			      NULL, devlist[minor].name);
 	}

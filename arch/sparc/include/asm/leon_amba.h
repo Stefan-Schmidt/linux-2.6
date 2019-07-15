@@ -87,8 +87,6 @@ struct amba_prom_registers {
 #define LEON3_GPTIMER_CONFIG_NRTIMERS(c) ((c)->config & 0x7)
 #define LEON3_GPTIMER_CTRL_ISPENDING(r)  (((r)&LEON3_GPTIMER_CTRL_PENDING) ? 1 : 0)
 
-#ifdef CONFIG_SPARC_LEON
-
 #ifndef __ASSEMBLY__
 
 struct leon3_irqctrl_regs_map {
@@ -100,9 +98,8 @@ struct leon3_irqctrl_regs_map {
 	u32 mpbroadcast;
 	u32 notused02;
 	u32 notused03;
-	u32 notused10;
-	u32 notused11;
-	u32 notused12;
+	u32 ampctrl;
+	u32 icsel[2];
 	u32 notused13;
 	u32 notused20;
 	u32 notused21;
@@ -112,6 +109,7 @@ struct leon3_irqctrl_regs_map {
 	u32 force[16];
 	/* Extended IRQ registers */
 	u32 intid[16];	/* 0xc0 */
+	u32 unused[(0x1000-0x100)/4];
 };
 
 struct leon3_apbuart_regs_map {
@@ -180,6 +178,7 @@ struct amba_ahb_device {
 struct device_node;
 void _amba_init(struct device_node *dp, struct device_node ***nextp);
 
+extern unsigned long amba_system_id;
 extern struct leon3_irqctrl_regs_map *leon3_irqctrl_regs;
 extern struct leon3_gptimer_regs_map *leon3_gptimer_regs;
 extern struct amba_apb_device leon_percpu_timer_dev[16];
@@ -254,10 +253,13 @@ extern unsigned int sparc_leon_eirq;
 #define GAISLER_L2C      0xffe	/* internal device: leon2compat */
 #define GAISLER_PLUGPLAY 0xfff	/* internal device: plug & play configarea */
 
+/* Chip IDs */
+#define AEROFLEX_UT699    0x0699
+#define LEON4_NEXTREME1   0x0102
+#define GAISLER_GR712RC   0x0712
+
 #define amba_vendor(x) (((x) >> 24) & 0xff)
 
 #define amba_device(x) (((x) >> 12) & 0xfff)
-
-#endif /* !defined(CONFIG_SPARC_LEON) */
 
 #endif

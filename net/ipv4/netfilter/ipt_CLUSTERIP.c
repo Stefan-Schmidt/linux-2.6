@@ -246,8 +246,7 @@ clusterip_hashfn(const struct sk_buff *skb,
 			dport = ports[1];
 		}
 	} else {
-		if (net_ratelimit())
-			pr_info("unknown protocol %u\n", iph->protocol);
+		net_info_ratelimited("unknown protocol %u\n", iph->protocol);
 	}
 
 	switch (config->hash_mode) {
@@ -300,19 +299,14 @@ clusterip_tg(struct sk_buff *skb, const struct xt_action_param *par)
 	 * that the ->target() function isn't called after ->destroy() */
 
 	ct = nf_ct_get(skb, &ctinfo);
-	if (ct == NULL) {
-		pr_info("no conntrack!\n");
-			/* FIXME: need to drop invalid ones, since replies
-			 * to outgoing connections of other nodes will be
-			 * marked as INVALID */
+	if (ct == NULL)
 		return NF_DROP;
-	}
 
 	/* special case: ICMP error handling. conntrack distinguishes between
 	 * error messages (RELATED) and information requests (see below) */
 	if (ip_hdr(skb)->protocol == IPPROTO_ICMP &&
 	    (ctinfo == IP_CT_RELATED ||
-	     ctinfo == IP_CT_RELATED + IP_CT_IS_REPLY))
+	     ctinfo == IP_CT_RELATED_REPLY))
 		return XT_CONTINUE;
 
 	/* ip_conntrack_icmp guarantees us that we only have ICMP_ECHO,
@@ -322,19 +316,19 @@ clusterip_tg(struct sk_buff *skb, const struct xt_action_param *par)
 	hash = clusterip_hashfn(skb, cipinfo->config);
 
 	switch (ctinfo) {
-		case IP_CT_NEW:
-			ct->mark = hash;
-			break;
-		case IP_CT_RELATED:
-		case IP_CT_RELATED+IP_CT_IS_REPLY:
-			/* FIXME: we don't handle expectations at the
-			 * moment.  they can arrive on a different node than
-			 * the master connection (e.g. FTP passive mode) */
-		case IP_CT_ESTABLISHED:
-		case IP_CT_ESTABLISHED+IP_CT_IS_REPLY:
-			break;
-		default:
-			break;
+	case IP_CT_NEW:
+		ct->mark = hash;
+		break;
+	case IP_CT_RELATED:
+	case IP_CT_RELATED_REPLY:
+		/* FIXME: we don't handle expectations at the moment.
+		 * They can arrive on a different node than
+		 * the master connection (e.g. FTP passive mode) */
+	case IP_CT_ESTABLISHED:
+	case IP_CT_ESTABLISHED_REPLY:
+		break;
+	default:			/* Prevent gcc warnings */
+		break;
 	}
 
 #ifdef DEBUG
@@ -400,7 +394,6 @@ static int clusterip_tg_check(const struct xt_tgchk_param *par)
 			config = clusterip_config_init(cipinfo,
 							e->ip.dst.s_addr, dev);
 			if (!config) {
-				pr_info("cannot allocate config\n");
 				dev_put(dev);
 				return -ENOMEM;
 			}
@@ -669,8 +662,11 @@ static ssize_t clusterip_proc_write(struct file *file, const char __user *input,
 	char buffer[PROC_WRITELEN+1];
 	unsigned long nodenum;
 
-	if (copy_from_user(buffer, input, PROC_WRITELEN))
+	if (size > PROC_WRITELEN)
+		return -EIO;
+	if (copy_from_user(buffer, input, size))
 		return -EFAULT;
+	buffer[size] = 0;
 
 	if (*buffer == '+') {
 		nodenum = simple_strtoul(buffer+1, NULL, 10);

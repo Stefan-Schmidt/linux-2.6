@@ -2,6 +2,10 @@ config H8300
 	bool
 	default y
 	select HAVE_IDE
+	select HAVE_GENERIC_HARDIRQS
+	select ARCH_WANT_IPC_PARSE_VERSION
+	select GENERIC_IRQ_SHOW
+	select GENERIC_CPU_DEVICES
 
 config SYMBOL_PREFIX
 	string
@@ -39,15 +43,7 @@ config ARCH_HAS_ILOG2_U64
 	bool
 	default n
 
-config GENERIC_FIND_NEXT_BIT
-	bool
-	default y
-
 config GENERIC_HWEIGHT
-	bool
-	default y
-
-config GENERIC_HARDIRQS
 	bool
 	default y
 
@@ -166,7 +162,7 @@ config VT_CONSOLE
 
 config HW_CONSOLE
 	bool
-	depends on VT && !S390 && !UM
+	depends on VT
 	default y
 
 comment "Unix98 PTY support"
@@ -201,7 +197,7 @@ config UNIX98_PTYS
 
 source "drivers/char/pcmcia/Kconfig"
 
-source "drivers/serial/Kconfig"
+source "drivers/tty/serial/Kconfig"
 
 source "drivers/i2c/Kconfig"
 

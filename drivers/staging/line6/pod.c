@@ -405,7 +405,7 @@ void line6_pod_midi_postprocess(struct usb_line6_pod *pod, unsigned char *data,
 /*
 	Send channel number (i.e., switch to a different sound).
 */
-static void pod_send_channel(struct usb_line6_pod *pod, int value)
+static void pod_send_channel(struct usb_line6_pod *pod, u8 value)
 {
 	line6_invalidate_current(&pod->dumpreq);
 
@@ -419,7 +419,7 @@ static void pod_send_channel(struct usb_line6_pod *pod, int value)
 	Transmit PODxt Pro control parameter.
 */
 void line6_pod_transmit_parameter(struct usb_line6_pod *pod, int param,
-				  int value)
+				  u8 value)
 {
 	if (line6_transmit_parameter(&pod->line6, param, value) == 0)
 		pod_store_parameter(pod, param, value);
@@ -434,11 +434,11 @@ void line6_pod_transmit_parameter(struct usb_line6_pod *pod, int param,
 static int pod_resolve(const char *buf, short block0, short block1,
 		       unsigned char *location)
 {
-	unsigned long value;
+	u8 value;
 	short block;
 	int ret;
 
-	ret = strict_strtoul(buf, 10, &value);
+	ret = kstrtou8(buf, 10, &value);
 	if (ret)
 		return ret;
 
@@ -560,10 +560,10 @@ static ssize_t pod_set_channel(struct device *dev,
 {
 	struct usb_interface *interface = to_usb_interface(dev);
 	struct usb_line6_pod *pod = usb_get_intfdata(interface);
-	unsigned long value;
+	u8 value;
 	int ret;
 
-	ret = strict_strtoul(buf, 10, &value);
+	ret = kstrtou8(buf, 10, &value);
 	if (ret)
 		return ret;
 
@@ -892,10 +892,10 @@ static ssize_t pod_set_midi_postprocess(struct device *dev,
 {
 	struct usb_interface *interface = to_usb_interface(dev);
 	struct usb_line6_pod *pod = usb_get_intfdata(interface);
-	unsigned long value;
+	u8 value;
 	int ret;
 
-	ret = strict_strtoul(buf, 10, &value);
+	ret = kstrtou8(buf, 10, &value);
 	if (ret)
 		return ret;
 
@@ -1051,48 +1051,48 @@ POD_GET_SYSTEM_PARAM(tuner_pitch, 1);
 #undef GET_SYSTEM_PARAM
 
 /* POD special files: */
-static DEVICE_ATTR(channel, S_IWUGO | S_IRUGO, pod_get_channel,
+static DEVICE_ATTR(channel, S_IWUSR | S_IRUGO, pod_get_channel,
 		   pod_set_channel);
 static DEVICE_ATTR(clip, S_IRUGO, pod_wait_for_clip, line6_nop_write);
 static DEVICE_ATTR(device_id, S_IRUGO, pod_get_device_id, line6_nop_write);
 static DEVICE_ATTR(dirty, S_IRUGO, pod_get_dirty, line6_nop_write);
-static DEVICE_ATTR(dump, S_IWUGO | S_IRUGO, pod_get_dump, pod_set_dump);
-static DEVICE_ATTR(dump_buf, S_IWUGO | S_IRUGO, pod_get_dump_buf,
+static DEVICE_ATTR(dump, S_IWUSR | S_IRUGO, pod_get_dump, pod_set_dump);
+static DEVICE_ATTR(dump_buf, S_IWUSR | S_IRUGO, pod_get_dump_buf,
 		   pod_set_dump_buf);
-static DEVICE_ATTR(finish, S_IWUGO, line6_nop_read, pod_set_finish);
+static DEVICE_ATTR(finish, S_IWUSR, line6_nop_read, pod_set_finish);
 static DEVICE_ATTR(firmware_version, S_IRUGO, pod_get_firmware_version,
 		   line6_nop_write);
-static DEVICE_ATTR(midi_postprocess, S_IWUGO | S_IRUGO,
+static DEVICE_ATTR(midi_postprocess, S_IWUSR | S_IRUGO,
 		   pod_get_midi_postprocess, pod_set_midi_postprocess);
-static DEVICE_ATTR(monitor_level, S_IWUGO | S_IRUGO, pod_get_monitor_level,
+static DEVICE_ATTR(monitor_level, S_IWUSR | S_IRUGO, pod_get_monitor_level,
 		   pod_set_monitor_level);
 static DEVICE_ATTR(name, S_IRUGO, pod_get_name, line6_nop_write);
 static DEVICE_ATTR(name_buf, S_IRUGO, pod_get_name_buf, line6_nop_write);
-static DEVICE_ATTR(retrieve_amp_setup, S_IWUGO, line6_nop_read,
+static DEVICE_ATTR(retrieve_amp_setup, S_IWUSR, line6_nop_read,
 		   pod_set_retrieve_amp_setup);
-static DEVICE_ATTR(retrieve_channel, S_IWUGO, line6_nop_read,
+static DEVICE_ATTR(retrieve_channel, S_IWUSR, line6_nop_read,
 		   pod_set_retrieve_channel);
-static DEVICE_ATTR(retrieve_effects_setup, S_IWUGO, line6_nop_read,
+static DEVICE_ATTR(retrieve_effects_setup, S_IWUSR, line6_nop_read,
 		   pod_set_retrieve_effects_setup);
-static DEVICE_ATTR(routing, S_IWUGO | S_IRUGO, pod_get_routing,
+static DEVICE_ATTR(routing, S_IWUSR | S_IRUGO, pod_get_routing,
 		   pod_set_routing);
 static DEVICE_ATTR(serial_number, S_IRUGO, pod_get_serial_number,
 		   line6_nop_write);
-static DEVICE_ATTR(store_amp_setup, S_IWUGO, line6_nop_read,
+static DEVICE_ATTR(store_amp_setup, S_IWUSR, line6_nop_read,
 		   pod_set_store_amp_setup);
-static DEVICE_ATTR(store_channel, S_IWUGO, line6_nop_read,
+static DEVICE_ATTR(store_channel, S_IWUSR, line6_nop_read,
 		   pod_set_store_channel);
-static DEVICE_ATTR(store_effects_setup, S_IWUGO, line6_nop_read,
+static DEVICE_ATTR(store_effects_setup, S_IWUSR, line6_nop_read,
 		   pod_set_store_effects_setup);
-static DEVICE_ATTR(tuner_freq, S_IWUGO | S_IRUGO, pod_get_tuner_freq,
+static DEVICE_ATTR(tuner_freq, S_IWUSR | S_IRUGO, pod_get_tuner_freq,
 		   pod_set_tuner_freq);
-static DEVICE_ATTR(tuner_mute, S_IWUGO | S_IRUGO, pod_get_tuner_mute,
+static DEVICE_ATTR(tuner_mute, S_IWUSR | S_IRUGO, pod_get_tuner_mute,
 		   pod_set_tuner_mute);
 static DEVICE_ATTR(tuner_note, S_IRUGO, pod_get_tuner_note, line6_nop_write);
 static DEVICE_ATTR(tuner_pitch, S_IRUGO, pod_get_tuner_pitch, line6_nop_write);
 
 #ifdef CONFIG_LINE6_USB_RAW
-static DEVICE_ATTR(raw, S_IWUGO, line6_nop_read, line6_set_raw);
+static DEVICE_ATTR(raw, S_IWUSR, line6_nop_read, line6_set_raw);
 #endif
 
 /* control info callback */
@@ -1149,14 +1149,10 @@ static struct snd_kcontrol_new pod_control_monitor = {
 static void pod_destruct(struct usb_interface *interface)
 {
 	struct usb_line6_pod *pod = usb_get_intfdata(interface);
-	struct usb_line6 *line6;
 
 	if (pod == NULL)
 		return;
-	line6 = &pod->line6;
-	if (line6 == NULL)
-		return;
-	line6_cleanup_audio(line6);
+	line6_cleanup_audio(&pod->line6);
 
 	del_timer(&pod->startup_timer);
 	cancel_work_sync(&pod->startup_work);

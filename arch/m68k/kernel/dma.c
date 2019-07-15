@@ -12,8 +12,11 @@
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
+#include <linux/export.h>
 
 #include <asm/pgalloc.h>
+
+#if defined(CONFIG_MMU) && !defined(CONFIG_COLDFIRE)
 
 void *dma_alloc_coherent(struct device *dev, size_t size,
 			 dma_addr_t *handle, gfp_t flag)
@@ -57,7 +60,6 @@ void *dma_alloc_coherent(struct device *dev, size_t size,
 
 	return addr;
 }
-EXPORT_SYMBOL(dma_alloc_coherent);
 
 void dma_free_coherent(struct device *dev, size_t size,
 		       void *addr, dma_addr_t handle)
@@ -65,12 +67,45 @@ void dma_free_coherent(struct device *dev, size_t size,
 	pr_debug("dma_free_coherent: %p, %x\n", addr, handle);
 	vfree(addr);
 }
+
+#else
+
+#include <asm/cacheflush.h>
+
+void *dma_alloc_coherent(struct device *dev, size_t size,
+			   dma_addr_t *dma_handle, gfp_t gfp)
+{
+	void *ret;
+	/* ignore region specifiers */
+	gfp &= ~(__GFP_DMA | __GFP_HIGHMEM);
+
+	if (dev == NULL || (*dev->dma_mask < 0xffffffff))
+		gfp |= GFP_DMA;
+	ret = (void *)__get_free_pages(gfp, get_order(size));
+
+	if (ret != NULL) {
+		memset(ret, 0, size);
+		*dma_handle = virt_to_phys(ret);
+	}
+	return ret;
+}
+
+void dma_free_coherent(struct device *dev, size_t size,
+			 void *vaddr, dma_addr_t dma_handle)
+{
+	free_pages((unsigned long)vaddr, get_order(size));
+}
+
+#endif /* CONFIG_MMU && !CONFIG_COLDFIRE */
+
+EXPORT_SYMBOL(dma_alloc_coherent);
 EXPORT_SYMBOL(dma_free_coherent);
 
 void dma_sync_single_for_device(struct device *dev, dma_addr_t handle,
 				size_t size, enum dma_data_direction dir)
 {
 	switch (dir) {
+	case DMA_BIDIRECTIONAL:
 	case DMA_TO_DEVICE:
 		cache_push(handle, size);
 		break;

@@ -26,15 +26,13 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/bitops.h>
+#include <linux/clkdev.h>
 
 #include <plat/cpu.h>
 #include <plat/clock.h>
-#include <asm/clkdev.h>
 
 #include "clock.h"
-#include "prm.h"
-#include "prm-regbits-34xx.h"
-#include "cm.h"
+#include "cm2xxx_3xxx.h"
 #include "cm-regbits-34xx.h"
 
 /* CM_AUTOIDLE_PLL*.AUTO_* bit values */
@@ -137,14 +135,24 @@ static u16 _omap3_dpll_compute_freqsel(struct clk *clk, u8 n)
  */
 static int _omap3_noncore_dpll_lock(struct clk *clk)
 {
+	const struct dpll_data *dd;
 	u8 ai;
-	int r;
+	u8 state = 1;
+	int r = 0;
 
 	pr_debug("clock: locking DPLL %s\n", clk->name);
 
+	dd = clk->dpll_data;
+	state <<= __ffs(dd->idlest_mask);
+
+	/* Check if already locked */
+	if ((__raw_readl(dd->idlest_reg) & dd->idlest_mask) == state)
+		goto done;
+
 	ai = omap3_dpll_autoidle_read(clk);
 
-	omap3_dpll_deny_idle(clk);
+	if (ai)
+		omap3_dpll_deny_idle(clk);
 
 	_omap3_dpll_write_clken(clk, DPLL_LOCKED);
 
@@ -153,6 +161,7 @@ static int _omap3_noncore_dpll_lock(struct clk *clk)
 	if (ai)
 		omap3_dpll_allow_idle(clk);
 
+done:
 	return r;
 }
 
@@ -188,8 +197,6 @@ static int _omap3_noncore_dpll_bypass(struct clk *clk)
 
 	if (ai)
 		omap3_dpll_allow_idle(clk);
-	else
-		omap3_dpll_deny_idle(clk);
 
 	return r;
 }
@@ -218,16 +225,38 @@ static int _omap3_noncore_dpll_stop(struct clk *clk)
 
 	if (ai)
 		omap3_dpll_allow_idle(clk);
-	else
-		omap3_dpll_deny_idle(clk);
 
 	return 0;
 }
 
 /**
- * lookup_dco_sddiv -  Set j-type DPLL4 compensation variables
+ * _lookup_dco - Lookup DCO used by j-type DPLL
  * @clk: pointer to a DPLL struct clk
  * @dco: digital control oscillator selector
+ * @m: DPLL multiplier to set
+ * @n: DPLL divider to set
+ *
+ * See 36xx TRM section 3.5.3.3.3.2 "Type B DPLL (Low-Jitter)"
+ *
+ * XXX This code is not needed for 3430/AM35xx; can it be optimized
+ * out in non-multi-OMAP builds for those chips?
+ */
+static void _lookup_dco(struct clk *clk, u8 *dco, u16 m, u8 n)
+{
+	unsigned long fint, clkinp; /* watch out for overflow */
+
+	clkinp = clk->parent->rate;
+	fint = (clkinp / n) * m;
+
+	if (fint < 1000000000)
+		*dco = 2;
+	else
+		*dco = 4;
+}
+
+/**
+ * _lookup_sddiv - Calculate sigma delta divider for j-type DPLL
+ * @clk: pointer to a DPLL struct clk
  * @sd_div: target sigma-delta divider
  * @m: DPLL multiplier to set
  * @n: DPLL divider to set
@@ -237,19 +266,13 @@ static int _omap3_noncore_dpll_stop(struct clk *clk)
  * XXX This code is not needed for 3430/AM35xx; can it be optimized
  * out in non-multi-OMAP builds for those chips?
  */
-static void lookup_dco_sddiv(struct clk *clk, u8 *dco, u8 *sd_div, u16 m,
-			     u8 n)
+static void _lookup_sddiv(struct clk *clk, u8 *sd_div, u16 m, u8 n)
 {
-	unsigned long fint, clkinp, sd; /* watch out for overflow */
+	unsigned long clkinp, sd; /* watch out for overflow */
 	int mod1, mod2;
 
 	clkinp = clk->parent->rate;
-	fint = (clkinp / n) * m;
 
-	if (fint < 1000000000)
-		*dco = 2;
-	else
-		*dco = 4;
 	/*
 	 * target sigma-delta to near 250MHz
 	 * sd = ceil[(m/(n+1)) * (clkinp_MHz / 250)]
@@ -278,6 +301,7 @@ static void lookup_dco_sddiv(struct clk *clk, u8 *dco, u8 *sd_div, u16 m,
 static int omap3_noncore_dpll_program(struct clk *clk, u16 m, u8 n, u16 freqsel)
 {
 	struct dpll_data *dd = clk->dpll_data;
+	u8 dco, sd_div;
 	u32 v;
 
 	/* 3430 ES2 TRM: 4.7.6.9 DPLL Programming Sequence */
@@ -300,18 +324,16 @@ static int omap3_noncore_dpll_program(struct clk *clk, u16 m, u8 n, u16 freqsel)
 	v |= m << __ffs(dd->mult_mask);
 	v |= (n - 1) << __ffs(dd->div1_mask);
 
-	/*
-	 * XXX This code is not needed for 3430/AM35XX; can it be optimized
-	 * out in non-multi-OMAP builds for those chips?
-	 */
-	if ((dd->flags & DPLL_J_TYPE) && !(dd->flags & DPLL_NO_DCO_SEL)) {
-		u8 dco, sd_div;
-		lookup_dco_sddiv(clk, &dco, &sd_div, m, n);
-		/* XXX This probably will need revision for OMAP4 */
-		v &= ~(OMAP3630_PERIPH_DPLL_DCO_SEL_MASK
-			| OMAP3630_PERIPH_DPLL_SD_DIV_MASK);
-		v |= dco << __ffs(OMAP3630_PERIPH_DPLL_DCO_SEL_MASK);
-		v |= sd_div << __ffs(OMAP3630_PERIPH_DPLL_SD_DIV_MASK);
+	/* Configure dco and sd_div for dplls that have these fields */
+	if (dd->dco_mask) {
+		_lookup_dco(clk, &dco, m, n);
+		v &= ~(dd->dco_mask);
+		v |= dco << __ffs(dd->dco_mask);
+	}
+	if (dd->sddiv_mask) {
+		_lookup_sddiv(clk, &sd_div, m, n);
+		v &= ~(dd->sddiv_mask);
+		v |= sd_div << __ffs(dd->sddiv_mask);
 	}
 
 	__raw_writel(v, dd->mult_div1_reg);
@@ -375,7 +397,8 @@ int omap3_noncore_dpll_enable(struct clk *clk)
 	 * propagating?
 	 */
 	if (!r)
-		clk->rate = omap2_get_dpll_rate(clk);
+		clk->rate = (clk->recalc) ? clk->recalc(clk) :
+			omap2_get_dpll_rate(clk);
 
 	return r;
 }
@@ -409,6 +432,7 @@ void omap3_noncore_dpll_disable(struct clk *clk)
 int omap3_noncore_dpll_set_rate(struct clk *clk, unsigned long rate)
 {
 	struct clk *new_parent = NULL;
+	unsigned long hw_rate;
 	u16 freqsel = 0;
 	struct dpll_data *dd;
 	int ret;
@@ -420,7 +444,8 @@ int omap3_noncore_dpll_set_rate(struct clk *clk, unsigned long rate)
 	if (!dd)
 		return -EINVAL;
 
-	if (rate == omap2_get_dpll_rate(clk))
+	hw_rate = (clk->recalc) ? clk->recalc(clk) : omap2_get_dpll_rate(clk);
+	if (rate == hw_rate)
 		return 0;
 
 	/*
@@ -440,7 +465,7 @@ int omap3_noncore_dpll_set_rate(struct clk *clk, unsigned long rate)
 			new_parent = dd->clk_bypass;
 	} else {
 		if (dd->last_rounded_rate != rate)
-			omap2_dpll_round_rate(clk, rate);
+			rate = clk->round_rate(clk, rate);
 
 		if (dd->last_rounded_rate == 0)
 			return -EINVAL;
@@ -501,6 +526,9 @@ u32 omap3_dpll_autoidle_read(struct clk *clk)
 
 	dd = clk->dpll_data;
 
+	if (!dd->autoidle_reg)
+		return -EINVAL;
+
 	v = __raw_readl(dd->autoidle_reg);
 	v &= dd->autoidle_mask;
 	v >>= __ffs(dd->autoidle_mask);
@@ -527,6 +555,12 @@ void omap3_dpll_allow_idle(struct clk *clk)
 
 	dd = clk->dpll_data;
 
+	if (!dd->autoidle_reg) {
+		pr_debug("clock: DPLL %s: autoidle not supported\n",
+			clk->name);
+		return;
+	}
+
 	/*
 	 * REVISIT: CORE DPLL can optionally enter low-power bypass
 	 * by writing 0x5 instead of 0x1.  Add some mechanism to
@@ -536,6 +570,7 @@ void omap3_dpll_allow_idle(struct clk *clk)
 	v &= ~dd->autoidle_mask;
 	v |= DPLL_AUTOIDLE_LOW_POWER_STOP << __ffs(dd->autoidle_mask);
 	__raw_writel(v, dd->autoidle_reg);
+
 }
 
 /**
@@ -553,6 +588,12 @@ void omap3_dpll_deny_idle(struct clk *clk)
 		return;
 
 	dd = clk->dpll_data;
+
+	if (!dd->autoidle_reg) {
+		pr_debug("clock: DPLL %s: autoidle not supported\n",
+			clk->name);
+		return;
+	}
 
 	v = __raw_readl(dd->autoidle_reg);
 	v &= ~dd->autoidle_mask;
@@ -597,3 +638,17 @@ unsigned long omap3_clkoutx2_recalc(struct clk *clk)
 		rate = clk->parent->rate * 2;
 	return rate;
 }
+
+/* OMAP3/4 non-CORE DPLL clkops */
+
+const struct clkops clkops_omap3_noncore_dpll_ops = {
+	.enable		= omap3_noncore_dpll_enable,
+	.disable	= omap3_noncore_dpll_disable,
+	.allow_idle	= omap3_dpll_allow_idle,
+	.deny_idle	= omap3_dpll_deny_idle,
+};
+
+const struct clkops clkops_omap3_core_dpll_ops = {
+	.allow_idle	= omap3_dpll_allow_idle,
+	.deny_idle	= omap3_dpll_deny_idle,
+};

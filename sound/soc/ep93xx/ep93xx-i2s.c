@@ -2,7 +2,7 @@
  * linux/sound/soc/ep93xx-i2s.c
  * EP93xx I2S driver
  *
- * Copyright (C) 2010 Ryan Mallon <ryan@bluewatersys.com>
+ * Copyright (C) 2010 Ryan Mallon
  *
  * Based on the original driver by:
  *   Copyright (C) 2007 Chase Douglas <chasedouglas@gmail>
@@ -63,18 +63,17 @@ struct ep93xx_i2s_info {
 	struct clk			*sclk;
 	struct clk			*lrclk;
 	struct ep93xx_pcm_dma_params	*dma_params;
-	struct resource			*mem;
 	void __iomem			*regs;
 };
 
 struct ep93xx_pcm_dma_params ep93xx_i2s_dma_params[] = {
 	[SNDRV_PCM_STREAM_PLAYBACK] = {
 		.name		= "i2s-pcm-out",
-		.dma_port	= EP93XX_DMA_M2P_PORT_I2S1,
+		.dma_port	= EP93XX_DMA_I2S1,
 	},
 	[SNDRV_PCM_STREAM_CAPTURE] = {
 		.name		= "i2s-pcm-in",
-		.dma_port	= EP93XX_DMA_M2P_PORT_I2S1,
+		.dma_port	= EP93XX_DMA_I2S1,
 	},
 };
 
@@ -242,7 +241,7 @@ static int ep93xx_i2s_hw_params(struct snd_pcm_substream *substream,
 {
 	struct ep93xx_i2s_info *info = snd_soc_dai_get_drvdata(dai);
 	unsigned word_len, div, sdiv, lrdiv;
-	int found = 0, err;
+	int err;
 
 	switch (params_format(params)) {
 	case SNDRV_PCM_FORMAT_S16_LE:
@@ -267,21 +266,22 @@ static int ep93xx_i2s_hw_params(struct snd_pcm_substream *substream,
 		ep93xx_i2s_write_reg(info, EP93XX_I2S_RXWRDLEN, word_len);
 
 	/*
-	 * Calculate the sdiv (bit clock) and lrdiv (left/right clock) values.
-	 * If the lrclk is pulse length is larger than the word size, then the
-	 * bit clock will be gated for the unused bits.
+	 * EP93xx I2S module can be setup so SCLK / LRCLK value can be
+	 * 32, 64, 128. MCLK / SCLK value can be 2 and 4.
+	 * We set LRCLK equal to `rate' and minimum SCLK / LRCLK 
+	 * value is 64, because our sample size is 32 bit * 2 channels.
+	 * I2S standard permits us to transmit more bits than
+	 * the codec uses.
 	 */
-	div = (clk_get_rate(info->mclk) / params_rate(params)) *
-		params_channels(params);
-	for (sdiv = 2; sdiv <= 4; sdiv += 2)
-		for (lrdiv = 32; lrdiv <= 128; lrdiv <<= 1)
-			if (sdiv * lrdiv == div) {
-				found = 1;
-				goto out;
-			}
-out:
-	if (!found)
-		return -EINVAL;
+	div = clk_get_rate(info->mclk) / params_rate(params);
+	sdiv = 4;
+	if (div > (256 + 512) / 2) {
+		lrdiv = 128;
+	} else {
+		lrdiv = 64;
+		if (div < (128 + 256) / 2)
+			sdiv = 2;
+	}
 
 	err = clk_set_rate(info->sclk, clk_get_rate(info->mclk) / sdiv);
 	if (err)
@@ -312,10 +312,12 @@ static int ep93xx_i2s_suspend(struct snd_soc_dai *dai)
 	struct ep93xx_i2s_info *info = snd_soc_dai_get_drvdata(dai);
 
 	if (!dai->active)
-		return;
+		return 0;
 
 	ep93xx_i2s_disable(info, SNDRV_PCM_STREAM_PLAYBACK);
 	ep93xx_i2s_disable(info, SNDRV_PCM_STREAM_CAPTURE);
+
+	return 0;
 }
 
 static int ep93xx_i2s_resume(struct snd_soc_dai *dai)
@@ -323,17 +325,19 @@ static int ep93xx_i2s_resume(struct snd_soc_dai *dai)
 	struct ep93xx_i2s_info *info = snd_soc_dai_get_drvdata(dai);
 
 	if (!dai->active)
-		return;
+		return 0;
 
 	ep93xx_i2s_enable(info, SNDRV_PCM_STREAM_PLAYBACK);
 	ep93xx_i2s_enable(info, SNDRV_PCM_STREAM_CAPTURE);
+
+	return 0;
 }
 #else
 #define ep93xx_i2s_suspend	NULL
 #define ep93xx_i2s_resume	NULL
 #endif
 
-static struct snd_soc_dai_ops ep93xx_i2s_dai_ops = {
+static const struct snd_soc_dai_ops ep93xx_i2s_dai_ops = {
 	.startup	= ep93xx_i2s_startup,
 	.shutdown	= ep93xx_i2s_shutdown,
 	.hw_params	= ep93xx_i2s_hw_params,
@@ -341,9 +345,7 @@ static struct snd_soc_dai_ops ep93xx_i2s_dai_ops = {
 	.set_fmt	= ep93xx_i2s_set_dai_fmt,
 };
 
-#define EP93XX_I2S_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | \
-			    SNDRV_PCM_FMTBIT_S24_LE | \
-			    SNDRV_PCM_FMTBIT_S32_LE)
+#define EP93XX_I2S_FORMATS (SNDRV_PCM_FMTBIT_S32_LE)
 
 static struct snd_soc_dai_driver ep93xx_i2s_dai = {
 	.symmetric_rates= 1,
@@ -352,13 +354,13 @@ static struct snd_soc_dai_driver ep93xx_i2s_dai = {
 	.playback	= {
 		.channels_min	= 2,
 		.channels_max	= 2,
-		.rates		= SNDRV_PCM_RATE_8000_48000,
+		.rates		= SNDRV_PCM_RATE_8000_192000,
 		.formats	= EP93XX_I2S_FORMATS,
 	},
 	.capture	= {
 		 .channels_min	= 2,
 		 .channels_max	= 2,
-		 .rates		= SNDRV_PCM_RATE_8000_48000,
+		 .rates		= SNDRV_PCM_RATE_8000_192000,
 		 .formats	= EP93XX_I2S_FORMATS,
 	},
 	.ops		= &ep93xx_i2s_dai_ops,
@@ -370,38 +372,22 @@ static int ep93xx_i2s_probe(struct platform_device *pdev)
 	struct resource *res;
 	int err;
 
-	info = kzalloc(sizeof(struct ep93xx_i2s_info), GFP_KERNEL);
-	if (!info) {
-		err = -ENOMEM;
-		goto fail;
-	}
-
-	dev_set_drvdata(&pdev->dev, info);
-	info->dma_params = ep93xx_i2s_dma_params;
+	info = devm_kzalloc(&pdev->dev, sizeof(*info), GFP_KERNEL);
+	if (!info)
+		return -ENOMEM;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		err = -ENODEV;
-		goto fail;
-	}
+	if (!res)
+		return -ENODEV;
 
-	info->mem = request_mem_region(res->start, resource_size(res),
-				       pdev->name);
-	if (!info->mem) {
-		err = -EBUSY;
-		goto fail;
-	}
-
-	info->regs = ioremap(info->mem->start, resource_size(info->mem));
-	if (!info->regs) {
-		err = -ENXIO;
-		goto fail_release_mem;
-	}
+	info->regs = devm_request_and_ioremap(&pdev->dev, res);
+	if (!info->regs)
+		return -ENXIO;
 
 	info->mclk = clk_get(&pdev->dev, "mclk");
 	if (IS_ERR(info->mclk)) {
 		err = PTR_ERR(info->mclk);
-		goto fail_unmap_mem;
+		goto fail;
 	}
 
 	info->sclk = clk_get(&pdev->dev, "sclk");
@@ -416,6 +402,9 @@ static int ep93xx_i2s_probe(struct platform_device *pdev)
 		goto fail_put_sclk;
 	}
 
+	dev_set_drvdata(&pdev->dev, info);
+	info->dma_params = ep93xx_i2s_dma_params;
+
 	err = snd_soc_register_dai(&pdev->dev, &ep93xx_i2s_dai);
 	if (err)
 		goto fail_put_lrclk;
@@ -423,16 +412,12 @@ static int ep93xx_i2s_probe(struct platform_device *pdev)
 	return 0;
 
 fail_put_lrclk:
+	dev_set_drvdata(&pdev->dev, NULL);
 	clk_put(info->lrclk);
 fail_put_sclk:
 	clk_put(info->sclk);
 fail_put_mclk:
 	clk_put(info->mclk);
-fail_unmap_mem:
-	iounmap(info->regs);
-fail_release_mem:
-	release_mem_region(info->mem->start, resource_size(info->mem));
-	kfree(info);
 fail:
 	return err;
 }
@@ -442,12 +427,10 @@ static int __devexit ep93xx_i2s_remove(struct platform_device *pdev)
 	struct ep93xx_i2s_info *info = dev_get_drvdata(&pdev->dev);
 
 	snd_soc_unregister_dai(&pdev->dev);
+	dev_set_drvdata(&pdev->dev, NULL);
 	clk_put(info->lrclk);
 	clk_put(info->sclk);
 	clk_put(info->mclk);
-	iounmap(info->regs);
-	release_mem_region(info->mem->start, resource_size(info->mem));
-	kfree(info);
 	return 0;
 }
 
@@ -460,20 +443,9 @@ static struct platform_driver ep93xx_i2s_driver = {
 	},
 };
 
-static int __init ep93xx_i2s_init(void)
-{
-	return platform_driver_register(&ep93xx_i2s_driver);
-}
-
-static void __exit ep93xx_i2s_exit(void)
-{
-	platform_driver_unregister(&ep93xx_i2s_driver);
-}
-
-module_init(ep93xx_i2s_init);
-module_exit(ep93xx_i2s_exit);
+module_platform_driver(ep93xx_i2s_driver);
 
 MODULE_ALIAS("platform:ep93xx-i2s");
-MODULE_AUTHOR("Ryan Mallon <ryan@bluewatersys.com>");
+MODULE_AUTHOR("Ryan Mallon");
 MODULE_DESCRIPTION("EP93XX I2S driver");
 MODULE_LICENSE("GPL");

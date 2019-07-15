@@ -80,6 +80,24 @@ struct rtnl_link_ifmap {
 	__u8	port;
 };
 
+/*
+ * IFLA_AF_SPEC
+ *   Contains nested attributes for address family specific attributes.
+ *   Each address family may create a attribute with the address family
+ *   number as type and create its own attribute structure in it.
+ *
+ *   Example:
+ *   [IFLA_AF_SPEC] = {
+ *       [AF_INET] = {
+ *           [IFLA_INET_CONF] = ...,
+ *       },
+ *       [AF_INET6] = {
+ *           [IFLA_INET6_FLAGS] = ...,
+ *           [IFLA_INET6_CONF] = ...,
+ *       }
+ *   }
+ */
+
 enum {
 	IFLA_UNSPEC,
 	IFLA_ADDRESS,
@@ -116,6 +134,14 @@ enum {
 	IFLA_STATS64,
 	IFLA_VF_PORTS,
 	IFLA_PORT_SELF,
+	IFLA_AF_SPEC,
+	IFLA_GROUP,		/* Group the device belongs to */
+	IFLA_NET_NS_FD,
+	IFLA_EXT_MASK,		/* Extended info mask, VFs, etc */
+	IFLA_PROMISCUITY,	/* Promiscuity count: > 0 means acts PROMISC */
+#define IFLA_PROMISCUITY IFLA_PROMISCUITY
+	IFLA_NUM_TX_QUEUES,
+	IFLA_NUM_RX_QUEUES,
 	__IFLA_MAX
 };
 
@@ -127,6 +153,14 @@ enum {
 #define IFLA_RTA(r)  ((struct rtattr*)(((char*)(r)) + NLMSG_ALIGN(sizeof(struct ifinfomsg))))
 #define IFLA_PAYLOAD(n) NLMSG_PAYLOAD(n,sizeof(struct ifinfomsg))
 #endif
+
+enum {
+	IFLA_INET_UNSPEC,
+	IFLA_INET_CONF,
+	__IFLA_INET_MAX,
+};
+
+#define IFLA_INET_MAX (__IFLA_INET_MAX - 1)
 
 /* ifi_flags.
 
@@ -223,6 +257,7 @@ struct ifla_vlan_qos_mapping {
 enum {
 	IFLA_MACVLAN_UNSPEC,
 	IFLA_MACVLAN_MODE,
+	IFLA_MACVLAN_FLAGS,
 	__IFLA_MACVLAN_MAX,
 };
 
@@ -232,7 +267,10 @@ enum macvlan_mode {
 	MACVLAN_MODE_PRIVATE = 1, /* don't talk to other macvlans */
 	MACVLAN_MODE_VEPA    = 2, /* talk to other ports through ext bridge */
 	MACVLAN_MODE_BRIDGE  = 4, /* talk to bridge ports directly */
+	MACVLAN_MODE_PASSTHRU = 8,/* take over the underlying device */
 };
+
+#define MACVLAN_FLAG_NOPROMISC	1
 
 /* SR-IOV virtual function management section */
 
@@ -249,6 +287,7 @@ enum {
 	IFLA_VF_MAC,		/* Hardware queue specific attributes */
 	IFLA_VF_VLAN,
 	IFLA_VF_TX_RATE,	/* TX Bandwidth Allocation */
+	IFLA_VF_SPOOFCHK,	/* Spoof Checking on/off switch */
 	__IFLA_VF_MAX,
 };
 
@@ -270,13 +309,22 @@ struct ifla_vf_tx_rate {
 	__u32 rate; /* Max TX bandwidth in Mbps, 0 disables throttling */
 };
 
+struct ifla_vf_spoofchk {
+	__u32 vf;
+	__u32 setting;
+};
+#ifdef __KERNEL__
+
+/* We don't want this structure exposed to user space */
 struct ifla_vf_info {
 	__u32 vf;
 	__u8 mac[32];
 	__u32 vlan;
 	__u32 qos;
 	__u32 tx_rate;
+	__u32 spoofchk;
 };
+#endif
 
 /* VF ports management section
  *

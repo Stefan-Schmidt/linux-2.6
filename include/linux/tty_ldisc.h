@@ -101,13 +101,15 @@
  *	any pending driver I/O is completed.
  *
  * void (*dcd_change)(struct tty_struct *tty, unsigned int status,
- * 			struct timespec *ts)
+ *			struct pps_event_time *ts)
  *
  *	Tells the discipline that the DCD pin has changed its status and
- *	the relative timestamp. Pointer ts can be NULL.
+ *	the relative timestamp. Pointer ts cannot be NULL.
  */
 
 #include <linux/fs.h>
+#include <linux/wait.h>
+#include <linux/pps_kernel.h>
 #include <linux/wait.h>
 
 struct tty_ldisc_ops {
@@ -143,7 +145,7 @@ struct tty_ldisc_ops {
 			       char *fp, int count);
 	void	(*write_wakeup)(struct tty_struct *);
 	void	(*dcd_change)(struct tty_struct *, unsigned int,
-				struct timespec *);
+				struct pps_event_time *);
 
 	struct  module *owner;
 	
@@ -153,6 +155,7 @@ struct tty_ldisc_ops {
 struct tty_ldisc {
 	struct tty_ldisc_ops *ops;
 	atomic_t users;
+	wait_queue_head_t wq_idle;
 };
 
 #define TTY_LDISC_MAGIC	0x5403

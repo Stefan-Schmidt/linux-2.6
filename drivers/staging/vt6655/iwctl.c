@@ -84,24 +84,6 @@ struct iw_statistics *iwctl_get_wireless_stats(struct net_device *dev)
 
 	pDevice->wstats.status = pDevice->eOPMode;
 	#ifdef Calcu_LinkQual
-	 #if 0
-	  if(pDevice->byBBType == BB_TYPE_11B) {
-	     if(pDevice->byCurrSQ > 120)
-                  pDevice->scStatistic.LinkQuality = 100;
-	     else
-		 pDevice->scStatistic.LinkQuality = pDevice->byCurrSQ*100/120;
-	    }
-	  else if(pDevice->byBBType == BB_TYPE_11G) {
-                if(pDevice->byCurrSQ < 20)
-		   pDevice->scStatistic.LinkQuality = 100;
-	       else if(pDevice->byCurrSQ >96)
-		   pDevice->scStatistic.LinkQuality  = 0;
-	       else
-		   pDevice->scStatistic.LinkQuality = (96-pDevice->byCurrSQ)*100/76;
-	   }
-	   if(pDevice->bLinkPass !=true)
-	       pDevice->scStatistic.LinkQuality = 0;
-	  #endif
 	   if(pDevice->scStatistic.LinkQuality > 100)
    	       pDevice->scStatistic.LinkQuality = 100;
                pDevice->wstats.qual.qual =(unsigned char) pDevice->scStatistic.LinkQuality;
@@ -149,18 +131,6 @@ int iwctl_giwname(struct net_device *dev,
 {
 	strcpy(wrq, "802.11-a/b/g");
 	return 0;
-}
-
-int iwctl_giwnwid(struct net_device *dev,
-             struct iw_request_info *info,
-			 struct iw_param *wrq,
-                   char *extra)
-{
- 	//wrq->value = 0x100;
-	//wrq->disabled = 0;
-	//wrq->fixed = 1;
-	//return 0;
-  return -EOPNOTSUPP;
 }
 
 /*
@@ -2016,24 +1986,6 @@ param->u.wpa_key.key = (u8 *)key_array;
 param->u.wpa_key.seq = (u8 *)seq;
 param->u.wpa_key.seq_len = seq_len;
 
-#if 0
-printk("param->u.wpa_key.alg_name =%d\n",param->u.wpa_key.alg_name);
-printk(KERN_DEBUG "param->addr=%pM\n", param->addr);
-printk("param->u.wpa_key.set_tx =%d\n",param->u.wpa_key.set_tx);
-printk("param->u.wpa_key.key_index =%d\n",param->u.wpa_key.key_index);
-printk("param->u.wpa_key.key_len =%d\n",param->u.wpa_key.key_len);
-printk("param->u.wpa_key.key =");
-for(ii=0;ii<param->u.wpa_key.key_len;ii++)
-	printk("%02x:",param->u.wpa_key.key[ii]);
-         printk("\n");
-printk("param->u.wpa_key.seq_len =%d\n",param->u.wpa_key.seq_len);
-printk("param->u.wpa_key.seq =");
-for(ii=0;ii<param->u.wpa_key.seq_len;ii++)
-	printk("%02x:",param->u.wpa_key.seq[ii]);
-         printk("\n");
-
-printk("...........\n");
-#endif
 //****set if current action is Network Manager count??
 //****this method is so foolish,but there is no other way???
 if(param->u.wpa_key.alg_name == WPA_ALG_NONE) {
@@ -2073,7 +2025,7 @@ int iwctl_giwencodeext(struct net_device *dev,
              struct iw_point *wrq,
              char *extra)
 {
-		return -EOPNOTSUPP;;
+		return -EOPNOTSUPP;
 }
 
 int iwctl_siwmlme(struct net_device *dev,

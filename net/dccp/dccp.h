@@ -39,7 +39,7 @@
 						  "%s: " fmt, __func__, ##a)
 
 #ifdef CONFIG_IP_DCCP_DEBUG
-extern int dccp_debug;
+extern bool dccp_debug;
 #define dccp_pr_debug(format, a...)	  DCCP_PR_DEBUG(dccp_debug, format, ##a)
 #define dccp_pr_debug_cat(format, a...)   DCCP_PRINTK(dccp_debug, format, ##a)
 #define dccp_debug(fmt, a...)		  dccp_pr_debug_cat(KERN_DEBUG fmt, ##a)
@@ -75,7 +75,7 @@ extern void dccp_time_wait(struct sock *sk, int state, int timeo);
 				     * state, about 60 seconds */
 
 /* RFC 1122, 4.2.3.1 initial RTO value */
-#define DCCP_TIMEOUT_INIT ((unsigned)(3 * HZ))
+#define DCCP_TIMEOUT_INIT ((unsigned int)(3 * HZ))
 
 /*
  * The maximum back-off value for retransmissions. This is needed for
@@ -84,7 +84,7 @@ extern void dccp_time_wait(struct sock *sk, int state, int timeo);
  *  - feature-negotiation retransmission (sec. 6.6.3),
  *  - Acks in client-PARTOPEN state (sec. 8.1.5).
  */
-#define DCCP_RTO_MAX ((unsigned)(64 * HZ))
+#define DCCP_RTO_MAX ((unsigned int)(64 * HZ))
 
 /*
  * RTT sampling: sanity bounds and fallback RTT value from RFC 4340, section 3.4
@@ -92,9 +92,6 @@ extern void dccp_time_wait(struct sock *sk, int state, int timeo);
 #define DCCP_SANE_RTT_MIN	100
 #define DCCP_FALLBACK_RTT	(USEC_PER_SEC / 5)
 #define DCCP_SANE_RTT_MAX	(3 * USEC_PER_SEC)
-
-/* Maximal interval between probes for local resources.  */
-#define DCCP_RESOURCE_PROBE_INTERVAL ((unsigned)(HZ / 2U))
 
 /* sysctl variables for DCCP */
 extern int  sysctl_dccp_request_retries;
@@ -203,12 +200,7 @@ struct dccp_mib {
 DECLARE_SNMP_STAT(struct dccp_mib, dccp_statistics);
 #define DCCP_INC_STATS(field)	    SNMP_INC_STATS(dccp_statistics, field)
 #define DCCP_INC_STATS_BH(field)    SNMP_INC_STATS_BH(dccp_statistics, field)
-#define DCCP_INC_STATS_USER(field)  SNMP_INC_STATS_USER(dccp_statistics, field)
 #define DCCP_DEC_STATS(field)	    SNMP_DEC_STATS(dccp_statistics, field)
-#define DCCP_ADD_STATS_BH(field, val) \
-			SNMP_ADD_STATS_BH(dccp_statistics, field, val)
-#define DCCP_ADD_STATS_USER(field, val)	\
-			SNMP_ADD_STATS_USER(dccp_statistics, field, val)
 
 /*
  * 	Checksumming routines
@@ -243,6 +235,19 @@ extern void dccp_reqsk_send_ack(struct sock *sk, struct sk_buff *skb,
 extern void dccp_send_sync(struct sock *sk, const u64 seq,
 			   const enum dccp_pkt_type pkt_type);
 
+/*
+ * TX Packet Dequeueing Interface
+ */
+extern void		dccp_qpolicy_push(struct sock *sk, struct sk_buff *skb);
+extern bool		dccp_qpolicy_full(struct sock *sk);
+extern void		dccp_qpolicy_drop(struct sock *sk, struct sk_buff *skb);
+extern struct sk_buff	*dccp_qpolicy_top(struct sock *sk);
+extern struct sk_buff	*dccp_qpolicy_pop(struct sock *sk);
+extern bool		dccp_qpolicy_param_ok(struct sock *sk, __be32 param);
+
+/*
+ * TX Packet Output and TX Timers
+ */
 extern void   dccp_write_xmit(struct sock *sk);
 extern void   dccp_write_space(struct sock *sk);
 extern void   dccp_flush_write_queue(struct sock *sk, long *time_budget);
@@ -282,9 +287,9 @@ extern struct sock *dccp_check_req(struct sock *sk, struct sk_buff *skb,
 extern int dccp_child_process(struct sock *parent, struct sock *child,
 			      struct sk_buff *skb);
 extern int dccp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
-				  struct dccp_hdr *dh, unsigned len);
+				  struct dccp_hdr *dh, unsigned int len);
 extern int dccp_rcv_established(struct sock *sk, struct sk_buff *skb,
-				const struct dccp_hdr *dh, const unsigned len);
+				const struct dccp_hdr *dh, const unsigned int len);
 
 extern int dccp_init_sock(struct sock *sk, const __u8 ctl_sock_initialized);
 extern void dccp_destroy_sock(struct sock *sk);
@@ -347,12 +352,13 @@ static inline int dccp_bad_service_code(const struct sock *sk,
  * @dccpd_opt_len: total length of all options (5.8) in the packet
  * @dccpd_seq: sequence number
  * @dccpd_ack_seq: acknowledgment number subheader field value
+ *
  * This is used for transmission as well as for reception.
  */
 struct dccp_skb_cb {
 	union {
 		struct inet_skb_parm	h4;
-#if defined(CONFIG_IPV6) || defined (CONFIG_IPV6_MODULE)
+#if IS_ENABLED(CONFIG_IPV6)
 		struct inet6_skb_parm	h6;
 #endif
 	} header;
@@ -421,7 +427,8 @@ static inline void dccp_update_gsr(struct sock *sk, u64 seq)
 {
 	struct dccp_sock *dp = dccp_sk(sk);
 
-	dp->dccps_gsr = seq;
+	if (after48(seq, dp->dccps_gsr))
+		dp->dccps_gsr = seq;
 	/* Sequence validity window depends on remote Sequence Window (7.5.1) */
 	dp->dccps_swl = SUB48(ADD48(dp->dccps_gsr, 1), dp->dccps_r_seq_win / 4);
 	/*
@@ -457,14 +464,18 @@ static inline void dccp_update_gss(struct sock *sk, u64 seq)
 	dp->dccps_awh = dp->dccps_gss;
 }
 
-static inline int dccp_ack_pending(const struct sock *sk)
+static inline int dccp_ackvec_pending(const struct sock *sk)
 {
-	const struct dccp_sock *dp = dccp_sk(sk);
-	return (dp->dccps_hc_rx_ackvec != NULL &&
-		dccp_ackvec_pending(dp->dccps_hc_rx_ackvec)) ||
-	       inet_csk_ack_scheduled(sk);
+	return dccp_sk(sk)->dccps_hc_rx_ackvec != NULL &&
+	       !dccp_ackvec_is_empty(dccp_sk(sk)->dccps_hc_rx_ackvec);
 }
 
+static inline int dccp_ack_pending(const struct sock *sk)
+{
+	return dccp_ackvec_pending(sk) || inet_csk_ack_scheduled(sk);
+}
+
+extern int  dccp_feat_signal_nn_change(struct sock *sk, u8 feat, u64 nn_val);
 extern int  dccp_feat_finalise_settings(struct dccp_sock *dp);
 extern int  dccp_feat_server_ccid_dependencies(struct dccp_request_sock *dreq);
 extern int  dccp_feat_insert_opts(struct dccp_sock*, struct dccp_request_sock*,

@@ -28,9 +28,15 @@
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <mach/board.h>
+#include <mach/at91_aic.h>
 #include "generic.h"
 
-static void __init at91eb01_map_io(void)
+static void __init at91eb01_init_irq(void)
+{
+	at91x40_init_interrupts(NULL);
+}
+
+static void __init at91eb01_init_early(void)
 {
 	at91x40_initialize(40000000);
 }
@@ -38,7 +44,8 @@ static void __init at91eb01_map_io(void)
 MACHINE_START(AT91EB01, "Atmel AT91 EB01")
 	/* Maintainer: Greg Ungerer <gerg@snapgear.com> */
 	.timer		= &at91x40_timer,
-	.init_irq	= at91x40_init_interrupts,
-	.map_io		= at91eb01_map_io,
+	.handle_irq	= at91_aic_handle_irq,
+	.init_early	= at91eb01_init_early,
+	.init_irq	= at91eb01_init_irq,
 MACHINE_END
 

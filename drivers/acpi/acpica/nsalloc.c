@@ -5,7 +5,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2012, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -52,7 +52,7 @@ ACPI_MODULE_NAME("nsalloc")
  *
  * FUNCTION:    acpi_ns_create_node
  *
- * PARAMETERS:  Name            - Name of the new node (4 char ACPI name)
+ * PARAMETERS:  name            - Name of the new node (4 char ACPI name)
  *
  * RETURN:      New namespace node (Null on failure)
  *
@@ -92,7 +92,7 @@ struct acpi_namespace_node *acpi_ns_create_node(u32 name)
  *
  * FUNCTION:    acpi_ns_delete_node
  *
- * PARAMETERS:  Node            - Node to be deleted
+ * PARAMETERS:  node            - Node to be deleted
  *
  * RETURN:      None
  *
@@ -143,7 +143,7 @@ void acpi_ns_delete_node(struct acpi_namespace_node *node)
  *
  * FUNCTION:    acpi_ns_remove_node
  *
- * PARAMETERS:  Node            - Node to be removed/deleted
+ * PARAMETERS:  node            - Node to be removed/deleted
  *
  * RETURN:      None
  *
@@ -196,8 +196,8 @@ void acpi_ns_remove_node(struct acpi_namespace_node *node)
  *
  * PARAMETERS:  walk_state      - Current state of the walk
  *              parent_node     - The parent of the new Node
- *              Node            - The new Node to install
- *              Type            - ACPI object type of the new Node
+ *              node            - The new Node to install
+ *              type            - ACPI object type of the new Node
  *
  * RETURN:      None
  *
@@ -234,8 +234,8 @@ void acpi_ns_install_node(struct acpi_walk_state *walk_state, struct acpi_namesp
 			 * modified the namespace. This is used for cleanup when the
 			 * method exits.
 			 */
-			walk_state->method_desc->method.flags |=
-			    AOPOBJ_MODIFIED_NAMESPACE;
+			walk_state->method_desc->method.info_flags |=
+			    ACPI_METHOD_MODIFIED_NAMESPACE;
 		}
 	}
 
@@ -341,10 +341,18 @@ void acpi_ns_delete_namespace_subtree(struct acpi_namespace_node *parent_node)
 {
 	struct acpi_namespace_node *child_node = NULL;
 	u32 level = 1;
+	acpi_status status;
 
 	ACPI_FUNCTION_TRACE(ns_delete_namespace_subtree);
 
 	if (!parent_node) {
+		return_VOID;
+	}
+
+	/* Lock namespace for possible update */
+
+	status = acpi_ut_acquire_mutex(ACPI_MTX_NAMESPACE);
+	if (ACPI_FAILURE(status)) {
 		return_VOID;
 	}
 
@@ -397,6 +405,7 @@ void acpi_ns_delete_namespace_subtree(struct acpi_namespace_node *parent_node)
 		}
 	}
 
+	(void)acpi_ut_release_mutex(ACPI_MTX_NAMESPACE);
 	return_VOID;
 }
 

@@ -83,9 +83,11 @@ void crypto_exit_compress_ops(struct crypto_tfm *tfm);
 struct crypto_larval *crypto_larval_alloc(const char *name, u32 type, u32 mask);
 void crypto_larval_kill(struct crypto_alg *alg);
 struct crypto_alg *crypto_larval_lookup(const char *name, u32 type, u32 mask);
-void crypto_larval_error(const char *name, u32 type, u32 mask);
 void crypto_alg_tested(const char *name, int err);
 
+void crypto_remove_spawns(struct crypto_alg *alg, struct list_head *list,
+			  struct crypto_alg *nalg);
+void crypto_remove_final(struct list_head *list);
 void crypto_shoot_alg(struct crypto_alg *alg);
 struct crypto_tfm *__crypto_alloc_tfm(struct crypto_alg *alg, u32 type,
 				      u32 mask);

@@ -21,7 +21,7 @@ static unsigned int __blk_recalc_rq_segments(struct request_queue *q,
 		return 0;
 
 	fbio = bio;
-	cluster = test_bit(QUEUE_FLAG_CLUSTER, &q->queue_flags);
+	cluster = blk_queue_cluster(q);
 	seg_size = 0;
 	nr_phys_segs = 0;
 	for_each_bio(bio) {
@@ -87,7 +87,7 @@ EXPORT_SYMBOL(blk_recount_segments);
 static int blk_phys_contig_segment(struct request_queue *q, struct bio *bio,
 				   struct bio *nxt)
 {
-	if (!test_bit(QUEUE_FLAG_CLUSTER, &q->queue_flags))
+	if (!blk_queue_cluster(q))
 		return 0;
 
 	if (bio->bi_seg_back_size + nxt->bi_seg_front_size >
@@ -110,6 +110,49 @@ static int blk_phys_contig_segment(struct request_queue *q, struct bio *bio,
 	return 0;
 }
 
+static void
+__blk_segment_map_sg(struct request_queue *q, struct bio_vec *bvec,
+		     struct scatterlist *sglist, struct bio_vec **bvprv,
+		     struct scatterlist **sg, int *nsegs, int *cluster)
+{
+
+	int nbytes = bvec->bv_len;
+
+	if (*bvprv && *cluster) {
+		if ((*sg)->length + nbytes > queue_max_segment_size(q))
+			goto new_segment;
+
+		if (!BIOVEC_PHYS_MERGEABLE(*bvprv, bvec))
+			goto new_segment;
+		if (!BIOVEC_SEG_BOUNDARY(q, *bvprv, bvec))
+			goto new_segment;
+
+		(*sg)->length += nbytes;
+	} else {
+new_segment:
+		if (!*sg)
+			*sg = sglist;
+		else {
+			/*
+			 * If the driver previously mapped a shorter
+			 * list, we could see a termination bit
+			 * prematurely unless it fully inits the sg
+			 * table on each mapping. We KNOW that there
+			 * must be more entries here or the driver
+			 * would be buggy, so force clear the
+			 * termination bit to avoid doing a full
+			 * sg_init_table() in drivers for each command.
+			 */
+			(*sg)->page_link &= ~0x02;
+			*sg = sg_next(*sg);
+		}
+
+		sg_set_page(*sg, bvec->bv_page, nbytes, bvec->bv_offset);
+		(*nsegs)++;
+	}
+	*bvprv = bvec;
+}
+
 /*
  * map a request to scatterlist, return number of sg entries setup. Caller
  * must make sure sg can hold rq->nr_phys_segments entries
@@ -123,7 +166,7 @@ int blk_rq_map_sg(struct request_queue *q, struct request *rq,
 	int nsegs, cluster;
 
 	nsegs = 0;
-	cluster = test_bit(QUEUE_FLAG_CLUSTER, &q->queue_flags);
+	cluster = blk_queue_cluster(q);
 
 	/*
 	 * for each bio in rq
@@ -131,41 +174,8 @@ int blk_rq_map_sg(struct request_queue *q, struct request *rq,
 	bvprv = NULL;
 	sg = NULL;
 	rq_for_each_segment(bvec, rq, iter) {
-		int nbytes = bvec->bv_len;
-
-		if (bvprv && cluster) {
-			if (sg->length + nbytes > queue_max_segment_size(q))
-				goto new_segment;
-
-			if (!BIOVEC_PHYS_MERGEABLE(bvprv, bvec))
-				goto new_segment;
-			if (!BIOVEC_SEG_BOUNDARY(q, bvprv, bvec))
-				goto new_segment;
-
-			sg->length += nbytes;
-		} else {
-new_segment:
-			if (!sg)
-				sg = sglist;
-			else {
-				/*
-				 * If the driver previously mapped a shorter
-				 * list, we could see a termination bit
-				 * prematurely unless it fully inits the sg
-				 * table on each mapping. We KNOW that there
-				 * must be more entries here or the driver
-				 * would be buggy, so force clear the
-				 * termination bit to avoid doing a full
-				 * sg_init_table() in drivers for each command.
-				 */
-				sg->page_link &= ~0x02;
-				sg = sg_next(sg);
-			}
-
-			sg_set_page(sg, bvec->bv_page, nbytes, bvec->bv_offset);
-			nsegs++;
-		}
-		bvprv = bvec;
+		__blk_segment_map_sg(q, bvec, sglist, &bvprv, &sg,
+				     &nsegs, &cluster);
 	} /* segments in rq */
 
 
@@ -198,6 +208,43 @@ new_segment:
 	return nsegs;
 }
 EXPORT_SYMBOL(blk_rq_map_sg);
+
+/**
+ * blk_bio_map_sg - map a bio to a scatterlist
+ * @q: request_queue in question
+ * @bio: bio being mapped
+ * @sglist: scatterlist being mapped
+ *
+ * Note:
+ *    Caller must make sure sg can hold bio->bi_phys_segments entries
+ *
+ * Will return the number of sg entries setup
+ */
+int blk_bio_map_sg(struct request_queue *q, struct bio *bio,
+		   struct scatterlist *sglist)
+{
+	struct bio_vec *bvec, *bvprv;
+	struct scatterlist *sg;
+	int nsegs, cluster;
+	unsigned long i;
+
+	nsegs = 0;
+	cluster = blk_queue_cluster(q);
+
+	bvprv = NULL;
+	sg = NULL;
+	bio_for_each_segment(bvec, bio, i) {
+		__blk_segment_map_sg(q, bvec, sglist, &bvprv, &sg,
+				     &nsegs, &cluster);
+	} /* segments in bio */
+
+	if (sg)
+		sg_mark_end(sg);
+
+	BUG_ON(bio->bi_phys_segments && nsegs > bio->bi_phys_segments);
+	return nsegs;
+}
+EXPORT_SYMBOL(blk_bio_map_sg);
 
 static inline int ll_new_hw_segment(struct request_queue *q,
 				    struct request *req,
@@ -351,11 +398,12 @@ static void blk_account_io_merge(struct request *req)
 		int cpu;
 
 		cpu = part_stat_lock();
-		part = disk_map_sector_rcu(req->rq_disk, blk_rq_pos(req));
+		part = req->part;
 
 		part_round_stats(cpu, part);
 		part_dec_in_flight(part, rq_data_dir(req));
 
+		hd_struct_put(part);
 		part_stat_unlock();
 	}
 }
@@ -463,4 +511,47 @@ int attempt_front_merge(struct request_queue *q, struct request *rq)
 		return attempt_merge(q, prev, rq);
 
 	return 0;
+}
+
+int blk_attempt_req_merge(struct request_queue *q, struct request *rq,
+			  struct request *next)
+{
+	return attempt_merge(q, rq, next);
+}
+
+bool blk_rq_merge_ok(struct request *rq, struct bio *bio)
+{
+	if (!rq_mergeable(rq))
+		return false;
+
+	/* don't merge file system requests and discard requests */
+	if ((bio->bi_rw & REQ_DISCARD) != (rq->bio->bi_rw & REQ_DISCARD))
+		return false;
+
+	/* don't merge discard requests and secure discard requests */
+	if ((bio->bi_rw & REQ_SECURE) != (rq->bio->bi_rw & REQ_SECURE))
+		return false;
+
+	/* different data direction or already started, don't merge */
+	if (bio_data_dir(bio) != rq_data_dir(rq))
+		return false;
+
+	/* must be same device and not a special request */
+	if (rq->rq_disk != bio->bi_bdev->bd_disk || rq->special)
+		return false;
+
+	/* only merge integrity protected bio into ditto rq */
+	if (bio_integrity(bio) != blk_integrity_rq(rq))
+		return false;
+
+	return true;
+}
+
+int blk_try_merge(struct request *rq, struct bio *bio)
+{
+	if (blk_rq_pos(rq) + blk_rq_sectors(rq) == bio->bi_sector)
+		return ELEVATOR_BACK_MERGE;
+	else if (blk_rq_pos(rq) - bio_sectors(bio) == bio->bi_sector)
+		return ELEVATOR_FRONT_MERGE;
+	return ELEVATOR_NO_MERGE;
 }

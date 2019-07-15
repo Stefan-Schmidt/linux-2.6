@@ -170,8 +170,8 @@ struct intel_mid_i2c_private {
 /* Raw Interrupt Status Register */
 #define IC_RAW_INTR_STAT	0x34		/* Read Only */
 #define GEN_CALL		(1 << 11)	/* General call */
-#define START_DET		(1 << 10)	/* (RE)START occured */
-#define STOP_DET		(1 << 9)	/* STOP occured */
+#define START_DET		(1 << 10)	/* (RE)START occurred */
+#define STOP_DET		(1 << 9)	/* STOP occurred */
 #define ACTIVITY		(1 << 8)	/* Bus busy */
 #define RX_DONE			(1 << 7)	/* Not used in Master mode */
 #define	TX_ABRT			(1 << 6)	/* Transmit Abort */
@@ -375,7 +375,7 @@ static int intel_mid_i2c_disable(struct i2c_adapter *adap)
  * I2C should be disabled prior to other register operation. If failed, an
  * errno is returned. Mask and Clear all interrpts, this should be done at
  * first.  Set common registers which will not be modified during normal
- * transfers, including: controll register, FIFO threshold and clock freq.
+ * transfers, including: control register, FIFO threshold and clock freq.
  * Check APB data width at last.
  */
 static int intel_mid_i2c_hwinit(struct intel_mid_i2c_private *i2c)
@@ -455,7 +455,7 @@ static inline bool intel_mid_i2c_address_neq(const struct i2c_msg *p1,
  *
  * By reading register IC_TX_ABRT_SOURCE, various transfer errors can be
  * distingushed. At present, no circumstances have been found out that
- * multiple errors would be occured simutaneously, so we simply use the
+ * multiple errors would be occurred simutaneously, so we simply use the
  * register value directly.
  *
  * At last the error bits are cleared. (Note clear ABRT_SBYTE_NORSTRT bit need
@@ -469,7 +469,7 @@ static void intel_mid_i2c_abort(struct intel_mid_i2c_private *i2c)
 
 	/* Single transfer error check:
 	 * According to databook, TX/RX FIFOs would be flushed when
-	 * the abort interrupt occured.
+	 * the abort interrupt occurred.
 	 */
 	if (abort & ABRT_MASTER_DIS)
 		dev_err(&adap->dev,
@@ -569,7 +569,7 @@ static int xfer_read(struct i2c_adapter *adap, unsigned char *buf, int length)
  * Return Values:
  * 0	if the read transfer succeeds
  * -ETIMEDOUT	if we cannot read the "raw" interrupt register
- * -EINVAL	if a transfer abort occured
+ * -EINVAL	if a transfer abort occurred
  *
  * For every byte, a "WRITE" command will be loaded into IC_DATA_CMD prior to
  * data transfer. The actual "write" operation will be performed when the
@@ -697,7 +697,7 @@ static int intel_mid_i2c_setup(struct i2c_adapter *adap,  struct i2c_msg *pmsg)
  * @num: number of i2c_msg
  *
  * Return Values:
- * +		number of messages transfered
+ * +		number of messages transferred
  * -ETIMEDOUT	If cannot disable I2C controller or read IC_STATUS
  * -EINVAL	If the address in i2c_msg is invalid
  *
@@ -999,7 +999,7 @@ static int __devinit intel_mid_i2c_probe(struct pci_dev *dev,
 
 	/* Initialize struct members */
 	snprintf(mrst->adap.name, sizeof(mrst->adap.name),
-		"MRST/Medfield I2C at %lx", start);
+		"Intel MID I2C at %lx", start);
 	mrst->adap.owner = THIS_MODULE;
 	mrst->adap.algo = &intel_mid_i2c_algorithm;
 	mrst->adap.dev.parent = &dev->dev;
@@ -1093,7 +1093,7 @@ static void __devexit intel_mid_i2c_remove(struct pci_dev *dev)
 	pci_release_region(dev, 0);
 }
 
-static struct pci_device_id intel_mid_i2c_ids[] = {
+static DEFINE_PCI_DEVICE_TABLE(intel_mid_i2c_ids) = {
 	/* Moorestown */
 	{ PCI_VDEVICE(INTEL, 0x0802), 0 },
 	{ PCI_VDEVICE(INTEL, 0x0803), 1 },
@@ -1116,18 +1116,7 @@ static struct pci_driver intel_mid_i2c_driver = {
 	.remove		= __devexit_p(intel_mid_i2c_remove),
 };
 
-static int __init intel_mid_i2c_init(void)
-{
-	return pci_register_driver(&intel_mid_i2c_driver);
-}
-
-static void __exit intel_mid_i2c_exit(void)
-{
-	pci_unregister_driver(&intel_mid_i2c_driver);
-}
-
-module_init(intel_mid_i2c_init);
-module_exit(intel_mid_i2c_exit);
+module_pci_driver(intel_mid_i2c_driver);
 
 MODULE_AUTHOR("Ba Zheng <zheng.ba@intel.com>");
 MODULE_DESCRIPTION("I2C driver for Moorestown Platform");

@@ -2,12 +2,27 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
+#include <linux/export.h>
+#include <linux/stackprotector.h>
+#include <asm/fpu.h>
 
 struct kmem_cache *task_xstate_cachep = NULL;
 unsigned int xstate_size;
 
+#ifdef CONFIG_CC_STACKPROTECTOR
+unsigned long __stack_chk_guard __read_mostly;
+EXPORT_SYMBOL(__stack_chk_guard);
+#endif
+
+/*
+ * this gets called so that we can store lazy state into memory and copy the
+ * current task into the new thread.
+ */
 int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
 {
+#ifdef CONFIG_SUPERH32
+	unlazy_fpu(src, task_pt_regs(src));
+#endif
 	*dst = *src;
 
 	if (src->thread.xstate) {
@@ -29,50 +44,10 @@ void free_thread_xstate(struct task_struct *tsk)
 	}
 }
 
-#if THREAD_SHIFT < PAGE_SHIFT
-static struct kmem_cache *thread_info_cache;
-
-struct thread_info *alloc_thread_info(struct task_struct *tsk)
+void arch_release_task_struct(struct task_struct *tsk)
 {
-	struct thread_info *ti;
-
-	ti = kmem_cache_alloc(thread_info_cache, GFP_KERNEL);
-	if (unlikely(ti == NULL))
-		return NULL;
-#ifdef CONFIG_DEBUG_STACK_USAGE
-	memset(ti, 0, THREAD_SIZE);
-#endif
-	return ti;
+	free_thread_xstate(tsk);
 }
-
-void free_thread_info(struct thread_info *ti)
-{
-	free_thread_xstate(ti->task);
-	kmem_cache_free(thread_info_cache, ti);
-}
-
-void thread_info_cache_init(void)
-{
-	thread_info_cache = kmem_cache_create("thread_info", THREAD_SIZE,
-					      THREAD_SIZE, SLAB_PANIC, NULL);
-}
-#else
-struct thread_info *alloc_thread_info(struct task_struct *tsk)
-{
-#ifdef CONFIG_DEBUG_STACK_USAGE
-	gfp_t mask = GFP_KERNEL | __GFP_ZERO;
-#else
-	gfp_t mask = GFP_KERNEL;
-#endif
-	return (struct thread_info *)__get_free_pages(mask, THREAD_SIZE_ORDER);
-}
-
-void free_thread_info(struct thread_info *ti)
-{
-	free_thread_xstate(ti->task);
-	free_pages((unsigned long)ti, THREAD_SIZE_ORDER);
-}
-#endif /* THREAD_SHIFT < PAGE_SHIFT */
 
 void arch_task_cache_init(void)
 {

@@ -5,222 +5,271 @@
 #include <linux/ctype.h>
 #include <linux/init.h>
 #include <linux/dmar.h>
+#include <linux/cpu.h>
 
 #include <asm/smp.h>
-#include <asm/apic.h>
-#include <asm/ipi.h>
+#include <asm/x2apic.h>
 
 static DEFINE_PER_CPU(u32, x86_cpu_to_logical_apicid);
+static DEFINE_PER_CPU(cpumask_var_t, cpus_in_cluster);
+static DEFINE_PER_CPU(cpumask_var_t, ipi_mask);
 
 static int x2apic_acpi_madt_oem_check(char *oem_id, char *oem_table_id)
 {
 	return x2apic_enabled();
 }
 
-/*
- * need to use more than cpu 0, because we need more vectors when
- * MSI-X are used.
- */
-static const struct cpumask *x2apic_target_cpus(void)
+static inline u32 x2apic_cluster(int cpu)
 {
-	return cpu_online_mask;
-}
-
-/*
- * for now each logical cpu is in its own vector allocation domain.
- */
-static void x2apic_vector_allocation_domain(int cpu, struct cpumask *retmask)
-{
-	cpumask_clear(retmask);
-	cpumask_set_cpu(cpu, retmask);
+	return per_cpu(x86_cpu_to_logical_apicid, cpu) >> 16;
 }
 
 static void
- __x2apic_send_IPI_dest(unsigned int apicid, int vector, unsigned int dest)
+__x2apic_send_IPI_mask(const struct cpumask *mask, int vector, int apic_dest)
 {
-	unsigned long cfg;
+	struct cpumask *cpus_in_cluster_ptr;
+	struct cpumask *ipi_mask_ptr;
+	unsigned int cpu, this_cpu;
+	unsigned long flags;
+	u32 dest;
 
-	cfg = __prepare_ICR(0, vector, dest);
+	x2apic_wrmsr_fence();
+
+	local_irq_save(flags);
+
+	this_cpu = smp_processor_id();
 
 	/*
-	 * send the IPI.
+	 * We are to modify mask, so we need an own copy
+	 * and be sure it's manipulated with irq off.
 	 */
-	native_x2apic_icr_write(cfg, apicid);
+	ipi_mask_ptr = __raw_get_cpu_var(ipi_mask);
+	cpumask_copy(ipi_mask_ptr, mask);
+
+	/*
+	 * The idea is to send one IPI per cluster.
+	 */
+	for_each_cpu(cpu, ipi_mask_ptr) {
+		unsigned long i;
+
+		cpus_in_cluster_ptr = per_cpu(cpus_in_cluster, cpu);
+		dest = 0;
+
+		/* Collect cpus in cluster. */
+		for_each_cpu_and(i, ipi_mask_ptr, cpus_in_cluster_ptr) {
+			if (apic_dest == APIC_DEST_ALLINC || i != this_cpu)
+				dest |= per_cpu(x86_cpu_to_logical_apicid, i);
+		}
+
+		if (!dest)
+			continue;
+
+		__x2apic_send_IPI_dest(dest, vector, apic->dest_logical);
+		/*
+		 * Cluster sibling cpus should be discared now so
+		 * we would not send IPI them second time.
+		 */
+		cpumask_andnot(ipi_mask_ptr, ipi_mask_ptr, cpus_in_cluster_ptr);
+	}
+
+	local_irq_restore(flags);
 }
 
-/*
- * for now, we send the IPI's one by one in the cpumask.
- * TBD: Based on the cpu mask, we can send the IPI's to the cluster group
- * at once. We have 16 cpu's in a cluster. This will minimize IPI register
- * writes.
- */
 static void x2apic_send_IPI_mask(const struct cpumask *mask, int vector)
 {
-	unsigned long query_cpu;
-	unsigned long flags;
-
-	x2apic_wrmsr_fence();
-
-	local_irq_save(flags);
-	for_each_cpu(query_cpu, mask) {
-		__x2apic_send_IPI_dest(
-			per_cpu(x86_cpu_to_logical_apicid, query_cpu),
-			vector, apic->dest_logical);
-	}
-	local_irq_restore(flags);
+	__x2apic_send_IPI_mask(mask, vector, APIC_DEST_ALLINC);
 }
 
 static void
- x2apic_send_IPI_mask_allbutself(const struct cpumask *mask, int vector)
+x2apic_send_IPI_mask_allbutself(const struct cpumask *mask, int vector)
 {
-	unsigned long this_cpu = smp_processor_id();
-	unsigned long query_cpu;
-	unsigned long flags;
-
-	x2apic_wrmsr_fence();
-
-	local_irq_save(flags);
-	for_each_cpu(query_cpu, mask) {
-		if (query_cpu == this_cpu)
-			continue;
-		__x2apic_send_IPI_dest(
-				per_cpu(x86_cpu_to_logical_apicid, query_cpu),
-				vector, apic->dest_logical);
-	}
-	local_irq_restore(flags);
+	__x2apic_send_IPI_mask(mask, vector, APIC_DEST_ALLBUT);
 }
 
 static void x2apic_send_IPI_allbutself(int vector)
 {
-	unsigned long this_cpu = smp_processor_id();
-	unsigned long query_cpu;
-	unsigned long flags;
-
-	x2apic_wrmsr_fence();
-
-	local_irq_save(flags);
-	for_each_online_cpu(query_cpu) {
-		if (query_cpu == this_cpu)
-			continue;
-		__x2apic_send_IPI_dest(
-				per_cpu(x86_cpu_to_logical_apicid, query_cpu),
-				vector, apic->dest_logical);
-	}
-	local_irq_restore(flags);
+	__x2apic_send_IPI_mask(cpu_online_mask, vector, APIC_DEST_ALLBUT);
 }
 
 static void x2apic_send_IPI_all(int vector)
 {
-	x2apic_send_IPI_mask(cpu_online_mask, vector);
+	__x2apic_send_IPI_mask(cpu_online_mask, vector, APIC_DEST_ALLINC);
 }
 
-static int x2apic_apic_id_registered(void)
-{
-	return 1;
-}
-
-static unsigned int x2apic_cpu_mask_to_apicid(const struct cpumask *cpumask)
-{
-	/*
-	 * We're using fixed IRQ delivery, can only return one logical APIC ID.
-	 * May as well be the first.
-	 */
-	int cpu = cpumask_first(cpumask);
-
-	if ((unsigned)cpu < nr_cpu_ids)
-		return per_cpu(x86_cpu_to_logical_apicid, cpu);
-	else
-		return BAD_APICID;
-}
-
-static unsigned int
+static int
 x2apic_cpu_mask_to_apicid_and(const struct cpumask *cpumask,
-			      const struct cpumask *andmask)
+			      const struct cpumask *andmask,
+			      unsigned int *apicid)
 {
-	int cpu;
+	u32 dest = 0;
+	u16 cluster;
+	int i;
 
-	/*
-	 * We're using fixed IRQ delivery, can only return one logical APIC ID.
-	 * May as well be the first.
-	 */
-	for_each_cpu_and(cpu, cpumask, andmask) {
-		if (cpumask_test_cpu(cpu, cpu_online_mask))
-			break;
+	for_each_cpu_and(i, cpumask, andmask) {
+		if (!cpumask_test_cpu(i, cpu_online_mask))
+			continue;
+		dest = per_cpu(x86_cpu_to_logical_apicid, i);
+		cluster = x2apic_cluster(i);
+		break;
 	}
 
-	return per_cpu(x86_cpu_to_logical_apicid, cpu);
-}
+	if (!dest)
+		return -EINVAL;
 
-static unsigned int x2apic_cluster_phys_get_apic_id(unsigned long x)
-{
-	unsigned int id;
+	for_each_cpu_and(i, cpumask, andmask) {
+		if (!cpumask_test_cpu(i, cpu_online_mask))
+			continue;
+		if (cluster != x2apic_cluster(i))
+			continue;
+		dest |= per_cpu(x86_cpu_to_logical_apicid, i);
+	}
 
-	id = x;
-	return id;
-}
+	*apicid = dest;
 
-static unsigned long set_apic_id(unsigned int id)
-{
-	unsigned long x;
-
-	x = id;
-	return x;
-}
-
-static int x2apic_cluster_phys_pkg_id(int initial_apicid, int index_msb)
-{
-	return initial_apicid >> index_msb;
-}
-
-static void x2apic_send_IPI_self(int vector)
-{
-	apic_write(APIC_SELF_IPI, vector);
+	return 0;
 }
 
 static void init_x2apic_ldr(void)
 {
-	int cpu = smp_processor_id();
+	unsigned int this_cpu = smp_processor_id();
+	unsigned int cpu;
 
-	per_cpu(x86_cpu_to_logical_apicid, cpu) = apic_read(APIC_LDR);
+	per_cpu(x86_cpu_to_logical_apicid, this_cpu) = apic_read(APIC_LDR);
+
+	__cpu_set(this_cpu, per_cpu(cpus_in_cluster, this_cpu));
+	for_each_online_cpu(cpu) {
+		if (x2apic_cluster(this_cpu) != x2apic_cluster(cpu))
+			continue;
+		__cpu_set(this_cpu, per_cpu(cpus_in_cluster, cpu));
+		__cpu_set(cpu, per_cpu(cpus_in_cluster, this_cpu));
+	}
 }
 
-struct apic apic_x2apic_cluster = {
+ /*
+  * At CPU state changes, update the x2apic cluster sibling info.
+  */
+static int __cpuinit
+update_clusterinfo(struct notifier_block *nfb, unsigned long action, void *hcpu)
+{
+	unsigned int this_cpu = (unsigned long)hcpu;
+	unsigned int cpu;
+	int err = 0;
+
+	switch (action) {
+	case CPU_UP_PREPARE:
+		if (!zalloc_cpumask_var(&per_cpu(cpus_in_cluster, this_cpu),
+					GFP_KERNEL)) {
+			err = -ENOMEM;
+		} else if (!zalloc_cpumask_var(&per_cpu(ipi_mask, this_cpu),
+					       GFP_KERNEL)) {
+			free_cpumask_var(per_cpu(cpus_in_cluster, this_cpu));
+			err = -ENOMEM;
+		}
+		break;
+	case CPU_UP_CANCELED:
+	case CPU_UP_CANCELED_FROZEN:
+	case CPU_DEAD:
+		for_each_online_cpu(cpu) {
+			if (x2apic_cluster(this_cpu) != x2apic_cluster(cpu))
+				continue;
+			__cpu_clear(this_cpu, per_cpu(cpus_in_cluster, cpu));
+			__cpu_clear(cpu, per_cpu(cpus_in_cluster, this_cpu));
+		}
+		free_cpumask_var(per_cpu(cpus_in_cluster, this_cpu));
+		free_cpumask_var(per_cpu(ipi_mask, this_cpu));
+		break;
+	}
+
+	return notifier_from_errno(err);
+}
+
+static struct notifier_block __refdata x2apic_cpu_notifier = {
+	.notifier_call = update_clusterinfo,
+};
+
+static int x2apic_init_cpu_notifier(void)
+{
+	int cpu = smp_processor_id();
+
+	zalloc_cpumask_var(&per_cpu(cpus_in_cluster, cpu), GFP_KERNEL);
+	zalloc_cpumask_var(&per_cpu(ipi_mask, cpu), GFP_KERNEL);
+
+	BUG_ON(!per_cpu(cpus_in_cluster, cpu) || !per_cpu(ipi_mask, cpu));
+
+	__cpu_set(cpu, per_cpu(cpus_in_cluster, cpu));
+	register_hotcpu_notifier(&x2apic_cpu_notifier);
+	return 1;
+}
+
+static int x2apic_cluster_probe(void)
+{
+	if (x2apic_mode)
+		return x2apic_init_cpu_notifier();
+	else
+		return 0;
+}
+
+static const struct cpumask *x2apic_cluster_target_cpus(void)
+{
+	return cpu_all_mask;
+}
+
+/*
+ * Each x2apic cluster is an allocation domain.
+ */
+static void cluster_vector_allocation_domain(int cpu, struct cpumask *retmask,
+					     const struct cpumask *mask)
+{
+	/*
+	 * To minimize vector pressure, default case of boot, device bringup
+	 * etc will use a single cpu for the interrupt destination.
+	 *
+	 * On explicit migration requests coming from irqbalance etc,
+	 * interrupts will be routed to the x2apic cluster (cluster-id
+	 * derived from the first cpu in the mask) members specified
+	 * in the mask.
+	 */
+	if (mask == x2apic_cluster_target_cpus())
+		cpumask_copy(retmask, cpumask_of(cpu));
+	else
+		cpumask_and(retmask, mask, per_cpu(cpus_in_cluster, cpu));
+}
+
+static struct apic apic_x2apic_cluster = {
 
 	.name				= "cluster x2apic",
-	.probe				= NULL,
+	.probe				= x2apic_cluster_probe,
 	.acpi_madt_oem_check		= x2apic_acpi_madt_oem_check,
+	.apic_id_valid			= x2apic_apic_id_valid,
 	.apic_id_registered		= x2apic_apic_id_registered,
 
 	.irq_delivery_mode		= dest_LowestPrio,
 	.irq_dest_mode			= 1, /* logical */
 
-	.target_cpus			= x2apic_target_cpus,
+	.target_cpus			= x2apic_cluster_target_cpus,
 	.disable_esr			= 0,
 	.dest_logical			= APIC_DEST_LOGICAL,
 	.check_apicid_used		= NULL,
 	.check_apicid_present		= NULL,
 
-	.vector_allocation_domain	= x2apic_vector_allocation_domain,
+	.vector_allocation_domain	= cluster_vector_allocation_domain,
 	.init_apic_ldr			= init_x2apic_ldr,
 
 	.ioapic_phys_id_map		= NULL,
 	.setup_apic_routing		= NULL,
 	.multi_timer_check		= NULL,
-	.apicid_to_node			= NULL,
-	.cpu_to_logical_apicid		= NULL,
 	.cpu_present_to_apicid		= default_cpu_present_to_apicid,
 	.apicid_to_cpu_present		= NULL,
 	.setup_portio_remap		= NULL,
 	.check_phys_apicid_present	= default_check_phys_apicid_present,
 	.enable_apic_mode		= NULL,
-	.phys_pkg_id			= x2apic_cluster_phys_pkg_id,
+	.phys_pkg_id			= x2apic_phys_pkg_id,
 	.mps_oem_check			= NULL,
 
-	.get_apic_id			= x2apic_cluster_phys_get_apic_id,
-	.set_apic_id			= set_apic_id,
+	.get_apic_id			= x2apic_get_apic_id,
+	.set_apic_id			= x2apic_set_apic_id,
 	.apic_id_mask			= 0xFFFFFFFFu,
 
-	.cpu_mask_to_apicid		= x2apic_cpu_mask_to_apicid,
 	.cpu_mask_to_apicid_and		= x2apic_cpu_mask_to_apicid_and,
 
 	.send_IPI_mask			= x2apic_send_IPI_mask,
@@ -237,8 +286,11 @@ struct apic apic_x2apic_cluster = {
 
 	.read				= native_apic_msr_read,
 	.write				= native_apic_msr_write,
+	.eoi_write			= native_apic_msr_eoi_write,
 	.icr_read			= native_x2apic_icr_read,
 	.icr_write			= native_x2apic_icr_write,
 	.wait_icr_idle			= native_x2apic_wait_icr_idle,
 	.safe_wait_icr_idle		= native_safe_x2apic_wait_icr_idle,
 };
+
+apic_driver(apic_x2apic_cluster);

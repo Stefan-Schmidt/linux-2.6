@@ -1,5 +1,5 @@
 /*
- * vpif - DM646x Video Port Interface driver
+ * vpif - Video Port Interface driver
  * VPIF is a receiver and transmitter for video data. It has two channels(0, 1)
  * that receiveing video byte stream and two channels(2, 3) for video output.
  * The hardware supports SDTV, HDTV formats, raw data capture.
@@ -23,6 +23,8 @@
 #include <linux/spinlock.h>
 #include <linux/kernel.h>
 #include <linux/io.h>
+#include <linux/clk.h>
+#include <linux/err.h>
 #include <mach/hardware.h>
 
 #include "vpif.h"
@@ -40,6 +42,184 @@ static struct resource	*res;
 spinlock_t vpif_lock;
 
 void __iomem *vpif_base;
+struct clk *vpif_clk;
+
+/**
+ * ch_params: video standard configuration parameters for vpif
+ * The table must include all presets from supported subdevices.
+ */
+const struct vpif_channel_config_params ch_params[] = {
+	/* HDTV formats */
+	{
+		.name = "480p59_94",
+		.width = 720,
+		.height = 480,
+		.frm_fmt = 1,
+		.ycmux_mode = 0,
+		.eav2sav = 138-8,
+		.sav2eav = 720,
+		.l1 = 1,
+		.l3 = 43,
+		.l5 = 523,
+		.vsize = 525,
+		.capture_format = 0,
+		.vbi_supported = 0,
+		.hd_sd = 1,
+		.dv_preset = V4L2_DV_480P59_94,
+	},
+	{
+		.name = "576p50",
+		.width = 720,
+		.height = 576,
+		.frm_fmt = 1,
+		.ycmux_mode = 0,
+		.eav2sav = 144-8,
+		.sav2eav = 720,
+		.l1 = 1,
+		.l3 = 45,
+		.l5 = 621,
+		.vsize = 625,
+		.capture_format = 0,
+		.vbi_supported = 0,
+		.hd_sd = 1,
+		.dv_preset = V4L2_DV_576P50,
+	},
+	{
+		.name = "720p50",
+		.width = 1280,
+		.height = 720,
+		.frm_fmt = 1,
+		.ycmux_mode = 0,
+		.eav2sav = 700-8,
+		.sav2eav = 1280,
+		.l1 = 1,
+		.l3 = 26,
+		.l5 = 746,
+		.vsize = 750,
+		.capture_format = 0,
+		.vbi_supported = 0,
+		.hd_sd = 1,
+		.dv_preset = V4L2_DV_720P50,
+	},
+	{
+		.name = "720p60",
+		.width = 1280,
+		.height = 720,
+		.frm_fmt = 1,
+		.ycmux_mode = 0,
+		.eav2sav = 370 - 8,
+		.sav2eav = 1280,
+		.l1 = 1,
+		.l3 = 26,
+		.l5 = 746,
+		.vsize = 750,
+		.capture_format = 0,
+		.vbi_supported = 0,
+		.hd_sd = 1,
+		.dv_preset = V4L2_DV_720P60,
+	},
+	{
+		.name = "1080I50",
+		.width = 1920,
+		.height = 1080,
+		.frm_fmt = 0,
+		.ycmux_mode = 0,
+		.eav2sav = 720 - 8,
+		.sav2eav = 1920,
+		.l1 = 1,
+		.l3 = 21,
+		.l5 = 561,
+		.l7 = 563,
+		.l9 = 584,
+		.l11 = 1124,
+		.vsize = 1125,
+		.capture_format = 0,
+		.vbi_supported = 0,
+		.hd_sd = 1,
+		.dv_preset = V4L2_DV_1080I50,
+	},
+	{
+		.name = "1080I60",
+		.width = 1920,
+		.height = 1080,
+		.frm_fmt = 0,
+		.ycmux_mode = 0,
+		.eav2sav = 280 - 8,
+		.sav2eav = 1920,
+		.l1 = 1,
+		.l3 = 21,
+		.l5 = 561,
+		.l7 = 563,
+		.l9 = 584,
+		.l11 = 1124,
+		.vsize = 1125,
+		.capture_format = 0,
+		.vbi_supported = 0,
+		.hd_sd = 1,
+		.dv_preset = V4L2_DV_1080I60,
+	},
+	{
+		.name = "1080p60",
+		.width = 1920,
+		.height = 1080,
+		.frm_fmt = 1,
+		.ycmux_mode = 0,
+		.eav2sav = 280 - 8,
+		.sav2eav = 1920,
+		.l1 = 1,
+		.l3 = 42,
+		.l5 = 1122,
+		.vsize = 1125,
+		.capture_format = 0,
+		.vbi_supported = 0,
+		.hd_sd = 1,
+		.dv_preset = V4L2_DV_1080P60,
+	},
+
+	/* SDTV formats */
+	{
+		.name = "NTSC_M",
+		.width = 720,
+		.height = 480,
+		.frm_fmt = 0,
+		.ycmux_mode = 1,
+		.eav2sav = 268,
+		.sav2eav = 1440,
+		.l1 = 1,
+		.l3 = 23,
+		.l5 = 263,
+		.l7 = 266,
+		.l9 = 286,
+		.l11 = 525,
+		.vsize = 525,
+		.capture_format = 0,
+		.vbi_supported = 1,
+		.hd_sd = 0,
+		.stdid = V4L2_STD_525_60,
+	},
+	{
+		.name = "PAL_BDGHIK",
+		.width = 720,
+		.height = 576,
+		.frm_fmt = 0,
+		.ycmux_mode = 1,
+		.eav2sav = 280,
+		.sav2eav = 1440,
+		.l1 = 1,
+		.l3 = 23,
+		.l5 = 311,
+		.l7 = 313,
+		.l9 = 336,
+		.l11 = 624,
+		.vsize = 625,
+		.capture_format = 0,
+		.vbi_supported = 1,
+		.hd_sd = 0,
+		.stdid = V4L2_STD_625_50,
+	},
+};
+
+const unsigned int vpif_ch_params_count = ARRAY_SIZE(ch_params);
 
 static inline void vpif_wr_bit(u32 reg, u32 bit, u32 val)
 {
@@ -169,7 +349,7 @@ static void config_vpif_params(struct vpif_params *vpifparams,
 
 			value = regr(reg);
 			/* Set data width */
-			value &= ((~(unsigned int)(0x3)) <<
+			value &= ~(0x3u <<
 					VPIF_CH_DATA_WIDTH_BIT);
 			value |= ((vpifparams->params.data_sz) <<
 						     VPIF_CH_DATA_WIDTH_BIT);
@@ -245,7 +425,7 @@ static int __init vpif_probe(struct platform_device *pdev)
 	if (!res)
 		return -ENOENT;
 
-	res_len = res->end - res->start + 1;
+	res_len = resource_size(res);
 
 	res = request_mem_region(res->start, res_len, res->name);
 	if (!res)
@@ -257,10 +437,19 @@ static int __init vpif_probe(struct platform_device *pdev)
 		goto fail;
 	}
 
+	vpif_clk = clk_get(&pdev->dev, "vpif");
+	if (IS_ERR(vpif_clk)) {
+		status = PTR_ERR(vpif_clk);
+		goto clk_fail;
+	}
+	clk_enable(vpif_clk);
+
 	spin_lock_init(&vpif_lock);
 	dev_info(&pdev->dev, "vpif probe success\n");
 	return 0;
 
+clk_fail:
+	iounmap(vpif_base);
 fail:
 	release_mem_region(res->start, res_len);
 	return status;
@@ -268,15 +457,44 @@ fail:
 
 static int __devexit vpif_remove(struct platform_device *pdev)
 {
+	if (vpif_clk) {
+		clk_disable(vpif_clk);
+		clk_put(vpif_clk);
+	}
+
 	iounmap(vpif_base);
 	release_mem_region(res->start, res_len);
 	return 0;
 }
 
+#ifdef CONFIG_PM
+static int vpif_suspend(struct device *dev)
+{
+	clk_disable(vpif_clk);
+	return 0;
+}
+
+static int vpif_resume(struct device *dev)
+{
+	clk_enable(vpif_clk);
+	return 0;
+}
+
+static const struct dev_pm_ops vpif_pm = {
+	.suspend        = vpif_suspend,
+	.resume         = vpif_resume,
+};
+
+#define vpif_pm_ops (&vpif_pm)
+#else
+#define vpif_pm_ops NULL
+#endif
+
 static struct platform_driver vpif_driver = {
 	.driver = {
 		.name	= "vpif",
 		.owner = THIS_MODULE,
+		.pm	= vpif_pm_ops,
 	},
 	.remove = __devexit_p(vpif_remove),
 	.probe = vpif_probe,

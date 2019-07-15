@@ -572,24 +572,7 @@ static void falcon_get_lock(void)
 }
 
 
-/* This is the wrapper function for NCR5380_queue_command(). It just
- * tries to get the lock on the ST-DMA (see above) and then calls the
- * original function.
- */
-
-#if 0
-int atari_queue_command(Scsi_Cmnd *cmd, void (*done)(Scsi_Cmnd *))
-{
-	/* falcon_get_lock();
-	 * ++guenther: moved to NCR5380_queue_command() to prevent
-	 * race condition, see there for an explanation.
-	 */
-	return NCR5380_queue_command(cmd, done);
-}
-#endif
-
-
-int __init atari_scsi_detect(struct scsi_host_template *host)
+static int __init atari_scsi_detect(struct scsi_host_template *host)
 {
 	static int called = 0;
 	struct Scsi_Host *instance;
@@ -741,26 +724,31 @@ int __init atari_scsi_detect(struct scsi_host_template *host)
 	return 1;
 }
 
-int atari_scsi_release(struct Scsi_Host *sh)
+static int atari_scsi_release(struct Scsi_Host *sh)
 {
 	if (IS_A_TT())
 		free_irq(IRQ_TT_MFP_SCSI, sh);
 	if (atari_dma_buffer)
 		atari_stram_free(atari_dma_buffer);
+	NCR5380_exit(sh);
 	return 1;
 }
 
-void __init atari_scsi_setup(char *str, int *ints)
+#ifndef MODULE
+static int __init atari_scsi_setup(char *str)
 {
 	/* Format of atascsi parameter is:
 	 *   atascsi=<can_queue>,<cmd_per_lun>,<sg_tablesize>,<hostid>,<use_tags>
 	 * Defaults depend on TT or Falcon, hostid determined at run time.
 	 * Negative values mean don't change.
 	 */
+	int ints[6];
+
+	get_options(str, ARRAY_SIZE(ints), ints);
 
 	if (ints[0] < 1) {
 		printk("atari_scsi_setup: no arguments!\n");
-		return;
+		return 0;
 	}
 
 	if (ints[0] >= 1) {
@@ -793,9 +781,14 @@ void __init atari_scsi_setup(char *str, int *ints)
 			setup_use_tagged_queuing = !!ints[5];
 	}
 #endif
+
+	return 1;
 }
 
-int atari_scsi_bus_reset(Scsi_Cmnd *cmd)
+__setup("atascsi=", atari_scsi_setup);
+#endif /* !MODULE */
+
+static int atari_scsi_bus_reset(Scsi_Cmnd *cmd)
 {
 	int rv;
 	struct NCR5380_hostdata *hostdata =
@@ -868,7 +861,7 @@ static void __init atari_scsi_reset_boot(void)
 #endif
 
 
-const char *atari_scsi_info(struct Scsi_Host *host)
+static const char *atari_scsi_info(struct Scsi_Host *host)
 {
 	/* atari_scsi_detect() is verbose enough... */
 	static const char string[] = "Atari native SCSI";
@@ -878,8 +871,9 @@ const char *atari_scsi_info(struct Scsi_Host *host)
 
 #if defined(REAL_DMA)
 
-unsigned long atari_scsi_dma_setup(struct Scsi_Host *instance, void *data,
-				   unsigned long count, int dir)
+static unsigned long atari_scsi_dma_setup(struct Scsi_Host *instance,
+					  void *data, unsigned long count,
+					  int dir)
 {
 	unsigned long addr = virt_to_phys(data);
 

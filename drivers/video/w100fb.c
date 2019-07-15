@@ -33,6 +33,7 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/vmalloc.h>
+#include <linux/module.h>
 #include <asm/io.h>
 #include <asm/uaccess.h>
 #include <video/w100fb.h>
@@ -1306,7 +1307,7 @@ static void w100_init_lcd(struct w100fb_par *par)
 	union graphic_v_disp_u graphic_v_disp;
 	union crtc_total_u crtc_total;
 
-	/* w3200 doesnt like undefined bits being set so zero register values first */
+	/* w3200 doesn't like undefined bits being set so zero register values first */
 
 	active_h_disp.val = 0;
 	active_h_disp.f.active_h_start=mode->left_margin;
@@ -1566,6 +1567,18 @@ static void w100_suspend(u32 mode)
 		val = readl(remapped_regs + mmPLL_CNTL);
 		val |= 0x00000004;  /* bit2=1 */
 		writel(val, remapped_regs + mmPLL_CNTL);
+
+		writel(0x00000000, remapped_regs + mmLCDD_CNTL1);
+		writel(0x00000000, remapped_regs + mmLCDD_CNTL2);
+		writel(0x00000000, remapped_regs + mmGENLCD_CNTL1);
+		writel(0x00000000, remapped_regs + mmGENLCD_CNTL2);
+		writel(0x00000000, remapped_regs + mmGENLCD_CNTL3);
+
+		val = readl(remapped_regs + mmMEM_EXT_CNTL);
+		val |= 0xF0000000;
+		val &= ~(0x00000001);
+		writel(val, remapped_regs + mmMEM_EXT_CNTL);
+
 		writel(0x0000001d, remapped_regs + mmPWRMGT_CNTL);
 	}
 }
@@ -1619,18 +1632,7 @@ static struct platform_driver w100fb_driver = {
 	},
 };
 
-int __init w100fb_init(void)
-{
-	return platform_driver_register(&w100fb_driver);
-}
-
-void __exit w100fb_cleanup(void)
-{
-	platform_driver_unregister(&w100fb_driver);
-}
-
-module_init(w100fb_init);
-module_exit(w100fb_cleanup);
+module_platform_driver(w100fb_driver);
 
 MODULE_DESCRIPTION("ATI Imageon w100 framebuffer driver");
 MODULE_LICENSE("GPL");

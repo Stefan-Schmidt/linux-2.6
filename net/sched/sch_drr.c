@@ -260,7 +260,8 @@ static int drr_dump_class(struct Qdisc *sch, unsigned long arg,
 	nest = nla_nest_start(skb, TCA_OPTIONS);
 	if (nest == NULL)
 		goto nla_put_failure;
-	NLA_PUT_U32(skb, TCA_DRR_QUANTUM, cl->quantum);
+	if (nla_put_u32(skb, TCA_DRR_QUANTUM, cl->quantum))
+		goto nla_put_failure;
 	return nla_nest_end(skb, nest);
 
 nla_put_failure:
@@ -351,7 +352,6 @@ static int drr_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 {
 	struct drr_sched *q = qdisc_priv(sch);
 	struct drr_class *cl;
-	unsigned int len;
 	int err;
 
 	cl = drr_classify(skb, sch, &err);
@@ -362,7 +362,6 @@ static int drr_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 		return err;
 	}
 
-	len = qdisc_pkt_len(skb);
 	err = qdisc_enqueue(skb, cl->qdisc);
 	if (unlikely(err != NET_XMIT_SUCCESS)) {
 		if (net_xmit_drop_count(err)) {
@@ -376,11 +375,6 @@ static int drr_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 		list_add_tail(&cl->alist, &q->active);
 		cl->deficit = cl->quantum;
 	}
-
-	cl->bstats.packets++;
-	cl->bstats.bytes += len;
-	sch->bstats.packets++;
-	sch->bstats.bytes += len;
 
 	sch->q.qlen++;
 	return err;
@@ -407,6 +401,9 @@ static struct sk_buff *drr_dequeue(struct Qdisc *sch)
 			skb = qdisc_dequeue_peeked(cl->qdisc);
 			if (cl->qdisc->q.qlen == 0)
 				list_del(&cl->alist);
+
+			bstats_update(&cl->bstats, skb);
+			qdisc_bstats_update(sch, skb);
 			sch->q.qlen--;
 			return skb;
 		}

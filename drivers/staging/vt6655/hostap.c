@@ -40,14 +40,8 @@
 
 #define VIAWGET_HOSTAPD_MAX_BUF_SIZE 1024
 #define HOSTAP_CRYPT_FLAG_SET_TX_KEY BIT0
-#define HOSTAP_CRYPT_FLAG_PERMANENT BIT1
-#define HOSTAP_CRYPT_ERR_UNKNOWN_ALG 2
 #define HOSTAP_CRYPT_ERR_UNKNOWN_ADDR 3
-#define HOSTAP_CRYPT_ERR_CRYPT_INIT_FAILED 4
 #define HOSTAP_CRYPT_ERR_KEY_SET_FAILED 5
-#define HOSTAP_CRYPT_ERR_TX_KEY_SET_FAILED 6
-#define HOSTAP_CRYPT_ERR_CARD_CONF_FAILED 7
-
 
 /*---------------------  Static Definitions -------------------------*/
 
@@ -860,8 +854,7 @@ int vt6655_hostap_ioctl(PSDevice pDevice, struct iw_point *p)
 	}
 
  out:
-	if (param != NULL)
-		kfree(param);
+	kfree(param);
 
 	return ret;
 }

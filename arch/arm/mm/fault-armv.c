@@ -8,7 +8,6 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
-#include <linux/module.h>
 #include <linux/sched.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -26,7 +25,7 @@
 
 #include "mm.h"
 
-static unsigned long shared_pte_mask = L_PTE_MT_BUFFERABLE;
+static pteval_t shared_pte_mask = L_PTE_MT_BUFFERABLE;
 
 #if __LINUX_ARM_ARCH__ < 6
 /*
@@ -95,6 +94,7 @@ static int adjust_pte(struct vm_area_struct *vma, unsigned long address,
 {
 	spinlock_t *ptl;
 	pgd_t *pgd;
+	pud_t *pud;
 	pmd_t *pmd;
 	pte_t *pte;
 	int ret;
@@ -103,7 +103,11 @@ static int adjust_pte(struct vm_area_struct *vma, unsigned long address,
 	if (pgd_none_or_clear_bad(pgd))
 		return 0;
 
-	pmd = pmd_offset(pgd, address);
+	pud = pud_offset(pgd, address);
+	if (pud_none_or_clear_bad(pud))
+		return 0;
+
+	pmd = pmd_offset(pud, address);
 	if (pmd_none_or_clear_bad(pmd))
 		return 0;
 

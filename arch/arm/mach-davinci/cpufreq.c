@@ -24,6 +24,7 @@
 #include <linux/err.h>
 #include <linux/clk.h>
 #include <linux/platform_device.h>
+#include <linux/export.h>
 
 #include <mach/hardware.h>
 #include <mach/cpufreq.h>
@@ -94,9 +95,7 @@ static int davinci_target(struct cpufreq_policy *policy,
 	if (freqs.old == freqs.new)
 		return ret;
 
-	cpufreq_debug_printk(CPUFREQ_DEBUG_DRIVER,
-			dev_driver_string(cpufreq.dev),
-			"transition: %u --> %u\n", freqs.old, freqs.new);
+	dev_dbg(cpufreq.dev, "transition: %u --> %u\n", freqs.old, freqs.new);
 
 	ret = cpufreq_frequency_table_target(policy, pdata->freq_table,
 						freqs.new, relation, &idx);
@@ -132,7 +131,7 @@ out:
 	return ret;
 }
 
-static int __init davinci_cpu_init(struct cpufreq_policy *policy)
+static int davinci_cpu_init(struct cpufreq_policy *policy)
 {
 	int result = 0;
 	struct davinci_cpufreq_config *pdata = cpufreq.dev->platform_data;
@@ -167,7 +166,7 @@ static int __init davinci_cpu_init(struct cpufreq_policy *policy)
 	/*
 	 * Time measurement across the target() function yields ~1500-1800us
 	 * time taken with no drivers on notification list.
-	 * Setting the latency to 2000 us to accomodate addition of drivers
+	 * Setting the latency to 2000 us to accommodate addition of drivers
 	 * to pre/post change notification list.
 	 */
 	policy->cpuinfo.transition_latency = 2000 * 1000;
@@ -241,10 +240,9 @@ static struct platform_driver davinci_cpufreq_driver = {
 	.remove = __exit_p(davinci_cpufreq_remove),
 };
 
-static int __init davinci_cpufreq_init(void)
+int __init davinci_cpufreq_init(void)
 {
 	return platform_driver_probe(&davinci_cpufreq_driver,
 							davinci_cpufreq_probe);
 }
-late_initcall(davinci_cpufreq_init);
 

@@ -78,6 +78,8 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/wimax/i2400m.h>
+#include <linux/export.h>
+#include <linux/moduleparam.h>
 
 
 #define D_SUBMODULE control
@@ -128,7 +130,7 @@ ssize_t i2400m_tlv_match(const struct i2400m_tlv_hdr *tlv,
 	    && le16_to_cpu(tlv->length) + sizeof(*tlv) != tlv_size) {
 		size_t size = le16_to_cpu(tlv->length) + sizeof(*tlv);
 		printk(KERN_WARNING "W: tlv type 0x%x mismatched because of "
-		       "size (got %zu vs %zu expected)\n",
+		       "size (got %zu vs %zd expected)\n",
 		       tlv_type, size, tlv_size);
 		return size;
 	}
@@ -233,7 +235,7 @@ const struct i2400m_tlv_hdr *i2400m_tlv_find(
 			break;
 		if (match > 0)
 			dev_warn(dev, "TLV type 0x%04x found with size "
-				 "mismatch (%zu vs %zu needed)\n",
+				 "mismatch (%zu vs %zd needed)\n",
 				 tlv_type, match, tlv_size);
 	}
 	return tlv;
@@ -378,7 +380,7 @@ void i2400m_report_tlv_system_state(struct i2400m *i2400m,
  * the device's state as sometimes we need to do a link-renew (the BS
  * wants us to renew a DHCP lease, for example).
  *
- * In fact, doc says that everytime we get a link-up, we should do a
+ * In fact, doc says that every time we get a link-up, we should do a
  * DHCP negotiation...
  */
 static
@@ -675,7 +677,7 @@ void i2400m_msg_to_dev_cancel_wait(struct i2400m *i2400m, int code)
  *  - the ack message wasn't formatted correctly
  *
  * The returned skb has been allocated with wimax_msg_to_user_alloc(),
- * it contains the reponse in a netlink attribute and is ready to be
+ * it contains the response in a netlink attribute and is ready to be
  * passed up to user space with wimax_msg_to_user_send(). To access
  * the payload and its length, use wimax_msg_{data,len}() on the skb.
  *

@@ -117,7 +117,7 @@
  *    DAC: Unknown
  *    Trying to handle it like the SB0410.
  *
- *  This code was initally based on code from ALSA's emu10k1x.c which is:
+ *  This code was initially based on code from ALSA's emu10k1x.c which is:
  *  Copyright (c) by Francisco Moraes <fmoraes@nc.rr.com>
  *
  *   This program is free software; you can redistribute it and/or modify
@@ -140,7 +140,7 @@
 #include <linux/interrupt.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
-#include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <linux/dma-mapping.h>
 #include <sound/core.h>
 #include <sound/initval.h>
@@ -156,7 +156,7 @@ MODULE_SUPPORTED_DEVICE("{{Creative,SB CA0106 chip}}");
 // module parameters (see "Module Parameters")
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;
-static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
 static uint subsystem[SNDRV_CARDS]; /* Force card subsystem model */
 
 module_param_array(index, int, NULL, 0444);
@@ -1082,7 +1082,7 @@ snd_ca0106_pcm_pointer_capture(struct snd_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct snd_ca0106_pcm *epcm = runtime->private_data;
 	snd_pcm_uframes_t ptr, ptr1, ptr2 = 0;
-	int channel = channel=epcm->channel_id;
+	int channel = epcm->channel_id;
 
 	if (!epcm->running)
 		return 0;
@@ -1666,7 +1666,7 @@ static int __devinit snd_ca0106_create(int dev, struct snd_card *card,
 	}
 
 	if (request_irq(pci->irq, snd_ca0106_interrupt,
-			IRQF_SHARED, "snd_ca0106", chip)) {
+			IRQF_SHARED, KBUILD_MODNAME, chip)) {
 		snd_ca0106_free(chip);
 		printk(KERN_ERR "cannot grab irq\n");
 		return -EBUSY;
@@ -1872,9 +1872,10 @@ static void __devexit snd_ca0106_remove(struct pci_dev *pci)
 }
 
 #ifdef CONFIG_PM
-static int snd_ca0106_suspend(struct pci_dev *pci, pm_message_t state)
+static int snd_ca0106_suspend(struct device *dev)
 {
-	struct snd_card *card = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_ca0106 *chip = card->private_data;
 	int i;
 
@@ -1889,13 +1890,14 @@ static int snd_ca0106_suspend(struct pci_dev *pci, pm_message_t state)
 
 	pci_disable_device(pci);
 	pci_save_state(pci);
-	pci_set_power_state(pci, pci_choose_state(pci, state));
+	pci_set_power_state(pci, PCI_D3hot);
 	return 0;
 }
 
-static int snd_ca0106_resume(struct pci_dev *pci)
+static int snd_ca0106_resume(struct device *dev)
 {
-	struct snd_card *card = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_ca0106 *chip = card->private_data;
 	int i;
 
@@ -1922,6 +1924,11 @@ static int snd_ca0106_resume(struct pci_dev *pci)
 	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
 	return 0;
 }
+
+static SIMPLE_DEV_PM_OPS(snd_ca0106_pm, snd_ca0106_suspend, snd_ca0106_resume);
+#define SND_CA0106_PM_OPS	&snd_ca0106_pm
+#else
+#define SND_CA0106_PM_OPS	NULL
 #endif
 
 // PCI IDs
@@ -1932,28 +1939,14 @@ static DEFINE_PCI_DEVICE_TABLE(snd_ca0106_ids) = {
 MODULE_DEVICE_TABLE(pci, snd_ca0106_ids);
 
 // pci_driver definition
-static struct pci_driver driver = {
-	.name = "CA0106",
+static struct pci_driver ca0106_driver = {
+	.name = KBUILD_MODNAME,
 	.id_table = snd_ca0106_ids,
 	.probe = snd_ca0106_probe,
 	.remove = __devexit_p(snd_ca0106_remove),
-#ifdef CONFIG_PM
-	.suspend = snd_ca0106_suspend,
-	.resume = snd_ca0106_resume,
-#endif
+	.driver = {
+		.pm = SND_CA0106_PM_OPS,
+	},
 };
 
-// initialization of the module
-static int __init alsa_card_ca0106_init(void)
-{
-	return pci_register_driver(&driver);
-}
-
-// clean up the module
-static void __exit alsa_card_ca0106_exit(void)
-{
-	pci_unregister_driver(&driver);
-}
-
-module_init(alsa_card_ca0106_init)
-module_exit(alsa_card_ca0106_exit)
+module_pci_driver(ca0106_driver);

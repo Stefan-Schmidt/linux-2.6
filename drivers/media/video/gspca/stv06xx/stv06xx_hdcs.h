@@ -125,20 +125,18 @@
 #define HDCS_SLEEP_MODE		(1 << 1)
 
 #define HDCS_DEFAULT_EXPOSURE	48
-#define HDCS_DEFAULT_GAIN	128
+#define HDCS_DEFAULT_GAIN	50
 
 static int hdcs_probe_1x00(struct sd *sd);
 static int hdcs_probe_1020(struct sd *sd);
 static int hdcs_start(struct sd *sd);
 static int hdcs_init(struct sd *sd);
+static int hdcs_init_controls(struct sd *sd);
 static int hdcs_stop(struct sd *sd);
 static int hdcs_dump(struct sd *sd);
-static void hdcs_disconnect(struct sd *sd);
 
-static int hdcs_get_exposure(struct gspca_dev *gspca_dev, __s32 *val);
 static int hdcs_set_exposure(struct gspca_dev *gspca_dev, __s32 val);
 static int hdcs_set_gain(struct gspca_dev *gspca_dev, __s32 val);
-static int hdcs_get_gain(struct gspca_dev *gspca_dev, __s32 *val);
 
 const struct stv06xx_sensor stv06xx_sensor_hdcs1x00 = {
 	.name = "HP HDCS-1000/1100",
@@ -146,11 +144,16 @@ const struct stv06xx_sensor stv06xx_sensor_hdcs1x00 = {
 	.i2c_addr = (0x55 << 1),
 	.i2c_len = 1,
 
+	/* FIXME (see if we can lower min_packet_size, needs testing, and also
+	   adjusting framerate when the bandwidth gets lower) */
+	.min_packet_size = { 847 },
+	.max_packet_size = { 847 },
+
 	.init = hdcs_init,
+	.init_controls = hdcs_init_controls,
 	.probe = hdcs_probe_1x00,
 	.start = hdcs_start,
 	.stop = hdcs_stop,
-	.disconnect = hdcs_disconnect,
 	.dump = hdcs_dump,
 };
 
@@ -160,7 +163,13 @@ const struct stv06xx_sensor stv06xx_sensor_hdcs1020 = {
 	.i2c_addr = (0x55 << 1),
 	.i2c_len = 1,
 
+	/* FIXME (see if we can lower min_packet_size, needs testing, and also
+	   adjusting framerate when the bandwidthm gets lower) */
+	.min_packet_size = { 847 },
+	.max_packet_size = { 847 },
+
 	.init = hdcs_init,
+	.init_controls = hdcs_init_controls,
 	.probe = hdcs_probe_1020,
 	.start = hdcs_start,
 	.stop = hdcs_stop,
@@ -177,7 +186,6 @@ static const u16 stv_bridge_init[][2] = {
 	{STV_REG04, 0x07},
 
 	{STV_SCAN_RATE, 0x20},
-	{STV_ISO_SIZE_L, 847},
 	{STV_Y_CTRL, 0x01},
 	{STV_X_CTRL, 0x0a}
 };

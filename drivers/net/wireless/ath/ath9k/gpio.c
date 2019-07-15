@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2009 Atheros Communications Inc.
+ * Copyright (c) 2008-2011 Atheros Communications Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -20,123 +20,42 @@
 /*	 LED functions		*/
 /********************************/
 
-static void ath_led_blink_work(struct work_struct *work)
-{
-	struct ath_softc *sc = container_of(work, struct ath_softc,
-					    ath_led_blink_work.work);
-
-	if (!(sc->sc_flags & SC_OP_LED_ASSOCIATED))
-		return;
-
-	if ((sc->led_on_duration == ATH_LED_ON_DURATION_IDLE) ||
-	    (sc->led_off_duration == ATH_LED_OFF_DURATION_IDLE))
-		ath9k_hw_set_gpio(sc->sc_ah, sc->sc_ah->led_pin, 0);
-	else
-		ath9k_hw_set_gpio(sc->sc_ah, sc->sc_ah->led_pin,
-				  (sc->sc_flags & SC_OP_LED_ON) ? 1 : 0);
-
-	ieee80211_queue_delayed_work(sc->hw,
-				     &sc->ath_led_blink_work,
-				     (sc->sc_flags & SC_OP_LED_ON) ?
-					msecs_to_jiffies(sc->led_off_duration) :
-					msecs_to_jiffies(sc->led_on_duration));
-
-	sc->led_on_duration = sc->led_on_cnt ?
-			max((ATH_LED_ON_DURATION_IDLE - sc->led_on_cnt), 25) :
-			ATH_LED_ON_DURATION_IDLE;
-	sc->led_off_duration = sc->led_off_cnt ?
-			max((ATH_LED_OFF_DURATION_IDLE - sc->led_off_cnt), 10) :
-			ATH_LED_OFF_DURATION_IDLE;
-	sc->led_on_cnt = sc->led_off_cnt = 0;
-	if (sc->sc_flags & SC_OP_LED_ON)
-		sc->sc_flags &= ~SC_OP_LED_ON;
-	else
-		sc->sc_flags |= SC_OP_LED_ON;
-}
-
+#ifdef CONFIG_MAC80211_LEDS
 static void ath_led_brightness(struct led_classdev *led_cdev,
 			       enum led_brightness brightness)
 {
-	struct ath_led *led = container_of(led_cdev, struct ath_led, led_cdev);
-	struct ath_softc *sc = led->sc;
-
-	switch (brightness) {
-	case LED_OFF:
-		if (led->led_type == ATH_LED_ASSOC ||
-		    led->led_type == ATH_LED_RADIO) {
-			ath9k_hw_set_gpio(sc->sc_ah, sc->sc_ah->led_pin,
-				(led->led_type == ATH_LED_RADIO));
-			sc->sc_flags &= ~SC_OP_LED_ASSOCIATED;
-			if (led->led_type == ATH_LED_RADIO)
-				sc->sc_flags &= ~SC_OP_LED_ON;
-		} else {
-			sc->led_off_cnt++;
-		}
-		break;
-	case LED_FULL:
-		if (led->led_type == ATH_LED_ASSOC) {
-			sc->sc_flags |= SC_OP_LED_ASSOCIATED;
-			if (led_blink)
-				ieee80211_queue_delayed_work(sc->hw,
-						     &sc->ath_led_blink_work, 0);
-		} else if (led->led_type == ATH_LED_RADIO) {
-			ath9k_hw_set_gpio(sc->sc_ah, sc->sc_ah->led_pin, 0);
-			sc->sc_flags |= SC_OP_LED_ON;
-		} else {
-			sc->led_on_cnt++;
-		}
-		break;
-	default:
-		break;
-	}
-}
-
-static int ath_register_led(struct ath_softc *sc, struct ath_led *led,
-			    char *trigger)
-{
-	int ret;
-
-	led->sc = sc;
-	led->led_cdev.name = led->name;
-	led->led_cdev.default_trigger = trigger;
-	led->led_cdev.brightness_set = ath_led_brightness;
-
-	ret = led_classdev_register(wiphy_dev(sc->hw->wiphy), &led->led_cdev);
-	if (ret)
-		ath_print(ath9k_hw_common(sc->sc_ah), ATH_DBG_FATAL,
-			  "Failed to register led:%s", led->name);
-	else
-		led->registered = 1;
-	return ret;
-}
-
-static void ath_unregister_led(struct ath_led *led)
-{
-	if (led->registered) {
-		led_classdev_unregister(&led->led_cdev);
-		led->registered = 0;
-	}
+	struct ath_softc *sc = container_of(led_cdev, struct ath_softc, led_cdev);
+	ath9k_hw_set_gpio(sc->sc_ah, sc->sc_ah->led_pin, (brightness == LED_OFF));
 }
 
 void ath_deinit_leds(struct ath_softc *sc)
 {
-	ath_unregister_led(&sc->assoc_led);
-	sc->sc_flags &= ~SC_OP_LED_ASSOCIATED;
-	ath_unregister_led(&sc->tx_led);
-	ath_unregister_led(&sc->rx_led);
-	ath_unregister_led(&sc->radio_led);
-	ath9k_hw_set_gpio(sc->sc_ah, sc->sc_ah->led_pin, 1);
+	if (!sc->led_registered)
+		return;
+
+	ath_led_brightness(&sc->led_cdev, LED_OFF);
+	led_classdev_unregister(&sc->led_cdev);
 }
 
 void ath_init_leds(struct ath_softc *sc)
 {
-	char *trigger;
 	int ret;
 
-	if (AR_SREV_9287(sc->sc_ah))
-		sc->sc_ah->led_pin = ATH_LED_PIN_9287;
-	else
-		sc->sc_ah->led_pin = ATH_LED_PIN_DEF;
+	if (AR_SREV_9100(sc->sc_ah))
+		return;
+
+	if (sc->sc_ah->led_pin < 0) {
+		if (AR_SREV_9287(sc->sc_ah))
+			sc->sc_ah->led_pin = ATH_LED_PIN_9287;
+		else if (AR_SREV_9485(sc->sc_ah))
+			sc->sc_ah->led_pin = ATH_LED_PIN_9485;
+		else if (AR_SREV_9300(sc->sc_ah))
+			sc->sc_ah->led_pin = ATH_LED_PIN_9300;
+		else if (AR_SREV_9462(sc->sc_ah))
+			sc->sc_ah->led_pin = ATH_LED_PIN_9462;
+		else
+			sc->sc_ah->led_pin = ATH_LED_PIN_DEF;
+	}
 
 	/* Configure gpio 1 for output */
 	ath9k_hw_cfg_output(sc->sc_ah, sc->sc_ah->led_pin,
@@ -144,48 +63,22 @@ void ath_init_leds(struct ath_softc *sc)
 	/* LED off, active low */
 	ath9k_hw_set_gpio(sc->sc_ah, sc->sc_ah->led_pin, 1);
 
-	if (led_blink)
-		INIT_DELAYED_WORK(&sc->ath_led_blink_work, ath_led_blink_work);
+	if (!led_blink)
+		sc->led_cdev.default_trigger =
+			ieee80211_get_radio_led_name(sc->hw);
 
-	trigger = ieee80211_get_radio_led_name(sc->hw);
-	snprintf(sc->radio_led.name, sizeof(sc->radio_led.name),
-		"ath9k-%s::radio", wiphy_name(sc->hw->wiphy));
-	ret = ath_register_led(sc, &sc->radio_led, trigger);
-	sc->radio_led.led_type = ATH_LED_RADIO;
-	if (ret)
-		goto fail;
+	snprintf(sc->led_name, sizeof(sc->led_name),
+		"ath9k-%s", wiphy_name(sc->hw->wiphy));
+	sc->led_cdev.name = sc->led_name;
+	sc->led_cdev.brightness_set = ath_led_brightness;
 
-	trigger = ieee80211_get_assoc_led_name(sc->hw);
-	snprintf(sc->assoc_led.name, sizeof(sc->assoc_led.name),
-		"ath9k-%s::assoc", wiphy_name(sc->hw->wiphy));
-	ret = ath_register_led(sc, &sc->assoc_led, trigger);
-	sc->assoc_led.led_type = ATH_LED_ASSOC;
-	if (ret)
-		goto fail;
+	ret = led_classdev_register(wiphy_dev(sc->hw->wiphy), &sc->led_cdev);
+	if (ret < 0)
+		return;
 
-	trigger = ieee80211_get_tx_led_name(sc->hw);
-	snprintf(sc->tx_led.name, sizeof(sc->tx_led.name),
-		"ath9k-%s::tx", wiphy_name(sc->hw->wiphy));
-	ret = ath_register_led(sc, &sc->tx_led, trigger);
-	sc->tx_led.led_type = ATH_LED_TX;
-	if (ret)
-		goto fail;
-
-	trigger = ieee80211_get_rx_led_name(sc->hw);
-	snprintf(sc->rx_led.name, sizeof(sc->rx_led.name),
-		"ath9k-%s::rx", wiphy_name(sc->hw->wiphy));
-	ret = ath_register_led(sc, &sc->rx_led, trigger);
-	sc->rx_led.led_type = ATH_LED_RX;
-	if (ret)
-		goto fail;
-
-	return;
-
-fail:
-	if (led_blink)
-		cancel_delayed_work_sync(&sc->ath_led_blink_work);
-	ath_deinit_leds(sc);
+	sc->led_registered = true;
 }
+#endif
 
 /*******************/
 /*	Rfkill	   */
@@ -194,15 +87,19 @@ fail:
 static bool ath_is_rfkill_set(struct ath_softc *sc)
 {
 	struct ath_hw *ah = sc->sc_ah;
+	bool is_blocked;
 
-	return ath9k_hw_gpio_get(ah, ah->rfkill_gpio) ==
+	ath9k_ps_wakeup(sc);
+	is_blocked = ath9k_hw_gpio_get(ah, ah->rfkill_gpio) ==
 				  ah->rfkill_polarity;
+	ath9k_ps_restore(sc);
+
+	return is_blocked;
 }
 
 void ath9k_rfkill_poll_state(struct ieee80211_hw *hw)
 {
-	struct ath_wiphy *aphy = hw->priv;
-	struct ath_softc *sc = aphy->sc;
+	struct ath_softc *sc = hw->priv;
 	bool blocked = !!ath_is_rfkill_set(sc);
 
 	wiphy_rfkill_set_hw_state(hw->wiphy, blocked);
@@ -215,6 +112,8 @@ void ath_start_rfkill_poll(struct ath_softc *sc)
 	if (ah->caps.hw_caps & ATH9K_HW_CAP_RFSILENT)
 		wiphy_rfkill_start_polling(sc->hw->wiphy);
 }
+
+#ifdef CONFIG_ATH9K_BTCOEX_SUPPORT
 
 /******************/
 /*     BTCOEX     */
@@ -233,17 +132,18 @@ static void ath_detect_bt_priority(struct ath_softc *sc)
 
 	if (time_after(jiffies, btcoex->bt_priority_time +
 			msecs_to_jiffies(ATH_BT_PRIORITY_TIME_THRESHOLD))) {
-		sc->sc_flags &= ~(SC_OP_BT_PRIORITY_DETECTED | SC_OP_BT_SCAN);
+		clear_bit(BT_OP_PRIORITY_DETECTED, &btcoex->op_flags);
+		clear_bit(BT_OP_SCAN, &btcoex->op_flags);
 		/* Detect if colocated bt started scanning */
 		if (btcoex->bt_priority_cnt >= ATH_BT_CNT_SCAN_THRESHOLD) {
-			ath_print(ath9k_hw_common(sc->sc_ah), ATH_DBG_BTCOEX,
-				  "BT scan detected");
-			sc->sc_flags |= (SC_OP_BT_SCAN |
-					 SC_OP_BT_PRIORITY_DETECTED);
+			ath_dbg(ath9k_hw_common(sc->sc_ah), BTCOEX,
+				"BT scan detected\n");
+			set_bit(BT_OP_PRIORITY_DETECTED, &btcoex->op_flags);
+			set_bit(BT_OP_SCAN, &btcoex->op_flags);
 		} else if (btcoex->bt_priority_cnt >= ATH_BT_CNT_THRESHOLD) {
-			ath_print(ath9k_hw_common(sc->sc_ah), ATH_DBG_BTCOEX,
-				  "BT priority traffic detected");
-			sc->sc_flags |= SC_OP_BT_PRIORITY_DETECTED;
+			ath_dbg(ath9k_hw_common(sc->sc_ah), BTCOEX,
+				"BT priority traffic detected\n");
+			set_bit(BT_OP_PRIORITY_DETECTED, &btcoex->op_flags);
 		}
 
 		btcoex->bt_priority_cnt = 0;
@@ -253,15 +153,16 @@ static void ath_detect_bt_priority(struct ath_softc *sc)
 
 static void ath9k_gen_timer_start(struct ath_hw *ah,
 				  struct ath_gen_timer *timer,
-				  u32 timer_next,
+				  u32 trig_timeout,
 				  u32 timer_period)
 {
-	ath9k_hw_gen_timer_start(ah, timer, timer_next, timer_period);
+	ath9k_hw_gen_timer_start(ah, timer, trig_timeout, timer_period);
 
 	if ((ah->imask & ATH9K_INT_GENTIMER) == 0) {
-		ath9k_hw_set_interrupts(ah, 0);
+		ath9k_hw_disable_interrupts(ah);
 		ah->imask |= ATH9K_INT_GENTIMER;
-		ath9k_hw_set_interrupts(ah, ah->imask);
+		ath9k_hw_set_interrupts(ah);
+		ath9k_hw_enable_interrupts(ah);
 	}
 }
 
@@ -273,9 +174,10 @@ static void ath9k_gen_timer_stop(struct ath_hw *ah, struct ath_gen_timer *timer)
 
 	/* if no timer is enabled, turn off interrupt mask */
 	if (timer_table->timer_mask.val == 0) {
-		ath9k_hw_set_interrupts(ah, 0);
+		ath9k_hw_disable_interrupts(ah);
 		ah->imask &= ~ATH9K_INT_GENTIMER;
-		ath9k_hw_set_interrupts(ah, ah->imask);
+		ath9k_hw_set_interrupts(ah);
+		ath9k_hw_enable_interrupts(ah);
 	}
 }
 
@@ -289,19 +191,41 @@ static void ath_btcoex_period_timer(unsigned long data)
 	struct ath_softc *sc = (struct ath_softc *) data;
 	struct ath_hw *ah = sc->sc_ah;
 	struct ath_btcoex *btcoex = &sc->btcoex;
-	struct ath_common *common = ath9k_hw_common(ah);
+	struct ath_mci_profile *mci = &btcoex->mci;
 	u32 timer_period;
 	bool is_btscan;
+	unsigned long flags;
 
-	ath_detect_bt_priority(sc);
+	spin_lock_irqsave(&sc->sc_pm_lock, flags);
+	if (sc->sc_ah->power_mode == ATH9K_PM_NETWORK_SLEEP) {
+		spin_unlock_irqrestore(&sc->sc_pm_lock, flags);
+		goto skip_hw_wakeup;
+	}
+	spin_unlock_irqrestore(&sc->sc_pm_lock, flags);
 
-	is_btscan = sc->sc_flags & SC_OP_BT_SCAN;
+	ath9k_ps_wakeup(sc);
+	if (!(ah->caps.hw_caps & ATH9K_HW_CAP_MCI))
+		ath_detect_bt_priority(sc);
+	is_btscan = test_bit(BT_OP_SCAN, &btcoex->op_flags);
+
+	btcoex->bt_wait_time += btcoex->btcoex_period;
+	if (btcoex->bt_wait_time > ATH_BTCOEX_RX_WAIT_TIME) {
+		if (ar9003_mci_state(ah, MCI_STATE_NEED_FTP_STOMP) &&
+		    (mci->num_pan || mci->num_other_acl))
+			ah->btcoex_hw.mci.stomp_ftp =
+				(sc->rx.num_pkts < ATH_BTCOEX_STOMP_FTP_THRESH);
+		else
+			ah->btcoex_hw.mci.stomp_ftp = false;
+		btcoex->bt_wait_time = 0;
+		sc->rx.num_pkts = 0;
+	}
 
 	spin_lock_bh(&btcoex->btcoex_lock);
 
-	ath9k_cmn_btcoex_bt_stomp(common, is_btscan ? ATH_BTCOEX_STOMP_ALL :
+	ath9k_hw_btcoex_bt_stomp(ah, is_btscan ? ATH_BTCOEX_STOMP_ALL :
 			      btcoex->bt_stomp_type);
 
+	ath9k_hw_btcoex_enable(ah);
 	spin_unlock_bh(&btcoex->btcoex_lock);
 
 	if (btcoex->btcoex_period != btcoex->btcoex_no_stomp) {
@@ -310,15 +234,15 @@ static void ath_btcoex_period_timer(unsigned long data)
 
 		timer_period = is_btscan ? btcoex->btscan_no_stomp :
 					   btcoex->btcoex_no_stomp;
-		ath9k_gen_timer_start(ah,
-				      btcoex->no_stomp_timer,
-				      (ath9k_hw_gettsf32(ah) +
-				       timer_period), timer_period * 10);
+		ath9k_gen_timer_start(ah, btcoex->no_stomp_timer, timer_period,
+				      timer_period * 10);
 		btcoex->hw_timer_enabled = true;
 	}
 
-	mod_timer(&btcoex->period_timer, jiffies +
-				  msecs_to_jiffies(ATH_BTCOEX_DEF_BT_PERIOD));
+	ath9k_ps_restore(sc);
+skip_hw_wakeup:
+	timer_period = btcoex->btcoex_period;
+	mod_timer(&btcoex->period_timer, jiffies + msecs_to_jiffies(timer_period));
 }
 
 /*
@@ -331,29 +255,31 @@ static void ath_btcoex_no_stomp_timer(void *arg)
 	struct ath_hw *ah = sc->sc_ah;
 	struct ath_btcoex *btcoex = &sc->btcoex;
 	struct ath_common *common = ath9k_hw_common(ah);
-	bool is_btscan = sc->sc_flags & SC_OP_BT_SCAN;
 
-	ath_print(common, ATH_DBG_BTCOEX,
-		  "no stomp timer running\n");
+	ath_dbg(common, BTCOEX, "no stomp timer running\n");
 
+	ath9k_ps_wakeup(sc);
 	spin_lock_bh(&btcoex->btcoex_lock);
 
-	if (btcoex->bt_stomp_type == ATH_BTCOEX_STOMP_LOW || is_btscan)
-		ath9k_cmn_btcoex_bt_stomp(common, ATH_BTCOEX_STOMP_NONE);
+	if (btcoex->bt_stomp_type == ATH_BTCOEX_STOMP_LOW ||
+	    test_bit(BT_OP_SCAN, &btcoex->op_flags))
+		ath9k_hw_btcoex_bt_stomp(ah, ATH_BTCOEX_STOMP_NONE);
 	 else if (btcoex->bt_stomp_type == ATH_BTCOEX_STOMP_ALL)
-		ath9k_cmn_btcoex_bt_stomp(common, ATH_BTCOEX_STOMP_LOW);
+		ath9k_hw_btcoex_bt_stomp(ah, ATH_BTCOEX_STOMP_LOW);
 
+	ath9k_hw_btcoex_enable(ah);
 	spin_unlock_bh(&btcoex->btcoex_lock);
+	ath9k_ps_restore(sc);
 }
 
-int ath_init_btcoex_timer(struct ath_softc *sc)
+static int ath_init_btcoex_timer(struct ath_softc *sc)
 {
 	struct ath_btcoex *btcoex = &sc->btcoex;
 
-	btcoex->btcoex_period = ATH_BTCOEX_DEF_BT_PERIOD * 1000;
-	btcoex->btcoex_no_stomp = (100 - ATH_BTCOEX_DEF_DUTY_CYCLE) *
+	btcoex->btcoex_period = ATH_BTCOEX_DEF_BT_PERIOD;
+	btcoex->btcoex_no_stomp = (100 - ATH_BTCOEX_DEF_DUTY_CYCLE) * 1000 *
 		btcoex->btcoex_period / 100;
-	btcoex->btscan_no_stomp = (100 - ATH_BTCOEX_BTSCAN_DUTY_CYCLE) *
+	btcoex->btscan_no_stomp = (100 - ATH_BTCOEX_BTSCAN_DUTY_CYCLE) * 1000 *
 				   btcoex->btcoex_period / 100;
 
 	setup_timer(&btcoex->period_timer, ath_btcoex_period_timer,
@@ -380,8 +306,7 @@ void ath9k_btcoex_timer_resume(struct ath_softc *sc)
 	struct ath_btcoex *btcoex = &sc->btcoex;
 	struct ath_hw *ah = sc->sc_ah;
 
-	ath_print(ath9k_hw_common(ah), ATH_DBG_BTCOEX,
-		  "Starting btcoex timers");
+	ath_dbg(ath9k_hw_common(ah), BTCOEX, "Starting btcoex timers\n");
 
 	/* make sure duty cycle timer is also stopped when resuming */
 	if (btcoex->hw_timer_enabled)
@@ -389,7 +314,8 @@ void ath9k_btcoex_timer_resume(struct ath_softc *sc)
 
 	btcoex->bt_priority_cnt = 0;
 	btcoex->bt_priority_time = jiffies;
-	sc->sc_flags &= ~(SC_OP_BT_PRIORITY_DETECTED | SC_OP_BT_SCAN);
+	clear_bit(BT_OP_PRIORITY_DETECTED, &btcoex->op_flags);
+	clear_bit(BT_OP_SCAN, &btcoex->op_flags);
 
 	mod_timer(&btcoex->period_timer, jiffies);
 }
@@ -410,3 +336,124 @@ void ath9k_btcoex_timer_pause(struct ath_softc *sc)
 
 	btcoex->hw_timer_enabled = false;
 }
+
+void ath9k_btcoex_stop_gen_timer(struct ath_softc *sc)
+{
+	struct ath_btcoex *btcoex = &sc->btcoex;
+
+	if (btcoex->hw_timer_enabled)
+		ath9k_gen_timer_stop(sc->sc_ah, btcoex->no_stomp_timer);
+}
+
+u16 ath9k_btcoex_aggr_limit(struct ath_softc *sc, u32 max_4ms_framelen)
+{
+	struct ath_btcoex *btcoex = &sc->btcoex;
+	struct ath_mci_profile *mci = &sc->btcoex.mci;
+	u16 aggr_limit = 0;
+
+	if ((sc->sc_ah->caps.hw_caps & ATH9K_HW_CAP_MCI) && mci->aggr_limit)
+		aggr_limit = (max_4ms_framelen * mci->aggr_limit) >> 4;
+	else if (test_bit(BT_OP_PRIORITY_DETECTED, &btcoex->op_flags))
+		aggr_limit = min((max_4ms_framelen * 3) / 8,
+				 (u32)ATH_AMPDU_LIMIT_MAX);
+
+	return aggr_limit;
+}
+
+void ath9k_btcoex_handle_interrupt(struct ath_softc *sc, u32 status)
+{
+	struct ath_hw *ah = sc->sc_ah;
+
+	if (ath9k_hw_get_btcoex_scheme(ah) == ATH_BTCOEX_CFG_3WIRE)
+		if (status & ATH9K_INT_GENTIMER)
+			ath_gen_timer_isr(sc->sc_ah);
+
+	if (status & ATH9K_INT_MCI)
+		ath_mci_intr(sc);
+}
+
+void ath9k_start_btcoex(struct ath_softc *sc)
+{
+	struct ath_hw *ah = sc->sc_ah;
+
+	if ((ath9k_hw_get_btcoex_scheme(ah) != ATH_BTCOEX_CFG_NONE) &&
+	    !ah->btcoex_hw.enabled) {
+		if (!(sc->sc_ah->caps.hw_caps & ATH9K_HW_CAP_MCI))
+			ath9k_hw_btcoex_set_weight(ah, AR_BT_COEX_WGHT,
+						   AR_STOMP_LOW_WLAN_WGHT);
+		ath9k_hw_btcoex_enable(ah);
+
+		if (ath9k_hw_get_btcoex_scheme(ah) == ATH_BTCOEX_CFG_3WIRE)
+			ath9k_btcoex_timer_resume(sc);
+	}
+}
+
+void ath9k_stop_btcoex(struct ath_softc *sc)
+{
+	struct ath_hw *ah = sc->sc_ah;
+
+	if (ah->btcoex_hw.enabled &&
+	    ath9k_hw_get_btcoex_scheme(ah) != ATH_BTCOEX_CFG_NONE) {
+		if (ath9k_hw_get_btcoex_scheme(ah) == ATH_BTCOEX_CFG_3WIRE)
+			ath9k_btcoex_timer_pause(sc);
+		ath9k_hw_btcoex_disable(ah);
+		if (AR_SREV_9462(ah))
+			ath_mci_flush_profile(&sc->btcoex.mci);
+	}
+}
+
+void ath9k_deinit_btcoex(struct ath_softc *sc)
+{
+	struct ath_hw *ah = sc->sc_ah;
+
+        if ((sc->btcoex.no_stomp_timer) &&
+	    ath9k_hw_get_btcoex_scheme(sc->sc_ah) == ATH_BTCOEX_CFG_3WIRE)
+		ath_gen_timer_free(sc->sc_ah, sc->btcoex.no_stomp_timer);
+
+	if (ath9k_hw_mci_is_enabled(ah))
+		ath_mci_cleanup(sc);
+}
+
+int ath9k_init_btcoex(struct ath_softc *sc)
+{
+	struct ath_txq *txq;
+	struct ath_hw *ah = sc->sc_ah;
+	int r;
+
+	ath9k_hw_btcoex_init_scheme(ah);
+
+	switch (ath9k_hw_get_btcoex_scheme(sc->sc_ah)) {
+	case ATH_BTCOEX_CFG_NONE:
+		break;
+	case ATH_BTCOEX_CFG_2WIRE:
+		ath9k_hw_btcoex_init_2wire(sc->sc_ah);
+		break;
+	case ATH_BTCOEX_CFG_3WIRE:
+		ath9k_hw_btcoex_init_3wire(sc->sc_ah);
+		r = ath_init_btcoex_timer(sc);
+		if (r)
+			return -1;
+		txq = sc->tx.txq_map[WME_AC_BE];
+		ath9k_hw_init_btcoex_hw(sc->sc_ah, txq->axq_qnum);
+		sc->btcoex.bt_stomp_type = ATH_BTCOEX_STOMP_LOW;
+		if (ath9k_hw_mci_is_enabled(ah)) {
+			sc->btcoex.duty_cycle = ATH_BTCOEX_DEF_DUTY_CYCLE;
+			INIT_LIST_HEAD(&sc->btcoex.mci.info);
+
+			r = ath_mci_setup(sc);
+			if (r)
+				return r;
+
+			ath9k_hw_btcoex_init_mci(ah);
+		}
+
+		break;
+	default:
+		WARN_ON(1);
+		break;
+	}
+
+	return 0;
+}
+
+#endif /* CONFIG_ATH9K_BTCOEX_SUPPORT */

@@ -148,18 +148,15 @@ typedef struct stLocalSFChangeIndicationAlt{
 
 }stLocalSFChangeIndicationAlt;
 
-ULONG StoreCmControlResponseMessage(PMINI_ADAPTER Adapter,PVOID pvBuffer,UINT *puBufferLength);
+ULONG StoreCmControlResponseMessage(struct bcm_mini_adapter *Adapter, PVOID pvBuffer,UINT *puBufferLength);
 
-ULONG GetNextTargetBufferLocation(PMINI_ADAPTER Adapter,B_UINT16 tid);
+INT AllocAdapterDsxBuffer(struct bcm_mini_adapter *Adapter);
 
-INT AllocAdapterDsxBuffer(PMINI_ADAPTER Adapter);
+INT FreeAdapterDsxBuffer(struct bcm_mini_adapter *Adapter);
+ULONG SetUpTargetDsxBuffers(struct bcm_mini_adapter *Adapter);
 
-INT FreeAdapterDsxBuffer(PMINI_ADAPTER Adapter);
-ULONG SetUpTargetDsxBuffers(PMINI_ADAPTER Adapter);
+BOOLEAN CmControlResponseMessage(struct bcm_mini_adapter *Adapter, PVOID pvBuffer);
 
-BOOLEAN CmControlResponseMessage(PMINI_ADAPTER Adapter,PVOID pvBuffer);
-
-VOID deleteSFBySfid(PMINI_ADAPTER Adapter, UINT uiSearchRuleIndex);
 
 #pragma pack (pop)
 

@@ -47,9 +47,16 @@
 
 
 
-inline int ip6_rcv_finish( struct sk_buff *skb)
+int ip6_rcv_finish(struct sk_buff *skb)
 {
-	if (skb_dst(skb) == NULL)
+	if (sysctl_ip_early_demux && !skb_dst(skb)) {
+		const struct inet6_protocol *ipprot;
+
+		ipprot = rcu_dereference(inet6_protos[ipv6_hdr(skb)->nexthdr]);
+		if (ipprot && ipprot->early_demux)
+			ipprot->early_demux(skb);
+	}
+	if (!skb_dst(skb))
 		ip6_route_input(skb);
 
 	return dst_input(skb);
@@ -57,7 +64,7 @@ inline int ip6_rcv_finish( struct sk_buff *skb)
 
 int ipv6_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, struct net_device *orig_dev)
 {
-	struct ipv6hdr *hdr;
+	const struct ipv6hdr *hdr;
 	u32 		pkt_len;
 	struct inet6_dev *idev;
 	struct net *net = dev_net(skb->dev);
@@ -111,6 +118,14 @@ int ipv6_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt
 	    ipv6_addr_loopback(&hdr->daddr))
 		goto err;
 
+	/*
+	 * RFC4291 2.7
+	 * Multicast addresses must not be used as source addresses in IPv6
+	 * packets or appear in any Routing header.
+	 */
+	if (ipv6_addr_is_multicast(&hdr->saddr))
+		goto err;
+
 	skb->transport_header = skb->network_header + sizeof(*hdr);
 	IP6CB(skb)->nhoff = offsetof(struct ipv6hdr, nexthdr);
 
@@ -160,12 +175,12 @@ drop:
 
 static int ip6_input_finish(struct sk_buff *skb)
 {
-	const struct inet6_protocol *ipprot;
-	unsigned int nhoff;
-	int nexthdr, raw;
-	u8 hash;
-	struct inet6_dev *idev;
 	struct net *net = dev_net(skb_dst(skb)->dev);
+	const struct inet6_protocol *ipprot;
+	struct inet6_dev *idev;
+	unsigned int nhoff;
+	int nexthdr;
+	bool raw;
 
 	/*
 	 *	Parse extension headers
@@ -180,13 +195,11 @@ resubmit:
 	nexthdr = skb_network_header(skb)[nhoff];
 
 	raw = raw6_local_deliver(skb, nexthdr);
-
-	hash = nexthdr & (MAX_INET_PROTOS - 1);
-	if ((ipprot = rcu_dereference(inet6_protos[hash])) != NULL) {
+	if ((ipprot = rcu_dereference(inet6_protos[nexthdr])) != NULL) {
 		int ret;
 
 		if (ipprot->flags & INET6_PROTO_FINAL) {
-			struct ipv6hdr *hdr;
+			const struct ipv6hdr *hdr;
 
 			/* Free reference early: we don't need it any more,
 			   and it may hold ip_conntrack module loaded
@@ -242,8 +255,8 @@ int ip6_input(struct sk_buff *skb)
 
 int ip6_mc_input(struct sk_buff *skb)
 {
-	struct ipv6hdr *hdr;
-	int deliver;
+	const struct ipv6hdr *hdr;
+	bool deliver;
 
 	IP6_UPD_PO_STATS_BH(dev_net(skb_dst(skb)->dev),
 			 ip6_dst_idev(skb_dst(skb)), IPSTATS_MIB_INMCAST,
@@ -272,20 +285,21 @@ int ip6_mc_input(struct sk_buff *skb)
 			u8 *ptr = skb_network_header(skb) + opt->ra;
 			struct icmp6hdr *icmp6;
 			u8 nexthdr = hdr->nexthdr;
+			__be16 frag_off;
 			int offset;
 
 			/* Check if the value of Router Alert
 			 * is for MLD (0x0000).
 			 */
 			if ((ptr[2] | ptr[3]) == 0) {
-				deliver = 0;
+				deliver = false;
 
 				if (!ipv6_ext_hdr(nexthdr)) {
 					/* BUG */
 					goto out;
 				}
 				offset = ipv6_skip_exthdr(skb, sizeof(*hdr),
-							  &nexthdr);
+							  &nexthdr, &frag_off);
 				if (offset < 0)
 					goto out;
 
@@ -303,7 +317,7 @@ int ip6_mc_input(struct sk_buff *skb)
 				case ICMPV6_MGM_REPORT:
 				case ICMPV6_MGM_REDUCTION:
 				case ICMPV6_MLD2_REPORT:
-					deliver = 1;
+					deliver = true;
 					break;
 				}
 				goto out;

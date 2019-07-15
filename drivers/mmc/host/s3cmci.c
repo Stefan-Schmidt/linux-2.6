@@ -26,7 +26,6 @@
 #include <mach/dma.h>
 
 #include <mach/regs-sdi.h>
-#include <mach/regs-gpio.h>
 
 #include <plat/mci.h>
 
@@ -247,7 +246,7 @@ static void s3cmci_check_sdio_irq(struct s3cmci_host *host)
 {
 	if (host->sdio_irqen) {
 		if (gpio_get_value(S3C2410_GPE(8)) == 0) {
-			printk(KERN_DEBUG "%s: signalling irq\n", __func__);
+			pr_debug("%s: signalling irq\n", __func__);
 			mmc_signal_sdio_irq(host->mmc);
 		}
 	}
@@ -344,7 +343,7 @@ static void s3cmci_disable_irq(struct s3cmci_host *host, bool transfer)
 
 	local_irq_save(flags);
 
-	//printk(KERN_DEBUG "%s: transfer %d\n", __func__, transfer);
+	/* pr_debug("%s: transfer %d\n", __func__, transfer); */
 
 	host->irq_disabled = transfer;
 
@@ -874,7 +873,7 @@ static void finalize_request(struct s3cmci_host *host)
 	if (!mrq->data)
 		goto request_done;
 
-	/* Calulate the amout of bytes transfer if there was no error */
+	/* Calculate the amout of bytes transfer if there was no error */
 	if (mrq->data->error == 0) {
 		mrq->data->bytes_xfered =
 			(mrq->data->blocks * mrq->data->blksz);
@@ -882,7 +881,7 @@ static void finalize_request(struct s3cmci_host *host)
 		mrq->data->bytes_xfered = 0;
 	}
 
-	/* If we had an error while transfering data we flush the
+	/* If we had an error while transferring data we flush the
 	 * DMA channel and the fifo to clear out any garbage. */
 	if (mrq->data->error != 0) {
 		if (s3cmci_host_usedma(host))
@@ -913,9 +912,9 @@ request_done:
 }
 
 static void s3cmci_dma_setup(struct s3cmci_host *host,
-			     enum s3c2410_dmasrc source)
+			     enum dma_data_direction source)
 {
-	static enum s3c2410_dmasrc last_source = -1;
+	static enum dma_data_direction last_source = -1;
 	static int setup_ok;
 
 	if (last_source == source)
@@ -980,7 +979,7 @@ static int s3cmci_setup_data(struct s3cmci_host *host, struct mmc_data *data)
 
 	if ((data->blksz & 3) != 0) {
 		/* We cannot deal with unaligned blocks with more than
-		 * one block being transfered. */
+		 * one block being transferred. */
 
 		if (data->blocks > 1) {
 			pr_warning("%s: can't do non-word sized block transfers (blksz %d)\n", __func__, data->blksz);
@@ -1087,7 +1086,7 @@ static int s3cmci_prepare_dma(struct s3cmci_host *host, struct mmc_data *data)
 
 	BUG_ON((data->flags & BOTH_DIR) == BOTH_DIR);
 
-	s3cmci_dma_setup(host, rw ? S3C2410_DMASRC_MEM : S3C2410_DMASRC_HW);
+	s3cmci_dma_setup(host, rw ? DMA_TO_DEVICE : DMA_FROM_DEVICE);
 	s3c2410_dma_ctrl(host->dma, S3C2410_DMAOP_FLUSH);
 
 	dma_len = dma_map_sg(mmc_dev(host->mmc), data->sg, data->sg_len,
@@ -1237,12 +1236,9 @@ static void s3cmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	switch (ios->power_mode) {
 	case MMC_POWER_ON:
 	case MMC_POWER_UP:
-		s3c2410_gpio_cfgpin(S3C2410_GPE(5), S3C2410_GPE5_SDCLK);
-		s3c2410_gpio_cfgpin(S3C2410_GPE(6), S3C2410_GPE6_SDCMD);
-		s3c2410_gpio_cfgpin(S3C2410_GPE(7), S3C2410_GPE7_SDDAT0);
-		s3c2410_gpio_cfgpin(S3C2410_GPE(8), S3C2410_GPE8_SDDAT1);
-		s3c2410_gpio_cfgpin(S3C2410_GPE(9), S3C2410_GPE9_SDDAT2);
-		s3c2410_gpio_cfgpin(S3C2410_GPE(10), S3C2410_GPE10_SDDAT3);
+		/* Configure GPE5...GPE10 pins in SD mode */
+		s3c_gpio_cfgall_range(S3C2410_GPE(5), 6, S3C_GPIO_SFN(2),
+				      S3C_GPIO_PULL_NONE);
 
 		if (host->pdata->set_power)
 			host->pdata->set_power(ios->power_mode, ios->vdd);
@@ -1606,7 +1602,7 @@ static int __devinit s3cmci_probe(struct platform_device *pdev)
 	host->mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!host->mem) {
 		dev_err(&pdev->dev,
-			"failed to get io memory region resouce.\n");
+			"failed to get io memory region resource.\n");
 
 		ret = -ENOENT;
 		goto probe_free_gpio;
@@ -1630,7 +1626,7 @@ static int __devinit s3cmci_probe(struct platform_device *pdev)
 
 	host->irq = platform_get_irq(pdev, 0);
 	if (host->irq == 0) {
-		dev_err(&pdev->dev, "failed to get interrupt resouce.\n");
+		dev_err(&pdev->dev, "failed to get interrupt resource.\n");
 		ret = -EINVAL;
 		goto probe_iounmap;
 	}
@@ -1914,18 +1910,7 @@ static struct platform_driver s3cmci_driver = {
 	.shutdown	= s3cmci_shutdown,
 };
 
-static int __init s3cmci_init(void)
-{
-	return platform_driver_register(&s3cmci_driver);
-}
-
-static void __exit s3cmci_exit(void)
-{
-	platform_driver_unregister(&s3cmci_driver);
-}
-
-module_init(s3cmci_init);
-module_exit(s3cmci_exit);
+module_platform_driver(s3cmci_driver);
 
 MODULE_DESCRIPTION("Samsung S3C MMC/SD Card Interface driver");
 MODULE_LICENSE("GPL v2");

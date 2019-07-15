@@ -32,7 +32,6 @@
 #include <linux/completion.h>
 #include <linux/miscdevice.h>
 #include <linux/delay.h>
-#include <linux/sysdev.h>
 #include <linux/poll.h>
 #include <linux/mutex.h>
 #include <linux/of_device.h>
@@ -645,8 +644,7 @@ static void smu_expose_childs(struct work_struct *unused)
 
 static DECLARE_WORK(smu_expose_childs_work, smu_expose_childs);
 
-static int smu_platform_probe(struct platform_device* dev,
-			      const struct of_device_id *match)
+static int smu_platform_probe(struct platform_device* dev)
 {
 	if (!smu)
 		return -ENODEV;
@@ -669,7 +667,7 @@ static const struct of_device_id smu_platform_match[] =
 	{},
 };
 
-static struct of_platform_driver smu_of_platform_driver =
+static struct platform_driver smu_of_platform_driver =
 {
 	.driver = {
 		.name = "smu",
@@ -682,14 +680,11 @@ static struct of_platform_driver smu_of_platform_driver =
 static int __init smu_init_sysfs(void)
 {
 	/*
-	 * Due to sysfs bogosity, a sysdev is not a real device, so
-	 * we should in fact create both if we want sysdev semantics
-	 * for power management.
 	 * For now, we don't power manage machines with an SMU chip,
 	 * I'm a bit too far from figuring out how that works with those
 	 * new chipsets, but that will come back and bite us
 	 */
-	of_register_platform_driver(&smu_of_platform_driver);
+	platform_driver_register(&smu_of_platform_driver);
 	return 0;
 }
 

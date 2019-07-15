@@ -1,9 +1,7 @@
 /*
- *  include/asm-s390/debug.h
  *   S/390 debug facility
  *
- *    Copyright (C) 1999, 2000 IBM Deutschland Entwicklung GmbH,
- *                             IBM Corporation
+ *    Copyright IBM Corp. 1999, 2000
  */
 
 #ifndef DEBUG_H
@@ -73,7 +71,7 @@ typedef struct debug_info {
 	struct dentry* debugfs_entries[DEBUG_MAX_VIEWS];
 	struct debug_view* views[DEBUG_MAX_VIEWS];	
 	char name[DEBUG_MAX_NAME_LEN];
-	mode_t mode;
+	umode_t mode;
 } debug_info_t;
 
 typedef int (debug_header_proc_t) (debug_info_t* id,
@@ -124,13 +122,14 @@ debug_info_t *debug_register(const char *name, int pages, int nr_areas,
                              int buf_size);
 
 debug_info_t *debug_register_mode(const char *name, int pages, int nr_areas,
-				  int buf_size, mode_t mode, uid_t uid,
+				  int buf_size, umode_t mode, uid_t uid,
 				  gid_t gid);
 
 void debug_unregister(debug_info_t* id);
 
 void debug_set_level(debug_info_t* id, int new_level);
 
+void debug_set_critical(void);
 void debug_stop_all(void);
 
 static inline debug_entry_t*

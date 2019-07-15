@@ -92,22 +92,14 @@ MODULE_DESCRIPTION(DEVICE_FULL_DRV_NAM);
         module_param_array(N, int, NULL, 0);\
         MODULE_PARM_DESC(N, D);
 
-#define RX_DESC_MIN0     16
-#define RX_DESC_MAX0     128
 #define RX_DESC_DEF0     64
 DEVICE_PARAM(RxDescriptors0,"Number of receive usb desc buffer");
 
 
-#define TX_DESC_MIN0     16
-#define TX_DESC_MAX0     128
 #define TX_DESC_DEF0     64
 DEVICE_PARAM(TxDescriptors0,"Number of transmit usb desc buffer");
 
-
-#define CHANNEL_MIN     1
-#define CHANNEL_MAX     14
 #define CHANNEL_DEF     6
-
 DEVICE_PARAM(Channel, "Channel number");
 
 
@@ -120,23 +112,13 @@ DEVICE_PARAM(Channel, "Channel number");
 
 DEVICE_PARAM(PreambleType, "Preamble Type");
 
-
-#define RTS_THRESH_MIN     512
-#define RTS_THRESH_MAX     2347
 #define RTS_THRESH_DEF     2347
-
 DEVICE_PARAM(RTSThreshold, "RTS threshold");
 
-
-#define FRAG_THRESH_MIN     256
-#define FRAG_THRESH_MAX     2346
 #define FRAG_THRESH_DEF     2346
-
 DEVICE_PARAM(FragThreshold, "Fragmentation threshold");
 
 
-#define DATA_RATE_MIN     0
-#define DATA_RATE_MAX     13
 #define DATA_RATE_DEF     13
 /* datarate[] index
    0: indicate 1 Mbps   0x02
@@ -157,10 +139,7 @@ DEVICE_PARAM(FragThreshold, "Fragmentation threshold");
 
 DEVICE_PARAM(ConnectionRate, "Connection data rate");
 
-#define OP_MODE_MAX     2
 #define OP_MODE_DEF     0
-#define OP_MODE_MIN     0
-
 DEVICE_PARAM(OPMode, "Infrastruct, adhoc, AP mode ");
 
 /* OpMode[] is used for transmit.
@@ -176,34 +155,22 @@ DEVICE_PARAM(OPMode, "Infrastruct, adhoc, AP mode ");
 */
 
 #define PS_MODE_DEF     0
-
 DEVICE_PARAM(PSMode, "Power saving mode");
 
 
-#define SHORT_RETRY_MIN     0
-#define SHORT_RETRY_MAX     31
 #define SHORT_RETRY_DEF     8
-
-
 DEVICE_PARAM(ShortRetryLimit, "Short frame retry limits");
 
-#define LONG_RETRY_MIN     0
-#define LONG_RETRY_MAX     15
 #define LONG_RETRY_DEF     4
-
-
 DEVICE_PARAM(LongRetryLimit, "long frame retry limits");
-
 
 /* BasebandType[] baseband type selected
    0: indicate 802.11a type
    1: indicate 802.11b type
    2: indicate 802.11g type
 */
-#define BBP_TYPE_MIN     0
-#define BBP_TYPE_MAX     2
-#define BBP_TYPE_DEF     2
 
+#define BBP_TYPE_DEF     2
 DEVICE_PARAM(BasebandType, "baseband type");
 
 
@@ -222,7 +189,7 @@ DEVICE_PARAM(b80211hEnable, "802.11h mode");
 // Static vars definitions
 //
 
-static struct usb_device_id vt6656_table[] __devinitdata = {
+static struct usb_device_id vt6656_table[] = {
 	{USB_DEVICE(VNT_USB_VENDOR_ID, VNT_USB_PRODUCT_ID)},
 	{}
 };
@@ -237,11 +204,6 @@ static const long frequency_list[] = {
     5700, 5745, 5765, 5785, 5805, 5825
 	};
 
-
-#ifndef IW_ENCODE_NOKEY
-#define IW_ENCODE_NOKEY         0x0800
-#define IW_ENCODE_MODE  (IW_ENCODE_DISABLED | IW_ENCODE_RESTRICTED | IW_ENCODE_OPEN)
-#endif
 
 static const struct iw_handler_def	iwctl_handler_def;
 */
@@ -611,16 +573,9 @@ static BOOL device_init_registers(PSDevice pDevice, DEVICE_INIT_TYPE InitType)
 
         // if exist SW network address, use SW network address.
 
-        DBG_PRT(MSG_LEVEL_DEBUG, KERN_INFO"Network address = %02x-%02x-%02x=%02x-%02x-%02x\n",
-            pDevice->abyCurrentNetAddr[0],
-            pDevice->abyCurrentNetAddr[1],
-            pDevice->abyCurrentNetAddr[2],
-            pDevice->abyCurrentNetAddr[3],
-            pDevice->abyCurrentNetAddr[4],
-            pDevice->abyCurrentNetAddr[5]);
+	DBG_PRT(MSG_LEVEL_DEBUG, KERN_INFO"Network address = %pM\n",
+		pDevice->abyCurrentNetAddr);
     }
-
-
 
     // Set BB and packet type at the same time.
     // Set Short Slot Time, xIFS, and RSPINF.
@@ -709,7 +664,7 @@ static BOOL device_release_WPADEV(PSDevice pDevice)
 	        if(ii>20)
 		  break;
               }
-           };
+           }
     return TRUE;
 }
 
@@ -753,7 +708,7 @@ static const struct net_device_ops device_netdev_ops = {
     .ndo_do_ioctl           = device_ioctl,
     .ndo_get_stats          = device_get_stats,
     .ndo_start_xmit         = device_xmit,
-    .ndo_set_multicast_list = device_set_multi,
+    .ndo_set_rx_mode	    = device_set_multi,
 };
 
 static int __devinit
@@ -837,8 +792,7 @@ static void device_free_tx_bufs(PSDevice pDevice)
             usb_kill_urb(pTxContext->pUrb);
             usb_free_urb(pTxContext->pUrb);
         }
-        if (pTxContext)
-            kfree(pTxContext);
+        kfree(pTxContext);
     }
     return;
 }
@@ -861,8 +815,7 @@ static void device_free_rx_bufs(PSDevice pDevice)
         if (pRCB->skb)
             dev_kfree_skb(pRCB->skb);
     }
-    if (pDevice->pRCBMem)
-        kfree(pDevice->pRCBMem);
+    kfree(pDevice->pRCBMem);
 
     return;
 }
@@ -878,8 +831,7 @@ static void usb_device_reset(PSDevice pDevice)
 
 static void device_free_int_bufs(PSDevice pDevice)
 {
-    if (pDevice->intBuf.pDataBuf != NULL)
-        kfree(pDevice->intBuf.pDataBuf);
+    kfree(pDevice->intBuf.pDataBuf);
     return;
 }
 
@@ -910,7 +862,7 @@ static BOOL device_alloc_bufs(PSDevice pDevice) {
     }
 
     // allocate rcb mem
-    pDevice->pRCBMem = kmalloc((sizeof(RCB) * pDevice->cbRD), GFP_KERNEL);
+	pDevice->pRCBMem = kzalloc((sizeof(RCB) * pDevice->cbRD), GFP_KERNEL);
     if (pDevice->pRCBMem == NULL) {
         DBG_PRT(MSG_LEVEL_ERR,KERN_ERR "%s : alloc rx usb context failed\n", pDevice->dev->name);
         goto free_tx;
@@ -922,7 +874,6 @@ static BOOL device_alloc_bufs(PSDevice pDevice) {
     pDevice->FirstRecvMngList = NULL;
     pDevice->LastRecvMngList = NULL;
     pDevice->NumRecvFreeList = 0;
-    memset(pDevice->pRCBMem, 0, (sizeof(RCB) * pDevice->cbRD));
     pRCB = (PRCB) pDevice->pRCBMem;
 
     for (ii = 0; ii < pDevice->cbRD; ii++) {
@@ -958,7 +909,6 @@ static BOOL device_alloc_bufs(PSDevice pDevice) {
 	pDevice->pInterruptURB = usb_alloc_urb(0, GFP_ATOMIC);
 	if (pDevice->pInterruptURB == NULL) {
 	    DBG_PRT(MSG_LEVEL_ERR,KERN_ERR"Failed to alloc int urb\n");
-   	    usb_kill_urb(pDevice->pControlURB);
 	    usb_free_urb(pDevice->pControlURB);
 	    goto free_rx_tx;
 	}
@@ -966,8 +916,6 @@ static BOOL device_alloc_bufs(PSDevice pDevice) {
     pDevice->intBuf.pDataBuf = kmalloc(MAX_INTERRUPT_SIZE, GFP_KERNEL);
 	if (pDevice->intBuf.pDataBuf == NULL) {
 	    DBG_PRT(MSG_LEVEL_ERR,KERN_ERR"Failed to alloc int buf\n");
-   	    usb_kill_urb(pDevice->pControlURB);
-   	    usb_kill_urb(pDevice->pInterruptURB);
 	    usb_free_urb(pDevice->pControlURB);
 	    usb_free_urb(pDevice->pInterruptURB);
 	    goto free_rx_tx;
@@ -998,7 +946,7 @@ static BOOL device_init_defrag_cb(PSDevice pDevice) {
             DBG_PRT(MSG_LEVEL_ERR,KERN_ERR "%s: can not alloc frag bufs\n",
                 pDevice->dev->name);
             goto free_frag;
-        };
+        }
     }
     pDevice->cbDFCB = CB_MAX_RX_FRAG;
     pDevice->cbFreeDFCB = pDevice->cbDFCB;
@@ -1271,6 +1219,7 @@ static void __devexit vt6656_disconnect(struct usb_interface *intf)
 	}
 
 	device_release_WPADEV(device);
+	release_firmware(device->firmware);
 
 	usb_set_intfdata(intf, NULL);
 	usb_put_dev(interface_to_usbdev(intf));
@@ -1454,7 +1403,7 @@ static unsigned char *Config_FileOperation(PSDevice pDevice)
 
     buffer = kmalloc(1024, GFP_KERNEL);
     if(buffer==NULL) {
-      printk("alllocate mem for file fail?\n");
+      printk("allocate mem for file fail?\n");
       result = -1;
       goto error1;
     }
@@ -1477,8 +1426,7 @@ error2:
   */
 
 if(result!=0) {
-    if(buffer)
-  	 kfree(buffer);
+    kfree(buffer);
     buffer=NULL;
 }
   return buffer;
@@ -1629,15 +1577,8 @@ static int  device_ioctl(struct net_device *dev, struct ifreq *rq, int cmd) {
 		break;
 
 	case SIOCSIWNWID:
-        rc = -EOPNOTSUPP;
-		break;
-
 	case SIOCGIWNWID:     //0x8b03  support
-	#ifdef  WPA_SUPPLICANT_DRIVER_WEXT_SUPPORT
-          rc = iwctl_giwnwid(dev, NULL, &(wrq->u.nwid), NULL);
-	#else
-        rc = -EOPNOTSUPP;
-	#endif
+		rc = -EOPNOTSUPP;
 		break;
 
 		// Set frequency/channel
@@ -1675,13 +1616,14 @@ static int  device_ioctl(struct net_device *dev, struct ifreq *rq, int cmd) {
 
 		{
 			char essid[IW_ESSID_MAX_SIZE+1];
-			if (wrq->u.essid.pointer)
-				rc = iwctl_giwessid(dev, NULL,
-						    &(wrq->u.essid), essid);
+			if (wrq->u.essid.pointer) {
+				iwctl_giwessid(dev, NULL,
+					    &(wrq->u.essid), essid);
 				if (copy_to_user(wrq->u.essid.pointer,
 						         essid,
 						         wrq->u.essid.length) )
 					rc = -EFAULT;
+			}
 		}
 		break;
 
@@ -1716,14 +1658,13 @@ static int  device_ioctl(struct net_device *dev, struct ifreq *rq, int cmd) {
 
 	// Get the current bit-rate
 	case SIOCGIWRATE:
-
-		rc = iwctl_giwrate(dev, NULL, &(wrq->u.bitrate), NULL);
+		iwctl_giwrate(dev, NULL, &(wrq->u.bitrate), NULL);
 		break;
 
 	// Set the desired RTS threshold
 	case SIOCSIWRTS:
 
-		rc = iwctl_siwrts(dev, NULL, &(wrq->u.rts), NULL);
+		rc = iwctl_siwrts(dev, &(wrq->u.rts));
 		break;
 
 	// Get the current RTS threshold
@@ -1751,7 +1692,7 @@ static int  device_ioctl(struct net_device *dev, struct ifreq *rq, int cmd) {
 
 		// Get mode of operation
 	case SIOCGIWMODE:
-		rc = iwctl_giwmode(dev, NULL, &(wrq->u.mode), NULL);
+		iwctl_giwmode(dev, NULL, &(wrq->u.mode), NULL);
 		break;
 
 		// Set WEP keys and mode
@@ -1829,7 +1770,7 @@ static int  device_ioctl(struct net_device *dev, struct ifreq *rq, int cmd) {
 		{
 			struct iw_range range;
 
-			rc = iwctl_giwrange(dev, NULL, &(wrq->u.data), (char *) &range);
+			iwctl_giwrange(dev, NULL, &(wrq->u.data), (char *) &range);
 			if (copy_to_user(wrq->u.data.pointer, &range, sizeof(struct iw_range)))
 				rc = -EFAULT;
 		}
@@ -2113,16 +2054,4 @@ static struct usb_driver vt6656_driver = {
 #endif /* CONFIG_PM */
 };
 
-static int __init vt6656_init_module(void)
-{
-    printk(KERN_NOTICE DEVICE_FULL_DRV_NAM " " DEVICE_VERSION);
-    return usb_register(&vt6656_driver);
-}
-
-static void __exit vt6656_cleanup_module(void)
-{
-	usb_deregister(&vt6656_driver);
-}
-
-module_init(vt6656_init_module);
-module_exit(vt6656_cleanup_module);
+module_usb_driver(vt6656_driver);

@@ -64,14 +64,6 @@ static int card[BUZ_MAX] = { [0 ... (BUZ_MAX-1)] = -1 };
 module_param_array(card, int, NULL, 0444);
 MODULE_PARM_DESC(card, "Card type");
 
-static int encoder[BUZ_MAX] = { [0 ... (BUZ_MAX-1)] = -1 };
-module_param_array(encoder, int, NULL, 0444);
-MODULE_PARM_DESC(encoder, "Video encoder chip");
-
-static int decoder[BUZ_MAX] = { [0 ... (BUZ_MAX-1)] = -1 };
-module_param_array(decoder, int, NULL, 0444);
-MODULE_PARM_DESC(decoder, "Video decoder chip");
-
 /*
    The video mem address of the video card.
    The driver has a little database for some videocards
@@ -131,9 +123,12 @@ int zr36067_debug = 1;
 module_param_named(debug, zr36067_debug, int, 0644);
 MODULE_PARM_DESC(debug, "Debug level (0-5)");
 
+#define ZORAN_VERSION "0.10.1"
+
 MODULE_DESCRIPTION("Zoran-36057/36067 JPEG codec driver");
 MODULE_AUTHOR("Serguei Miridonov");
 MODULE_LICENSE("GPL");
+MODULE_VERSION(ZORAN_VERSION);
 
 #define ZR_DEVICE(subven, subdev, data)	{ \
 	.vendor = PCI_VENDOR_ID_ZORAN, .device = PCI_DEVICE_ID_ZORAN_36057, \
@@ -943,7 +938,7 @@ zoran_open_init_params (struct zoran *zr)
 	memset(zr->jpg_settings.jpg_comp.COM_data, 0,
 	       sizeof(zr->jpg_settings.jpg_comp.COM_data));
 	zr->jpg_settings.jpg_comp.jpeg_markers =
-	    JPEG_MARKER_DHT | JPEG_MARKER_DQT;
+	    V4L2_JPEG_MARKER_DHT | V4L2_JPEG_MARKER_DQT;
 	i = zoran_check_jpg_settings(zr, &zr->jpg_settings, 0);
 	if (i)
 		dprintk(1, KERN_ERR "%s: %s internal error\n",
@@ -1041,7 +1036,7 @@ zr36057_init (struct zoran *zr)
 	/* allocate memory *before* doing anything to the hardware
 	 * in case allocation fails */
 	zr->stat_com = kzalloc(BUZ_NUM_STAT_COM * 4, GFP_KERNEL);
-	zr->video_dev = kmalloc(sizeof(struct video_device), GFP_KERNEL);
+	zr->video_dev = video_device_alloc();
 	if (!zr->stat_com || !zr->video_dev) {
 		dprintk(1,
 			KERN_ERR
@@ -1227,9 +1222,10 @@ static int __devinit zoran_probe(struct pci_dev *pdev,
 	snprintf(ZR_DEVNAME(zr), sizeof(ZR_DEVNAME(zr)), "MJPEG[%u]", zr->id);
 	spin_lock_init(&zr->spinlock);
 	mutex_init(&zr->resource_lock);
+	mutex_init(&zr->other_lock);
 	if (pci_enable_device(pdev))
 		goto zr_unreg;
-	pci_read_config_byte(zr->pci_dev, PCI_CLASS_REVISION, &zr->revision);
+	zr->revision = zr->pci_dev->revision;
 
 	dprintk(1,
 		KERN_INFO
@@ -1342,13 +1338,12 @@ static int __devinit zoran_probe(struct pci_dev *pdev,
 	}
 
 	zr->decoder = v4l2_i2c_new_subdev(&zr->v4l2_dev,
-		&zr->i2c_adapter, NULL, zr->card.i2c_decoder,
+		&zr->i2c_adapter, zr->card.i2c_decoder,
 		0, zr->card.addrs_decoder);
 
 	if (zr->card.i2c_encoder)
 		zr->encoder = v4l2_i2c_new_subdev(&zr->v4l2_dev,
-			&zr->i2c_adapter,
-			NULL, zr->card.i2c_encoder,
+			&zr->i2c_adapter, zr->card.i2c_encoder,
 			0, zr->card.addrs_encoder);
 
 	dprintk(2,
@@ -1467,8 +1462,8 @@ static int __init zoran_init(void)
 {
 	int res;
 
-	printk(KERN_INFO "Zoran MJPEG board driver version %d.%d.%d\n",
-	       MAJOR_VERSION, MINOR_VERSION, RELEASE_VERSION);
+	printk(KERN_INFO "Zoran MJPEG board driver version %s\n",
+	       ZORAN_VERSION);
 
 	/* check the parameters we have been given, adjust if necessary */
 	if (v4l_nbufs < 2)

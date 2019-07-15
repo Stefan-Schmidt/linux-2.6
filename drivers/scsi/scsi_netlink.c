@@ -23,6 +23,7 @@
 #include <linux/security.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
+#include <linux/export.h>
 #include <net/sock.h>
 #include <net/netlink.h>
 
@@ -111,7 +112,7 @@ scsi_nl_rcv_msg(struct sk_buff *skb)
 			goto next_msg;
 		}
 
-		if (security_netlink_recv(skb, CAP_SYS_ADMIN)) {
+		if (!capable(CAP_SYS_ADMIN)) {
 			err = -EPERM;
 			goto next_msg;
 		}
@@ -477,7 +478,7 @@ EXPORT_SYMBOL_GPL(scsi_nl_remove_driver);
 
 
 /**
- * scsi_netlink_init - Called by SCSI subsystem to intialize
+ * scsi_netlink_init - Called by SCSI subsystem to initialize
  * 	the SCSI transport netlink interface
  *
  **/
@@ -485,6 +486,10 @@ void
 scsi_netlink_init(void)
 {
 	int error;
+	struct netlink_kernel_cfg cfg = {
+		.input	= scsi_nl_rcv_msg,
+		.groups	= SCSI_NL_GRP_CNT,
+	};
 
 	INIT_LIST_HEAD(&scsi_nl_drivers);
 
@@ -496,10 +501,9 @@ scsi_netlink_init(void)
 	}
 
 	scsi_nl_sock = netlink_kernel_create(&init_net, NETLINK_SCSITRANSPORT,
-				SCSI_NL_GRP_CNT, scsi_nl_rcv_msg, NULL,
-				THIS_MODULE);
+					     THIS_MODULE, &cfg);
 	if (!scsi_nl_sock) {
-		printk(KERN_ERR "%s: register of recieve handler failed\n",
+		printk(KERN_ERR "%s: register of receive handler failed\n",
 				__func__);
 		netlink_unregister_notifier(&scsi_netlink_notifier);
 		return;

@@ -25,6 +25,7 @@
 #include <linux/io.h>
 #include <linux/irq.h>
 #include <linux/perf_event.h>
+#include <linux/export.h>
 #include <asm/processor.h>
 
 struct cpu_hw_events {
@@ -309,6 +310,10 @@ static int sh_pmu_event_init(struct perf_event *event)
 {
 	int err;
 
+	/* does not support taken branch sampling */
+	if (has_branch_stack(event))
+		return -EOPNOTSUPP;
+
 	switch (event->attr.type) {
 	case PERF_TYPE_RAW:
 	case PERF_TYPE_HW_CACHE:
@@ -389,7 +394,7 @@ int __cpuinit register_sh_pmu(struct sh_pmu *_pmu)
 
 	WARN_ON(_pmu->num_events > MAX_HWEVENTS);
 
-	perf_pmu_register(&pmu);
+	perf_pmu_register(&pmu, "cpu", PERF_TYPE_RAW);
 	perf_cpu_notifier(sh_pmu_notifier);
 	return 0;
 }

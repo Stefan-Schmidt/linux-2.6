@@ -70,7 +70,7 @@ module_param(nsp_burst_mode, int, 0);
 MODULE_PARM_DESC(nsp_burst_mode, "Burst transfer mode (0=io8, 1=io32, 2=mem32(default))");
 
 /* Release IO ports after configuration? */
-static int       free_ports = 0;
+static bool       free_ports = 0;
 module_param(free_ports, bool, 0);
 MODULE_PARM_DESC(free_ports, "Release IO ports after configuration? (default: 0 (=no))");
 
@@ -184,7 +184,7 @@ static void nsp_scsi_done(struct scsi_cmnd *SCpnt)
 	SCpnt->scsi_done(SCpnt);
 }
 
-static int nsp_queuecommand(struct scsi_cmnd *SCpnt,
+static int nsp_queuecommand_lck(struct scsi_cmnd *SCpnt,
 			    void (*done)(struct scsi_cmnd *))
 {
 #ifdef NSP_DEBUG
@@ -263,6 +263,8 @@ static int nsp_queuecommand(struct scsi_cmnd *SCpnt,
 #endif
 	return 0;
 }
+
+static DEF_SCSI_QCMD(nsp_queuecommand)
 
 /*
  * setup PIO FIFO transfer mode and enable/disable to data out
@@ -740,7 +742,7 @@ static void nsp_pio_read(struct scsi_cmnd *SCpnt)
 
 		res = nsp_fifo_count(SCpnt) - ocount;
 		//nsp_dbg(NSP_DEBUG_DATA_IO, "ptr=0x%p this=0x%x ocount=0x%x res=0x%x", SCpnt->SCp.ptr, SCpnt->SCp.this_residual, ocount, res);
-		if (res == 0) { /* if some data avilable ? */
+		if (res == 0) { /* if some data available ? */
 			if (stat == BUSPHASE_DATA_IN) { /* phase changed? */
 				//nsp_dbg(NSP_DEBUG_DATA_IO, " wait for data this=%d", SCpnt->SCp.this_residual);
 				continue;
@@ -1750,7 +1752,7 @@ static int nsp_cs_resume(struct pcmcia_device *link)
 /*======================================================================*
  *	module entry point
  *====================================================================*/
-static struct pcmcia_device_id nsp_cs_ids[] = {
+static const struct pcmcia_device_id nsp_cs_ids[] = {
 	PCMCIA_DEVICE_PROD_ID123("IO DATA", "CBSC16       ", "1", 0x547e66dc, 0x0d63a3fd, 0x51de003a),
 	PCMCIA_DEVICE_PROD_ID123("KME    ", "SCSI-CARD-001", "1", 0x534c02bc, 0x52008408, 0x51de003a),
 	PCMCIA_DEVICE_PROD_ID123("KME    ", "SCSI-CARD-002", "1", 0x534c02bc, 0xcb09d5b2, 0x51de003a),

@@ -41,7 +41,7 @@ static int __devinit usb_w90x900_probe(const struct hc_driver *driver,
 	}
 
 	hcd->rsrc_start = res->start;
-	hcd->rsrc_len = res->end - res->start + 1;
+	hcd->rsrc_len = resource_size(res);
 
 	if (!request_mem_region(hcd->rsrc_start, hcd->rsrc_len, hcd_name)) {
 		retval = -EBUSY;
@@ -57,7 +57,7 @@ static int __devinit usb_w90x900_probe(const struct hc_driver *driver,
 	ehci = hcd_to_ehci(hcd);
 	ehci->caps = hcd->regs;
 	ehci->regs = hcd->regs +
-		 HC_LENGTH(ehci_readl(ehci, &ehci->caps->hc_capbase));
+		HC_LENGTH(ehci, ehci_readl(ehci, &ehci->caps->hc_capbase));
 
 	/* enable PHY 0,1,the regs only apply to w90p910
 	*  0xA4,0xA8 were offsets of PHY0 and PHY1 controller of
@@ -71,9 +71,6 @@ static int __devinit usb_w90x900_probe(const struct hc_driver *driver,
 	val |= ENPHY;
 	__raw_writel(val, ehci->regs+PHY1_CTR);
 
-	ehci->hcs_params = ehci_readl(ehci, &ehci->caps->hcs_params);
-	ehci->sbrn = 0x20;
-
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
 		goto err4;
@@ -81,8 +78,6 @@ static int __devinit usb_w90x900_probe(const struct hc_driver *driver,
 	retval = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (retval != 0)
 		goto err4;
-
-	ehci_writel(ehci, 1, &ehci->regs->configured_flag);
 
 	return retval;
 err4:
@@ -118,7 +113,7 @@ static const struct hc_driver ehci_w90x900_hc_driver = {
 	/*
 	 * basic lifecycle operations
 	 */
-	.reset = ehci_init,
+	.reset = ehci_setup,
 	.start = ehci_run,
 
 	.stop = ehci_stop,
@@ -130,6 +125,7 @@ static const struct hc_driver ehci_w90x900_hc_driver = {
 	.urb_enqueue = ehci_urb_enqueue,
 	.urb_dequeue = ehci_urb_dequeue,
 	.endpoint_disable = ehci_endpoint_disable,
+	.endpoint_reset = ehci_endpoint_reset,
 
 	/*
 	 * scheduling support
@@ -147,6 +143,8 @@ static const struct hc_driver ehci_w90x900_hc_driver = {
 #endif
 	.relinquish_port	= ehci_relinquish_port,
 	.port_handed_over	= ehci_port_handed_over,
+
+	.clear_tt_buffer_complete = ehci_clear_tt_buffer_complete,
 };
 
 static int __devinit ehci_w90x900_probe(struct platform_device *pdev)

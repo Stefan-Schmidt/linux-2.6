@@ -80,8 +80,7 @@ endif
 endif
 
 ifeq ($(call cc-option-yn,-mwarn-dynamicstack),y)
-cflags-$(CONFIG_WARN_STACK) += -mwarn-dynamicstack
-cflags-$(CONFIG_WARN_STACK) += -mwarn-framesize=$(CONFIG_WARN_STACK_SIZE)
+cflags-$(CONFIG_WARN_DYNAMIC_STACK) += -mwarn-dynamicstack
 endif
 
 KBUILD_CFLAGS	+= -mbackchain -msoft-float $(cflags-y)
@@ -89,18 +88,15 @@ KBUILD_CFLAGS	+= -pipe -fno-strength-reduce -Wno-sign-compare
 KBUILD_AFLAGS	+= $(aflags-y)
 
 OBJCOPYFLAGS	:= -O binary
-LDFLAGS_vmlinux := -e start
 
 head-y		:= arch/s390/kernel/head.o
 head-y		+= arch/s390/kernel/$(if $(CONFIG_64BIT),head64.o,head31.o)
-head-y		+= arch/s390/kernel/init_task.o
 
 # See arch/s390/Kbuild for content of core part of the kernel
 core-y		+= arch/s390/
 
 libs-y		+= arch/s390/lib/
 drivers-y	+= drivers/s390/
-drivers-$(CONFIG_MATHEMU) += arch/s390/math-emu/
 
 # must be linked after kernel
 drivers-$(CONFIG_OPROFILE)	+= arch/s390/oprofile/

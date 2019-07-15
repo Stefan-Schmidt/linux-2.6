@@ -1,9 +1,8 @@
 /*
- *  drivers/s390/char/tape_std.c
  *    standard tape device functions for ibm tapes.
  *
  *  S390 and zSeries version
- *    Copyright (C) 2001,2002 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright IBM Corp. 2001, 2002
  *    Author(s): Carsten Otte <cotte@de.ibm.com>
  *		 Michael Holzheu <holzheu@de.ibm.com>
  *		 Tuan Ngo-Anh <ngoanh@de.ibm.com>
@@ -564,7 +563,6 @@ int
 tape_std_mtreten(struct tape_device *device, int mt_count)
 {
 	struct tape_request *request;
-	int rc;
 
 	request = tape_alloc_request(4, 0);
 	if (IS_ERR(request))
@@ -576,7 +574,7 @@ tape_std_mtreten(struct tape_device *device, int mt_count)
 	tape_ccw_cc(request->cpaddr + 2, NOP, 0, NULL);
 	tape_ccw_end(request->cpaddr + 3, CCW_CMD_TIC, 0, request->cpaddr);
 	/* execute it, MTRETEN rc gets ignored */
-	rc = tape_do_io_interruptible(device, request);
+	tape_do_io_interruptible(device, request);
 	tape_free_request(request);
 	return tape_mtop(device, MTREW, 1);
 }

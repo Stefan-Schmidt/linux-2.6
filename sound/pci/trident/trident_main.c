@@ -35,12 +35,13 @@
 #include <linux/vmalloc.h>
 #include <linux/gameport.h>
 #include <linux/dma-mapping.h>
+#include <linux/export.h>
 
 #include <sound/core.h>
 #include <sound/info.h>
 #include <sound/control.h>
 #include <sound/tlv.h>
-#include <sound/trident.h>
+#include "trident.h"
 #include <sound/asoundef.h>
 
 #include <asm/io.h>
@@ -3598,7 +3599,7 @@ int __devinit snd_trident_create(struct snd_card *card,
 	trident->port = pci_resource_start(pci, 0);
 
 	if (request_irq(pci->irq, snd_trident_interrupt, IRQF_SHARED,
-			"Trident Audio", trident)) {
+			KBUILD_MODNAME, trident)) {
 		snd_printk(KERN_ERR "unable to grab IRQ %d\n", pci->irq);
 		snd_trident_free(trident);
 		return -EBUSY;
@@ -3919,9 +3920,10 @@ static void snd_trident_clear_voices(struct snd_trident * trident, unsigned shor
 }
 
 #ifdef CONFIG_PM
-int snd_trident_suspend(struct pci_dev *pci, pm_message_t state)
+static int snd_trident_suspend(struct device *dev)
 {
-	struct snd_card *card = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_trident *trident = card->private_data;
 
 	trident->in_suspend = 1;
@@ -3935,13 +3937,14 @@ int snd_trident_suspend(struct pci_dev *pci, pm_message_t state)
 
 	pci_disable_device(pci);
 	pci_save_state(pci);
-	pci_set_power_state(pci, pci_choose_state(pci, state));
+	pci_set_power_state(pci, PCI_D3hot);
 	return 0;
 }
 
-int snd_trident_resume(struct pci_dev *pci)
+static int snd_trident_resume(struct device *dev)
 {
-	struct snd_card *card = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_trident *trident = card->private_data;
 
 	pci_set_power_state(pci, PCI_D0);
@@ -3978,4 +3981,6 @@ int snd_trident_resume(struct pci_dev *pci)
 	trident->in_suspend = 0;
 	return 0;
 }
+
+SIMPLE_DEV_PM_OPS(snd_trident_pm, snd_trident_suspend, snd_trident_resume);
 #endif /* CONFIG_PM */

@@ -21,6 +21,7 @@
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/slab.h>
+#include <linux/module.h>
 #include <linux/firmware.h>
 #include <linux/videodev2.h>
 #include <media/v4l2-common.h>
@@ -333,8 +334,6 @@ static void pvr2_hdw_state_log_state(struct pvr2_hdw *);
 static int pvr2_hdw_cmd_usbstream(struct pvr2_hdw *hdw,int runFl);
 static int pvr2_hdw_commit_setup(struct pvr2_hdw *hdw);
 static int pvr2_hdw_get_eeprom_addr(struct pvr2_hdw *hdw);
-static void pvr2_hdw_internal_find_stdenum(struct pvr2_hdw *hdw);
-static void pvr2_hdw_internal_set_std_avail(struct pvr2_hdw *hdw);
 static void pvr2_hdw_quiescent_timeout(unsigned long);
 static void pvr2_hdw_decoder_stabilization_timeout(unsigned long);
 static void pvr2_hdw_encoder_wait_timeout(unsigned long);
@@ -345,7 +344,7 @@ static int pvr2_send_request_ex(struct pvr2_hdw *hdw,
 				void *write_data,unsigned int write_len,
 				void *read_data,unsigned int read_len);
 static int pvr2_hdw_check_cropcap(struct pvr2_hdw *hdw);
-
+static v4l2_std_id pvr2_hdw_get_detected_std(struct pvr2_hdw *hdw);
 
 static void trace_stbit(const char *name,int val)
 {
@@ -499,31 +498,35 @@ static int ctrl_cropt_max_get(struct pvr2_ctrl *cptr, int *top)
 	return 0;
 }
 
-static int ctrl_cropw_max_get(struct pvr2_ctrl *cptr, int *val)
+static int ctrl_cropw_max_get(struct pvr2_ctrl *cptr, int *width)
 {
 	struct v4l2_cropcap *cap = &cptr->hdw->cropcap_info;
-	int stat = pvr2_hdw_check_cropcap(cptr->hdw);
+	int stat, bleftend, cleft;
+
+	stat = pvr2_hdw_check_cropcap(cptr->hdw);
 	if (stat != 0) {
 		return stat;
 	}
-	*val = 0;
-	if (cap->bounds.width > cptr->hdw->cropl_val) {
-		*val = cap->bounds.width - cptr->hdw->cropl_val;
-	}
+	bleftend = cap->bounds.left+cap->bounds.width;
+	cleft = cptr->hdw->cropl_val;
+
+	*width = cleft < bleftend ? bleftend-cleft : 0;
 	return 0;
 }
 
-static int ctrl_croph_max_get(struct pvr2_ctrl *cptr, int *val)
+static int ctrl_croph_max_get(struct pvr2_ctrl *cptr, int *height)
 {
 	struct v4l2_cropcap *cap = &cptr->hdw->cropcap_info;
-	int stat = pvr2_hdw_check_cropcap(cptr->hdw);
+	int stat, btopend, ctop;
+
+	stat = pvr2_hdw_check_cropcap(cptr->hdw);
 	if (stat != 0) {
 		return stat;
 	}
-	*val = 0;
-	if (cap->bounds.height > cptr->hdw->cropt_val) {
-		*val = cap->bounds.height - cptr->hdw->cropt_val;
-	}
+	btopend = cap->bounds.top+cap->bounds.height;
+	ctop = cptr->hdw->cropt_val;
+
+	*height = ctop < btopend ? btopend-ctop : 0;
 	return 0;
 }
 
@@ -835,6 +838,12 @@ static int ctrl_hsm_get(struct pvr2_ctrl *cptr,int *vp)
 	return 0;
 }
 
+static int ctrl_stddetect_get(struct pvr2_ctrl *cptr, int *vp)
+{
+	*vp = pvr2_hdw_get_detected_std(cptr->hdw);
+	return 0;
+}
+
 static int ctrl_stdavail_get(struct pvr2_ctrl *cptr,int *vp)
 {
 	*vp = cptr->hdw->std_mask_avail;
@@ -849,8 +858,7 @@ static int ctrl_stdavail_set(struct pvr2_ctrl *cptr,int m,int v)
 	ns = (ns & ~m) | (v & m);
 	if (ns == hdw->std_mask_avail) return 0;
 	hdw->std_mask_avail = ns;
-	pvr2_hdw_internal_set_std_avail(hdw);
-	pvr2_hdw_internal_find_stdenum(hdw);
+	hdw->std_info_cur.def.type_bitmask.valid_bits = hdw->std_mask_avail;
 	return 0;
 }
 
@@ -890,7 +898,6 @@ static int ctrl_stdcur_set(struct pvr2_ctrl *cptr,int m,int v)
 	if (ns == hdw->std_mask_cur) return 0;
 	hdw->std_mask_cur = ns;
 	hdw->std_dirty = !0;
-	pvr2_hdw_internal_find_stdenum(hdw);
 	return 0;
 }
 
@@ -933,40 +940,6 @@ static int ctrl_audio_modes_present_get(struct pvr2_ctrl *cptr,int *vp)
 	}
 	*vp = val;
 	return 0;
-}
-
-
-static int ctrl_stdenumcur_set(struct pvr2_ctrl *cptr,int m,int v)
-{
-	struct pvr2_hdw *hdw = cptr->hdw;
-	if (v < 0) return -EINVAL;
-	if (v > hdw->std_enum_cnt) return -EINVAL;
-	hdw->std_enum_cur = v;
-	if (!v) return 0;
-	v--;
-	if (hdw->std_mask_cur == hdw->std_defs[v].id) return 0;
-	hdw->std_mask_cur = hdw->std_defs[v].id;
-	hdw->std_dirty = !0;
-	return 0;
-}
-
-
-static int ctrl_stdenumcur_get(struct pvr2_ctrl *cptr,int *vp)
-{
-	*vp = cptr->hdw->std_enum_cur;
-	return 0;
-}
-
-
-static int ctrl_stdenumcur_is_dirty(struct pvr2_ctrl *cptr)
-{
-	return cptr->hdw->std_dirty != 0;
-}
-
-
-static void ctrl_stdenumcur_clear_dirty(struct pvr2_ctrl *cptr)
-{
-	cptr->hdw->std_dirty = 0;
 }
 
 
@@ -1114,6 +1087,7 @@ static const struct pvr2_ctl_info control_defs[] = {
 		.internal_id = PVR2_CID_CROPW,
 		.default_value = 720,
 		DEFREF(cropw),
+		DEFINT(0, 864),
 		.get_max_value = ctrl_cropw_max_get,
 		.get_def_value = ctrl_get_cropcapdw,
 	}, {
@@ -1122,6 +1096,7 @@ static const struct pvr2_ctl_info control_defs[] = {
 		.internal_id = PVR2_CID_CROPH,
 		.default_value = 480,
 		DEFREF(croph),
+		DEFINT(0, 576),
 		.get_max_value = ctrl_croph_max_get,
 		.get_def_value = ctrl_get_cropcapdh,
 	}, {
@@ -1286,15 +1261,14 @@ static const struct pvr2_ctl_info control_defs[] = {
 		.sym_to_val = ctrl_std_sym_to_val,
 		.type = pvr2_ctl_bitmask,
 	},{
-		.desc = "Video Standard Name",
-		.name = "video_standard",
-		.internal_id = PVR2_CID_STDENUM,
+		.desc = "Video Standards Detected Mask",
+		.name = "video_standard_mask_detected",
+		.internal_id = PVR2_CID_STDDETECT,
 		.skip_init = !0,
-		.get_value = ctrl_stdenumcur_get,
-		.set_value = ctrl_stdenumcur_set,
-		.is_dirty = ctrl_stdenumcur_is_dirty,
-		.clear_dirty = ctrl_stdenumcur_clear_dirty,
-		.type = pvr2_ctl_enum,
+		.get_value = ctrl_stddetect_get,
+		.val_to_sym = ctrl_std_val_to_sym,
+		.sym_to_val = ctrl_std_sym_to_val,
+		.type = pvr2_ctl_bitmask,
 	}
 };
 
@@ -1929,7 +1903,7 @@ static void pvr2_hdw_setup_std(struct pvr2_hdw *hdw)
 		hdw->std_mask_avail |= std2;
 	}
 
-	pvr2_hdw_internal_set_std_avail(hdw);
+	hdw->std_info_cur.def.type_bitmask.valid_bits = hdw->std_mask_avail;
 
 	if (std1) {
 		bcnt = pvr2_std_id_to_str(buf,sizeof(buf),std1);
@@ -1938,7 +1912,6 @@ static void pvr2_hdw_setup_std(struct pvr2_hdw *hdw)
 			   bcnt,buf);
 		hdw->std_mask_cur = std1;
 		hdw->std_dirty = !0;
-		pvr2_hdw_internal_find_stdenum(hdw);
 		return;
 	}
 	if (std3) {
@@ -1948,7 +1921,6 @@ static void pvr2_hdw_setup_std(struct pvr2_hdw *hdw)
 			   " (determined by device type): %.*s",bcnt,buf);
 		hdw->std_mask_cur = std3;
 		hdw->std_dirty = !0;
-		pvr2_hdw_internal_find_stdenum(hdw);
 		return;
 	}
 
@@ -1968,24 +1940,10 @@ static void pvr2_hdw_setup_std(struct pvr2_hdw *hdw)
 				   bcnt,buf);
 			hdw->std_mask_cur = std_eeprom_maps[idx].std;
 			hdw->std_dirty = !0;
-			pvr2_hdw_internal_find_stdenum(hdw);
 			return;
 		}
 	}
 
-	if (hdw->std_enum_cnt > 1) {
-		// Autoselect the first listed standard
-		hdw->std_enum_cur = 1;
-		hdw->std_mask_cur = hdw->std_defs[hdw->std_enum_cur-1].id;
-		hdw->std_dirty = !0;
-		pvr2_trace(PVR2_TRACE_STD,
-			   "Initial video standard auto-selected to %s",
-			   hdw->std_defs[hdw->std_enum_cur-1].name);
-		return;
-	}
-
-	pvr2_trace(PVR2_TRACE_ERROR_LEGS,
-		   "Unable to select a viable initial video standard");
 }
 
 
@@ -2027,6 +1985,8 @@ static void pvr2_hdw_cx25840_vbi_hack(struct pvr2_hdw *hdw)
 		   hdw->decoder_client_id);
 	memset(&fmt, 0, sizeof(fmt));
 	fmt.type = V4L2_BUF_TYPE_SLICED_VBI_CAPTURE;
+	fmt.fmt.sliced.service_lines[0][21] = V4L2_SLICED_CAPTION_525;
+	fmt.fmt.sliced.service_lines[1][21] = V4L2_SLICED_CAPTION_525;
 	v4l2_device_call_all(&hdw->v4l2_dev, hdw->decoder_client_id,
 			     vbi, s_sliced_fmt, &fmt.fmt.sliced);
 }
@@ -2088,16 +2048,14 @@ static int pvr2_hdw_load_subdev(struct pvr2_hdw *hdw,
 			   " Setting up with specified i2c address 0x%x",
 			   mid, i2caddr[0]);
 		sd = v4l2_i2c_new_subdev(&hdw->v4l2_dev, &hdw->i2c_adap,
-					 NULL, fname,
-					 i2caddr[0], NULL);
+					 fname, i2caddr[0], NULL);
 	} else {
 		pvr2_trace(PVR2_TRACE_INIT,
 			   "Module ID %u:"
 			   " Setting up with address probe list",
 			   mid);
 		sd = v4l2_i2c_new_subdev(&hdw->v4l2_dev, &hdw->i2c_adap,
-						NULL, fname,
-						0, i2caddr);
+					 fname, 0, i2caddr);
 	}
 
 	if (!sd) {
@@ -2539,8 +2497,9 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 	}
 
 	/* Define and configure additional controls from cx2341x module. */
-	hdw->mpeg_ctrl_info = kzalloc(
-		sizeof(*(hdw->mpeg_ctrl_info)) * MPEGDEF_COUNT, GFP_KERNEL);
+	hdw->mpeg_ctrl_info = kcalloc(MPEGDEF_COUNT,
+				      sizeof(*(hdw->mpeg_ctrl_info)),
+				      GFP_KERNEL);
 	if (!hdw->mpeg_ctrl_info) goto fail;
 	for (idx = 0; idx < MPEGDEF_COUNT; idx++) {
 		cptr = hdw->controls + idx + CTRLDEF_COUNT;
@@ -2586,14 +2545,6 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 		cptr->info = ciptr;
 	}
 
-	// Initialize video standard enum dynamic control
-	cptr = pvr2_hdw_get_ctrl_by_id(hdw,PVR2_CID_STDENUM);
-	if (cptr) {
-		memcpy(&hdw->std_info_enum,cptr->info,
-		       sizeof(hdw->std_info_enum));
-		cptr->info = &hdw->std_info_enum;
-
-	}
 	// Initialize control data regarding video standard masks
 	valid_std_mask = pvr2_std_get_usable();
 	for (idx = 0; idx < 32; idx++) {
@@ -2621,7 +2572,17 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 		cptr->info = &hdw->std_info_cur;
 		hdw->std_info_cur.def.type_bitmask.bit_names =
 			hdw->std_mask_ptrs;
-		hdw->std_info_avail.def.type_bitmask.valid_bits =
+		hdw->std_info_cur.def.type_bitmask.valid_bits =
+			valid_std_mask;
+	}
+	cptr = pvr2_hdw_get_ctrl_by_id(hdw,PVR2_CID_STDDETECT);
+	if (cptr) {
+		memcpy(&hdw->std_info_detect,cptr->info,
+		       sizeof(hdw->std_info_detect));
+		cptr->info = &hdw->std_info_detect;
+		hdw->std_info_detect.def.type_bitmask.bit_names =
+			hdw->std_mask_ptrs;
+		hdw->std_info_detect.def.type_bitmask.valid_bits =
 			valid_std_mask;
 	}
 
@@ -2703,8 +2664,6 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 		kfree(hdw->ctl_write_buffer);
 		kfree(hdw->controls);
 		kfree(hdw->mpeg_ctrl_info);
-		kfree(hdw->std_defs);
-		kfree(hdw->std_enum_names);
 		kfree(hdw);
 	}
 	return NULL;
@@ -2780,8 +2739,6 @@ void pvr2_hdw_destroy(struct pvr2_hdw *hdw)
 	} while (0); mutex_unlock(&pvr2_unit_mtx);
 	kfree(hdw->controls);
 	kfree(hdw->mpeg_ctrl_info);
-	kfree(hdw->std_defs);
-	kfree(hdw->std_enum_names);
 	kfree(hdw);
 }
 
@@ -2801,78 +2758,6 @@ void pvr2_hdw_disconnect(struct pvr2_hdw *hdw)
 	pvr2_hdw_remove_usb_stuff(hdw);
 	LOCK_GIVE(hdw->ctl_lock);
 	LOCK_GIVE(hdw->big_lock);
-}
-
-
-// Attempt to autoselect an appropriate value for std_enum_cur given
-// whatever is currently in std_mask_cur
-static void pvr2_hdw_internal_find_stdenum(struct pvr2_hdw *hdw)
-{
-	unsigned int idx;
-	for (idx = 1; idx < hdw->std_enum_cnt; idx++) {
-		if (hdw->std_defs[idx-1].id == hdw->std_mask_cur) {
-			hdw->std_enum_cur = idx;
-			return;
-		}
-	}
-	hdw->std_enum_cur = 0;
-}
-
-
-// Calculate correct set of enumerated standards based on currently known
-// set of available standards bits.
-static void pvr2_hdw_internal_set_std_avail(struct pvr2_hdw *hdw)
-{
-	struct v4l2_standard *newstd;
-	unsigned int std_cnt;
-	unsigned int idx;
-
-	newstd = pvr2_std_create_enum(&std_cnt,hdw->std_mask_avail);
-
-	if (hdw->std_defs) {
-		kfree(hdw->std_defs);
-		hdw->std_defs = NULL;
-	}
-	hdw->std_enum_cnt = 0;
-	if (hdw->std_enum_names) {
-		kfree(hdw->std_enum_names);
-		hdw->std_enum_names = NULL;
-	}
-
-	if (!std_cnt) {
-		pvr2_trace(
-			PVR2_TRACE_ERROR_LEGS,
-			"WARNING: Failed to identify any viable standards");
-	}
-	hdw->std_enum_names = kmalloc(sizeof(char *)*(std_cnt+1),GFP_KERNEL);
-	hdw->std_enum_names[0] = "none";
-	for (idx = 0; idx < std_cnt; idx++) {
-		hdw->std_enum_names[idx+1] =
-			newstd[idx].name;
-	}
-	// Set up the dynamic control for this standard
-	hdw->std_info_enum.def.type_enum.value_names = hdw->std_enum_names;
-	hdw->std_info_enum.def.type_enum.count = std_cnt+1;
-	hdw->std_defs = newstd;
-	hdw->std_enum_cnt = std_cnt+1;
-	hdw->std_enum_cur = 0;
-	hdw->std_info_cur.def.type_bitmask.valid_bits = hdw->std_mask_avail;
-}
-
-
-int pvr2_hdw_get_stdenum_value(struct pvr2_hdw *hdw,
-			       struct v4l2_standard *std,
-			       unsigned int idx)
-{
-	int ret = -EINVAL;
-	if (!idx) return ret;
-	LOCK_TAKE(hdw->big_lock); do {
-		if (idx >= hdw->std_enum_cnt) break;
-		idx--;
-		memcpy(std,hdw->std_defs+idx,sizeof(*std));
-		ret = 0;
-	} while (0); LOCK_GIVE(hdw->big_lock);
-	return ret;
 }
 
 
@@ -2979,6 +2864,15 @@ static void pvr2_subdev_set_control(struct pvr2_hdw *hdw, int id,
 		pvr2_subdev_set_control(hdw, id, #lab, (hdw)->lab##_val); \
 	}
 
+v4l2_std_id pvr2_hdw_get_detected_std(struct pvr2_hdw *hdw)
+{
+	v4l2_std_id std;
+	std = (v4l2_std_id)hdw->std_mask_avail;
+	v4l2_device_call_all(&hdw->v4l2_dev, 0,
+			     video, querystd, &std);
+	return std;
+}
+
 /* Execute whatever commands are required to update the state of all the
    sub-devices so that they match our current control values. */
 static void pvr2_subdev_update(struct pvr2_hdw *hdw)
@@ -3032,6 +2926,8 @@ static void pvr2_subdev_update(struct pvr2_hdw *hdw)
 	if (hdw->input_dirty || hdw->audiomode_dirty || hdw->force_dirty) {
 		struct v4l2_tuner vt;
 		memset(&vt, 0, sizeof(vt));
+		vt.type = (hdw->input_val == PVR2_CVAL_INPUT_RADIO) ?
+			V4L2_TUNER_RADIO : V4L2_TUNER_ANALOG_TV;
 		vt.audmode = hdw->audiomode_val;
 		v4l2_device_call_all(&hdw->v4l2_dev, 0, tuner, s_tuner, &vt);
 	}
@@ -3167,6 +3063,19 @@ static int pvr2_hdw_commit_execute(struct pvr2_hdw *hdw)
 	struct pvr2_ctrl *cptr;
 	int disruptive_change;
 
+	if (hdw->input_dirty && hdw->state_pathway_ok &&
+	    (((hdw->input_val == PVR2_CVAL_INPUT_DTV) ?
+	      PVR2_PATHWAY_DIGITAL : PVR2_PATHWAY_ANALOG) !=
+	     hdw->pathway_state)) {
+		/* Change of mode being asked for... */
+		hdw->state_pathway_ok = 0;
+		trace_stbit("state_pathway_ok", hdw->state_pathway_ok);
+	}
+	if (!hdw->state_pathway_ok) {
+		/* Can't commit anything until pathway is ok. */
+		return 0;
+	}
+
 	/* Handle some required side effects when the video standard is
 	   changed.... */
 	if (hdw->std_dirty) {
@@ -3201,18 +3110,6 @@ static int pvr2_hdw_commit_execute(struct pvr2_hdw *hdw)
 		}
 	}
 
-	if (hdw->input_dirty && hdw->state_pathway_ok &&
-	    (((hdw->input_val == PVR2_CVAL_INPUT_DTV) ?
-	      PVR2_PATHWAY_DIGITAL : PVR2_PATHWAY_ANALOG) !=
-	     hdw->pathway_state)) {
-		/* Change of mode being asked for... */
-		hdw->state_pathway_ok = 0;
-		trace_stbit("state_pathway_ok",hdw->state_pathway_ok);
-	}
-	if (!hdw->state_pathway_ok) {
-		/* Can't commit anything until pathway is ok. */
-		return 0;
-	}
 	/* The broadcast decoder can only scale down, so if
 	 * res_*_dirty && crop window < output format ==> enlarge crop.
 	 *
@@ -5156,13 +5053,14 @@ void pvr2_hdw_status_poll(struct pvr2_hdw *hdw)
 {
 	struct v4l2_tuner *vtp = &hdw->tuner_signal_info;
 	memset(vtp, 0, sizeof(*vtp));
+	vtp->type = (hdw->input_val == PVR2_CVAL_INPUT_RADIO) ?
+		V4L2_TUNER_RADIO : V4L2_TUNER_ANALOG_TV;
 	hdw->tuner_signal_stale = 0;
 	/* Note: There apparently is no replacement for VIDIOC_CROPCAP
 	   using v4l2-subdev - therefore we can't support that AT ALL right
 	   now.  (Of course, no sub-drivers seem to implement it either.
 	   But now it's a a chicken and egg problem...) */
-	v4l2_device_call_all(&hdw->v4l2_dev, 0, tuner, g_tuner,
-			     &hdw->tuner_signal_info);
+	v4l2_device_call_all(&hdw->v4l2_dev, 0, tuner, g_tuner, vtp);
 	pvr2_trace(PVR2_TRACE_CHIPS, "subdev status poll"
 		   " type=%u strength=%u audio=0x%x cap=0x%x"
 		   " low=%u hi=%u",

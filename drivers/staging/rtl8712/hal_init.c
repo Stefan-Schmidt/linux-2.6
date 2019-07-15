@@ -28,23 +28,68 @@
 
 #define _HAL_INIT_C_
 
+#include <linux/usb.h>
+#include <linux/device.h>
+#include <linux/usb/ch9.h>
+#include <linux/firmware.h>
+#include <linux/module.h>
+
 #include "osdep_service.h"
 #include "drv_types.h"
-#include "rtl871x_byteorder.h"
-#include "farray.h"
 #include "usb_osintf.h"
 
 #define FWBUFF_ALIGN_SZ 512
 #define MAX_DUMP_FWSZ	49152 /*default = 49152 (48k)*/
 
-static u32 rtl871x_open_fw(struct _adapter *padapter, void **pphfwfile_hdl,
-		    const u8 **ppmappedfw)
+static void rtl871x_load_fw_cb(const struct firmware *firmware, void *context)
 {
-	u32 len;
+	struct _adapter *padapter = context;
 
-	*ppmappedfw = f_array;
-	len = sizeof(f_array);
-	return len;
+	complete(&padapter->rtl8712_fw_ready);
+	if (!firmware) {
+		struct usb_device *udev = padapter->dvobjpriv.pusbdev;
+		struct usb_interface *pusb_intf = padapter->pusb_intf;
+		printk(KERN_ERR "r8712u: Firmware request failed\n");
+		padapter->fw_found = false;
+		usb_put_dev(udev);
+		usb_set_intfdata(pusb_intf, NULL);
+		return;
+	}
+	padapter->fw = firmware;
+	padapter->fw_found = true;
+	/* firmware available - start netdev */
+	register_netdev(padapter->pnetdev);
+}
+
+static const char firmware_file[] = "rtlwifi/rtl8712u.bin";
+
+int rtl871x_load_fw(struct _adapter *padapter)
+{
+	struct device *dev = &padapter->dvobjpriv.pusbdev->dev;
+	int rc;
+
+	init_completion(&padapter->rtl8712_fw_ready);
+	printk(KERN_INFO "r8712u: Loading firmware from \"%s\"\n",
+	       firmware_file);
+	rc = request_firmware_nowait(THIS_MODULE, 1, firmware_file, dev,
+				     GFP_KERNEL, padapter, rtl871x_load_fw_cb);
+	if (rc)
+		printk(KERN_ERR "r8712u: Firmware request error %d\n", rc);
+	return rc;
+}
+MODULE_FIRMWARE("rtlwifi/rtl8712u.bin");
+
+static u32 rtl871x_open_fw(struct _adapter *padapter, const u8 **ppmappedfw)
+{
+	const struct firmware **praw = &padapter->fw;
+
+	if (padapter->fw->size > 200000) {
+		printk(KERN_ERR "r8172u: Badfw->size of %d\n",
+		       (int)padapter->fw->size);
+		return 0;
+	}
+	*ppmappedfw = (u8 *)((*praw)->data);
+	return (*praw)->size;
 }
 
 static void fill_fwpriv(struct _adapter *padapter, struct fw_priv *pfwpriv)
@@ -123,17 +168,17 @@ static u8 rtl8712_dl_fw(struct _adapter *padapter)
 	uint dump_imem_sz, imem_sz, dump_emem_sz, emem_sz; /* max = 49152; */
 	struct fw_hdr fwhdr;
 	u32 ulfilelength;	/* FW file size */
-	void *phfwfile_hdl = NULL;
 	const u8 *pmappedfw = NULL;
 	u8 *ptmpchar = NULL, *ppayload, *ptr;
 	struct tx_desc *ptx_desc;
 	u32 txdscp_sz = sizeof(struct tx_desc);
+	u8 ret = _FAIL;
 
-	ulfilelength = rtl871x_open_fw(padapter, &phfwfile_hdl, &pmappedfw);
+	ulfilelength = rtl871x_open_fw(padapter, &pmappedfw);
 	if (pmappedfw && (ulfilelength > 0)) {
 		update_fwhdr(&fwhdr, pmappedfw);
 		if (chk_fwhdr(&fwhdr, ulfilelength) == _FAIL)
-			goto exit_fail;
+			return ret;
 		fill_fwpriv(padapter, &fwhdr.fwpriv);
 		/* firmware check ok */
 		maxlen = (fwhdr.img_IMEM_size > fwhdr.img_SRAM_size) ?
@@ -141,7 +186,7 @@ static u8 rtl8712_dl_fw(struct _adapter *padapter)
 		maxlen += txdscp_sz;
 		ptmpchar = _malloc(maxlen + FWBUFF_ALIGN_SZ);
 		if (ptmpchar == NULL)
-			return _FAIL;
+			return ret;
 
 		ptx_desc = (struct tx_desc *)(ptmpchar + FWBUFF_ALIGN_SZ -
 			    ((addr_t)(ptmpchar) & (FWBUFF_ALIGN_SZ - 1)));
@@ -273,11 +318,11 @@ static u8 rtl8712_dl_fw(struct _adapter *padapter)
 			goto exit_fail;
 	} else
 		goto exit_fail;
-	return _SUCCESS;
+	ret = _SUCCESS;
 
 exit_fail:
 	kfree(ptmpchar);
-	return _FAIL;
+	return ret;
 }
 
 uint rtl8712_hal_init(struct _adapter *padapter)

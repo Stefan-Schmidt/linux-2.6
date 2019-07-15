@@ -3,7 +3,7 @@
  */
 
 /*
- * FP-Gaming Assasin 3D joystick driver for Linux
+ * FP-Gaming Assassin 3D joystick driver for Linux
  */
 
 /*
@@ -34,7 +34,7 @@
 #include <linux/input.h>
 #include <linux/jiffies.h>
 
-#define DRIVER_DESC	"FP-Gaming Assasin 3D joystick driver"
+#define DRIVER_DESC	"FP-Gaming Assassin 3D joystick driver"
 
 MODULE_AUTHOR("Vojtech Pavlik <vojtech@ucw.cz>");
 MODULE_DESCRIPTION(DRIVER_DESC);
@@ -413,15 +413,4 @@ static struct gameport_driver a3d_drv = {
 	.disconnect	= a3d_disconnect,
 };
 
-static int __init a3d_init(void)
-{
-	return gameport_register_driver(&a3d_drv);
-}
-
-static void __exit a3d_exit(void)
-{
-	gameport_unregister_driver(&a3d_drv);
-}
-
-module_init(a3d_init);
-module_exit(a3d_exit);
+module_gameport_driver(a3d_drv);

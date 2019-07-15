@@ -308,7 +308,7 @@ static const char* chipname[] = {
 	"nVidia nForce", "AMD8111",
 };
 
-static const struct pci_device_id amd756_ids[] = {
+static DEFINE_PCI_DEVICE_TABLE(amd756_ids) = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_VIPER_740B),
 	  .driver_data = AMD756 },
 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_VIPER_7413),
@@ -410,21 +410,10 @@ static struct pci_driver amd756_driver = {
 	.remove		= __devexit_p(amd756_remove),
 };
 
-static int __init amd756_init(void)
-{
-	return pci_register_driver(&amd756_driver);
-}
-
-static void __exit amd756_exit(void)
-{
-	pci_unregister_driver(&amd756_driver);
-}
+module_pci_driver(amd756_driver);
 
 MODULE_AUTHOR("Merlin Hughes <merlin@merlin.org>");
 MODULE_DESCRIPTION("AMD756/766/768/8111 and nVidia nForce SMBus driver");
 MODULE_LICENSE("GPL");
 
 EXPORT_SYMBOL(amd756_smbus);
-
-module_init(amd756_init)
-module_exit(amd756_exit)

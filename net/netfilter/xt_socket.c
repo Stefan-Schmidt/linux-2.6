@@ -22,7 +22,7 @@
 #include <net/netfilter/nf_tproxy_core.h>
 #include <net/netfilter/ipv4/nf_defrag_ipv4.h>
 
-#if defined(CONFIG_IP6_NF_IPTABLES) || defined(CONFIG_IP6_NF_IPTABLES_MODULE)
+#if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
 #define XT_SOCKET_HAVE_IPV6 1
 #include <linux/netfilter_ipv6/ip6_tables.h>
 #include <net/netfilter/ipv6/nf_defrag_ipv6.h>
@@ -30,10 +30,19 @@
 
 #include <linux/netfilter/xt_socket.h>
 
-#if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)
+#if IS_ENABLED(CONFIG_NF_CONNTRACK)
 #define XT_SOCKET_HAVE_CONNTRACK 1
 #include <net/netfilter/nf_conntrack.h>
 #endif
+
+static void
+xt_socket_put_sk(struct sock *sk)
+{
+	if (sk->sk_state == TCP_TIME_WAIT)
+		inet_twsk_put(inet_twsk(sk));
+	else
+		sock_put(sk);
+}
 
 static int
 extract_icmp4_fields(const struct sk_buff *skb,
@@ -134,9 +143,9 @@ socket_match(const struct sk_buff *skb, struct xt_action_param *par,
 	ct = nf_ct_get(skb, &ctinfo);
 	if (ct && !nf_ct_is_untracked(ct) &&
 	    ((iph->protocol != IPPROTO_ICMP &&
-	      ctinfo == IP_CT_IS_REPLY + IP_CT_ESTABLISHED) ||
+	      ctinfo == IP_CT_ESTABLISHED_REPLY) ||
 	     (iph->protocol == IPPROTO_ICMP &&
-	      ctinfo == IP_CT_IS_REPLY + IP_CT_RELATED)) &&
+	      ctinfo == IP_CT_RELATED_REPLY)) &&
 	    (ct->status & IPS_SRC_NAT_DONE)) {
 
 		daddr = ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.u3.ip;
@@ -164,7 +173,7 @@ socket_match(const struct sk_buff *skb, struct xt_action_param *par,
 				       (sk->sk_state == TCP_TIME_WAIT &&
 					inet_twsk(sk)->tw_transparent));
 
-		nf_tproxy_put_sock(sk);
+		xt_socket_put_sk(sk);
 
 		if (wildcard || !transparent)
 			sk = NULL;
@@ -205,6 +214,7 @@ extract_icmp6_fields(const struct sk_buff *skb,
 	struct icmp6hdr *icmph, _icmph;
 	__be16 *ports, _ports[2];
 	u8 inside_nexthdr;
+	__be16 inside_fragoff;
 	int inside_hdrlen;
 
 	icmph = skb_header_pointer(skb, outside_hdrlen,
@@ -220,7 +230,8 @@ extract_icmp6_fields(const struct sk_buff *skb,
 		return 1;
 	inside_nexthdr = inside_iph->nexthdr;
 
-	inside_hdrlen = ipv6_skip_exthdr(skb, outside_hdrlen + sizeof(_icmph) + sizeof(_inside_iph), &inside_nexthdr);
+	inside_hdrlen = ipv6_skip_exthdr(skb, outside_hdrlen + sizeof(_icmph) + sizeof(_inside_iph),
+					 &inside_nexthdr, &inside_fragoff);
 	if (inside_hdrlen < 0)
 		return 1; /* hjm: Packet has no/incomplete transport layer headers. */
 
@@ -252,10 +263,10 @@ socket_mt6_v1(const struct sk_buff *skb, struct xt_action_param *par)
 	struct sock *sk;
 	struct in6_addr *daddr, *saddr;
 	__be16 dport, sport;
-	int thoff, tproto;
+	int thoff = 0, tproto;
 	const struct xt_socket_mtinfo1 *info = (struct xt_socket_mtinfo1 *) par->matchinfo;
 
-	tproto = ipv6_find_hdr(skb, &thoff, -1, NULL);
+	tproto = ipv6_find_hdr(skb, &thoff, -1, NULL, NULL);
 	if (tproto < 0) {
 		pr_debug("unable to find transport header in IPv6 packet, dropping\n");
 		return NF_DROP;
@@ -298,7 +309,7 @@ socket_mt6_v1(const struct sk_buff *skb, struct xt_action_param *par)
 				       (sk->sk_state == TCP_TIME_WAIT &&
 					inet_twsk(sk)->tw_transparent));
 
-		nf_tproxy_put_sock(sk);
+		xt_socket_put_sk(sk);
 
 		if (wildcard || !transparent)
 			sk = NULL;

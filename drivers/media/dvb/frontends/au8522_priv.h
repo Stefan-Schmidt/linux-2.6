@@ -81,6 +81,8 @@ int au8522_sleep(struct dvb_frontend *fe);
 int au8522_get_state(struct au8522_state **state, struct i2c_adapter *i2c,
 		     u8 client_address);
 void au8522_release_state(struct au8522_state *state);
+int au8522_i2c_gate_ctrl(struct dvb_frontend *fe, int enable);
+int au8522_led_ctrl(struct au8522_state *state, int led);
 
 /* REGISTERS */
 #define AU8522_INPUT_CONTROL_REG081H			0x081
@@ -397,7 +399,9 @@ void au8522_release_state(struct au8522_state *state);
 #define AU8522_TVDEC_COMB_HDIF_THR2_REG06AH_CVBS		0x0A
 #define AU8522_TVDEC_COMB_HDIF_THR3_REG06BH_CVBS		0x32
 #define AU8522_TVDEC_COMB_DCDIF_THR1_REG06CH_CVBS		0x34
+#define AU8522_TVDEC_COMB_DCDIF_THR1_REG06CH_SVIDEO		0x2a
 #define AU8522_TVDEC_COMB_DCDIF_THR2_REG06DH_CVBS		0x05
+#define AU8522_TVDEC_COMB_DCDIF_THR2_REG06DH_SVIDEO		0x15
 #define AU8522_TVDEC_COMB_DCDIF_THR3_REG06EH_CVBS		0x6E
 #define AU8522_TVDEC_UV_SEP_THR_REG06FH_CVBS			0x0F
 #define AU8522_TVDEC_COMB_DC_THR1_NTSC_REG070H_CVBS		0x80

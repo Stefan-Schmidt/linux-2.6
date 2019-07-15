@@ -59,10 +59,12 @@ static inline struct net *nf_ct_exp_net(struct nf_conntrack_expect *exp)
 	return nf_ct_net(exp->master);
 }
 
+#define NF_CT_EXP_POLICY_NAME_LEN	16
+
 struct nf_conntrack_expect_policy {
 	unsigned int	max_expected;
 	unsigned int	timeout;
-	const char	*name;
+	char		name[NF_CT_EXP_POLICY_NAME_LEN];
 };
 
 #define NF_CT_EXPECT_CLASS_DEFAULT	0
@@ -91,7 +93,6 @@ static inline void nf_ct_unlink_expect(struct nf_conntrack_expect *exp)
 
 void nf_ct_remove_expectations(struct nf_conn *ct);
 void nf_ct_unexpect_related(struct nf_conntrack_expect *exp);
-void nf_ct_remove_userspace_expectations(void);
 
 /* Allocate space for an expectation: this is mandatory before calling
    nf_ct_expect_related.  You will have to call put afterwards. */

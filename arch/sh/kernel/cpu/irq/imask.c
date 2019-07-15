@@ -19,7 +19,6 @@
 #include <linux/cache.h>
 #include <linux/irq.h>
 #include <linux/bitmap.h>
-#include <asm/system.h>
 #include <asm/irq.h>
 
 /* Bitmap of IRQ masked */
@@ -80,6 +79,6 @@ static struct irq_chip imask_irq_chip = {
 
 void make_imask_irq(unsigned int irq)
 {
-	set_irq_chip_and_handler_name(irq, &imask_irq_chip,
-				      handle_level_irq, "level");
+	irq_set_chip_and_handler_name(irq, &imask_irq_chip, handle_level_irq,
+				      "level");
 }

@@ -36,8 +36,8 @@
 #define rdsdebug(fmt, args...) pr_debug("%s(): " fmt, __func__ , ##args)
 #else
 /* sigh, pr_debug() causes unused variable warnings */
-static inline void __attribute__ ((format (printf, 1, 2)))
-rdsdebug(char *fmt, ...)
+static inline __printf(1, 2)
+void rdsdebug(char *fmt, ...)
 {
 }
 #endif
@@ -50,7 +50,6 @@ rdsdebug(char *fmt, ...)
 #define RDS_FRAG_SIZE	((unsigned int)(1 << RDS_FRAG_SHIFT))
 
 #define RDS_CONG_MAP_BYTES	(65536 / 8)
-#define RDS_CONG_MAP_LONGS	(RDS_CONG_MAP_BYTES / sizeof(unsigned long))
 #define RDS_CONG_MAP_PAGES	(PAGE_ALIGN(RDS_CONG_MAP_BYTES) / PAGE_SIZE)
 #define RDS_CONG_MAP_PAGE_BITS	(PAGE_SIZE * 8)
 
@@ -626,8 +625,8 @@ void rds_for_each_conn_info(struct socket *sock, unsigned int len,
 			  struct rds_info_lengths *lens,
 			  int (*visitor)(struct rds_connection *, void *),
 			  size_t item_len);
-void __rds_conn_error(struct rds_connection *conn, const char *, ...)
-				__attribute__ ((format (printf, 2, 3)));
+__printf(2, 3)
+void __rds_conn_error(struct rds_connection *conn, const char *, ...);
 #define rds_conn_error(conn, fmt...) \
 	__rds_conn_error(conn, KERN_WARNING "RDS: " fmt)
 
@@ -705,7 +704,7 @@ void rds_inc_init(struct rds_incoming *inc, struct rds_connection *conn,
 		  __be32 saddr);
 void rds_inc_put(struct rds_incoming *inc);
 void rds_recv_incoming(struct rds_connection *conn, __be32 saddr, __be32 daddr,
-		       struct rds_incoming *inc, gfp_t gfp, enum km_type km);
+		       struct rds_incoming *inc, gfp_t gfp);
 int rds_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 		size_t size, int msg_flags);
 void rds_clear_recv_queue(struct rds_sock *rs);

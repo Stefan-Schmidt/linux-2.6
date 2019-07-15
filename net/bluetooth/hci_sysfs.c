@@ -1,17 +1,14 @@
 /* Bluetooth HCI driver model support. */
 
-#include <linux/kernel.h>
-#include <linux/slab.h>
-#include <linux/init.h>
 #include <linux/debugfs.h>
-#include <linux/seq_file.h>
+#include <linux/module.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
 
 static struct class *bt_class;
 
-struct dentry *bt_debugfs = NULL;
+struct dentry *bt_debugfs;
 EXPORT_SYMBOL_GPL(bt_debugfs);
 
 static inline char *link_typetostr(int type)
@@ -23,36 +20,41 @@ static inline char *link_typetostr(int type)
 		return "SCO";
 	case ESCO_LINK:
 		return "eSCO";
+	case LE_LINK:
+		return "LE";
 	default:
 		return "UNKNOWN";
 	}
 }
 
-static ssize_t show_link_type(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_link_type(struct device *dev,
+			      struct device_attribute *attr, char *buf)
 {
-	struct hci_conn *conn = dev_get_drvdata(dev);
+	struct hci_conn *conn = to_hci_conn(dev);
 	return sprintf(buf, "%s\n", link_typetostr(conn->type));
 }
 
-static ssize_t show_link_address(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_link_address(struct device *dev,
+				 struct device_attribute *attr, char *buf)
 {
-	struct hci_conn *conn = dev_get_drvdata(dev);
+	struct hci_conn *conn = to_hci_conn(dev);
 	return sprintf(buf, "%s\n", batostr(&conn->dst));
 }
 
-static ssize_t show_link_features(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_link_features(struct device *dev,
+				  struct device_attribute *attr, char *buf)
 {
-	struct hci_conn *conn = dev_get_drvdata(dev);
+	struct hci_conn *conn = to_hci_conn(dev);
 
 	return sprintf(buf, "0x%02x%02x%02x%02x%02x%02x%02x%02x\n",
-				conn->features[0], conn->features[1],
-				conn->features[2], conn->features[3],
-				conn->features[4], conn->features[5],
-				conn->features[6], conn->features[7]);
+		       conn->features[0], conn->features[1],
+		       conn->features[2], conn->features[3],
+		       conn->features[4], conn->features[5],
+		       conn->features[6], conn->features[7]);
 }
 
-#define LINK_ATTR(_name,_mode,_show,_store) \
-struct device_attribute link_attr_##_name = __ATTR(_name,_mode,_show,_store)
+#define LINK_ATTR(_name, _mode, _show, _store) \
+struct device_attribute link_attr_##_name = __ATTR(_name, _mode, _show, _store)
 
 static LINK_ATTR(type, S_IRUGO, show_link_type, NULL);
 static LINK_ATTR(address, S_IRUGO, show_link_address, NULL);
@@ -76,8 +78,8 @@ static const struct attribute_group *bt_link_groups[] = {
 
 static void bt_link_release(struct device *dev)
 {
-	void *data = dev_get_drvdata(dev);
-	kfree(data);
+	struct hci_conn *conn = to_hci_conn(dev);
+	kfree(conn);
 }
 
 static struct device_type bt_link = {
@@ -85,23 +87,6 @@ static struct device_type bt_link = {
 	.groups  = bt_link_groups,
 	.release = bt_link_release,
 };
-
-static void add_conn(struct work_struct *work)
-{
-	struct hci_conn *conn = container_of(work, struct hci_conn, work_add);
-	struct hci_dev *hdev = conn->hdev;
-
-	dev_set_name(&conn->dev, "%s:%d", hdev->name, conn->handle);
-
-	dev_set_drvdata(&conn->dev, conn);
-
-	if (device_add(&conn->dev) < 0) {
-		BT_ERR("Failed to register connection device");
-		return;
-	}
-
-	hci_dev_hold(hdev);
-}
 
 /*
  * The rfcomm tty device will possibly retain even when conn
@@ -113,9 +98,37 @@ static int __match_tty(struct device *dev, void *data)
 	return !strncmp(dev_name(dev), "rfcomm", 6);
 }
 
-static void del_conn(struct work_struct *work)
+void hci_conn_init_sysfs(struct hci_conn *conn)
 {
-	struct hci_conn *conn = container_of(work, struct hci_conn, work_del);
+	struct hci_dev *hdev = conn->hdev;
+
+	BT_DBG("conn %p", conn);
+
+	conn->dev.type = &bt_link;
+	conn->dev.class = bt_class;
+	conn->dev.parent = &hdev->dev;
+
+	device_initialize(&conn->dev);
+}
+
+void hci_conn_add_sysfs(struct hci_conn *conn)
+{
+	struct hci_dev *hdev = conn->hdev;
+
+	BT_DBG("conn %p", conn);
+
+	dev_set_name(&conn->dev, "%s:%d", hdev->name, conn->handle);
+
+	if (device_add(&conn->dev) < 0) {
+		BT_ERR("Failed to register connection device");
+		return;
+	}
+
+	hci_dev_hold(hdev);
+}
+
+void hci_conn_del_sysfs(struct hci_conn *conn)
+{
 	struct hci_dev *hdev = conn->hdev;
 
 	if (!device_is_registered(&conn->dev))
@@ -135,36 +148,6 @@ static void del_conn(struct work_struct *work)
 	put_device(&conn->dev);
 
 	hci_dev_put(hdev);
-}
-
-void hci_conn_init_sysfs(struct hci_conn *conn)
-{
-	struct hci_dev *hdev = conn->hdev;
-
-	BT_DBG("conn %p", conn);
-
-	conn->dev.type = &bt_link;
-	conn->dev.class = bt_class;
-	conn->dev.parent = &hdev->dev;
-
-	device_initialize(&conn->dev);
-
-	INIT_WORK(&conn->work_add, add_conn);
-	INIT_WORK(&conn->work_del, del_conn);
-}
-
-void hci_conn_add_sysfs(struct hci_conn *conn)
-{
-	BT_DBG("conn %p", conn);
-
-	queue_work(conn->hdev->workqueue, &conn->work_add);
-}
-
-void hci_conn_del_sysfs(struct hci_conn *conn)
-{
-	BT_DBG("conn %p", conn);
-
-	queue_work(conn->hdev->workqueue, &conn->work_del);
 }
 
 static inline char *host_bustostr(int bus)
@@ -201,86 +184,100 @@ static inline char *host_typetostr(int type)
 	}
 }
 
-static ssize_t show_bus(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_bus(struct device *dev,
+			struct device_attribute *attr, char *buf)
 {
-	struct hci_dev *hdev = dev_get_drvdata(dev);
+	struct hci_dev *hdev = to_hci_dev(dev);
 	return sprintf(buf, "%s\n", host_bustostr(hdev->bus));
 }
 
-static ssize_t show_type(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_type(struct device *dev,
+			 struct device_attribute *attr, char *buf)
 {
-	struct hci_dev *hdev = dev_get_drvdata(dev);
+	struct hci_dev *hdev = to_hci_dev(dev);
 	return sprintf(buf, "%s\n", host_typetostr(hdev->dev_type));
 }
 
-static ssize_t show_name(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_name(struct device *dev,
+			 struct device_attribute *attr, char *buf)
 {
-	struct hci_dev *hdev = dev_get_drvdata(dev);
-	char name[249];
+	struct hci_dev *hdev = to_hci_dev(dev);
+	char name[HCI_MAX_NAME_LENGTH + 1];
 	int i;
 
-	for (i = 0; i < 248; i++)
+	for (i = 0; i < HCI_MAX_NAME_LENGTH; i++)
 		name[i] = hdev->dev_name[i];
 
-	name[248] = '\0';
+	name[HCI_MAX_NAME_LENGTH] = '\0';
 	return sprintf(buf, "%s\n", name);
 }
 
-static ssize_t show_class(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_class(struct device *dev,
+			  struct device_attribute *attr, char *buf)
 {
-	struct hci_dev *hdev = dev_get_drvdata(dev);
-	return sprintf(buf, "0x%.2x%.2x%.2x\n",
-			hdev->dev_class[2], hdev->dev_class[1], hdev->dev_class[0]);
+	struct hci_dev *hdev = to_hci_dev(dev);
+	return sprintf(buf, "0x%.2x%.2x%.2x\n", hdev->dev_class[2],
+		       hdev->dev_class[1], hdev->dev_class[0]);
 }
 
-static ssize_t show_address(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_address(struct device *dev,
+			    struct device_attribute *attr, char *buf)
 {
-	struct hci_dev *hdev = dev_get_drvdata(dev);
+	struct hci_dev *hdev = to_hci_dev(dev);
 	return sprintf(buf, "%s\n", batostr(&hdev->bdaddr));
 }
 
-static ssize_t show_features(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_features(struct device *dev,
+			     struct device_attribute *attr, char *buf)
 {
-	struct hci_dev *hdev = dev_get_drvdata(dev);
+	struct hci_dev *hdev = to_hci_dev(dev);
 
 	return sprintf(buf, "0x%02x%02x%02x%02x%02x%02x%02x%02x\n",
-				hdev->features[0], hdev->features[1],
-				hdev->features[2], hdev->features[3],
-				hdev->features[4], hdev->features[5],
-				hdev->features[6], hdev->features[7]);
+		       hdev->features[0], hdev->features[1],
+		       hdev->features[2], hdev->features[3],
+		       hdev->features[4], hdev->features[5],
+		       hdev->features[6], hdev->features[7]);
 }
 
-static ssize_t show_manufacturer(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_manufacturer(struct device *dev,
+				 struct device_attribute *attr, char *buf)
 {
-	struct hci_dev *hdev = dev_get_drvdata(dev);
+	struct hci_dev *hdev = to_hci_dev(dev);
 	return sprintf(buf, "%d\n", hdev->manufacturer);
 }
 
-static ssize_t show_hci_version(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_hci_version(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct hci_dev *hdev = dev_get_drvdata(dev);
+	struct hci_dev *hdev = to_hci_dev(dev);
 	return sprintf(buf, "%d\n", hdev->hci_ver);
 }
 
-static ssize_t show_hci_revision(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_hci_revision(struct device *dev,
+				 struct device_attribute *attr, char *buf)
 {
-	struct hci_dev *hdev = dev_get_drvdata(dev);
+	struct hci_dev *hdev = to_hci_dev(dev);
 	return sprintf(buf, "%d\n", hdev->hci_rev);
 }
 
-static ssize_t show_idle_timeout(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_idle_timeout(struct device *dev,
+				 struct device_attribute *attr, char *buf)
 {
-	struct hci_dev *hdev = dev_get_drvdata(dev);
+	struct hci_dev *hdev = to_hci_dev(dev);
 	return sprintf(buf, "%d\n", hdev->idle_timeout);
 }
 
-static ssize_t store_idle_timeout(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+static ssize_t store_idle_timeout(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
 {
-	struct hci_dev *hdev = dev_get_drvdata(dev);
-	unsigned long val;
+	struct hci_dev *hdev = to_hci_dev(dev);
+	unsigned int val;
+	int rv;
 
-	if (strict_strtoul(buf, 0, &val) < 0)
-		return -EINVAL;
+	rv = kstrtouint(buf, 0, &val);
+	if (rv < 0)
+		return rv;
 
 	if (val != 0 && (val < 500 || val > 3600000))
 		return -EINVAL;
@@ -290,24 +287,26 @@ static ssize_t store_idle_timeout(struct device *dev, struct device_attribute *a
 	return count;
 }
 
-static ssize_t show_sniff_max_interval(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_sniff_max_interval(struct device *dev,
+				       struct device_attribute *attr, char *buf)
 {
-	struct hci_dev *hdev = dev_get_drvdata(dev);
+	struct hci_dev *hdev = to_hci_dev(dev);
 	return sprintf(buf, "%d\n", hdev->sniff_max_interval);
 }
 
-static ssize_t store_sniff_max_interval(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+static ssize_t store_sniff_max_interval(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
 {
-	struct hci_dev *hdev = dev_get_drvdata(dev);
-	unsigned long val;
+	struct hci_dev *hdev = to_hci_dev(dev);
+	u16 val;
+	int rv;
 
-	if (strict_strtoul(buf, 0, &val) < 0)
-		return -EINVAL;
+	rv = kstrtou16(buf, 0, &val);
+	if (rv < 0)
+		return rv;
 
-	if (val < 0x0002 || val > 0xFFFE || val % 2)
-		return -EINVAL;
-
-	if (val < hdev->sniff_min_interval)
+	if (val == 0 || val % 2 || val < hdev->sniff_min_interval)
 		return -EINVAL;
 
 	hdev->sniff_max_interval = val;
@@ -315,24 +314,26 @@ static ssize_t store_sniff_max_interval(struct device *dev, struct device_attrib
 	return count;
 }
 
-static ssize_t show_sniff_min_interval(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_sniff_min_interval(struct device *dev,
+				       struct device_attribute *attr, char *buf)
 {
-	struct hci_dev *hdev = dev_get_drvdata(dev);
+	struct hci_dev *hdev = to_hci_dev(dev);
 	return sprintf(buf, "%d\n", hdev->sniff_min_interval);
 }
 
-static ssize_t store_sniff_min_interval(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+static ssize_t store_sniff_min_interval(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
 {
-	struct hci_dev *hdev = dev_get_drvdata(dev);
-	unsigned long val;
+	struct hci_dev *hdev = to_hci_dev(dev);
+	u16 val;
+	int rv;
 
-	if (strict_strtoul(buf, 0, &val) < 0)
-		return -EINVAL;
+	rv = kstrtou16(buf, 0, &val);
+	if (rv < 0)
+		return rv;
 
-	if (val < 0x0002 || val > 0xFFFE || val % 2)
-		return -EINVAL;
-
-	if (val > hdev->sniff_max_interval)
+	if (val == 0 || val % 2 || val > hdev->sniff_max_interval)
 		return -EINVAL;
 
 	hdev->sniff_min_interval = val;
@@ -351,11 +352,11 @@ static DEVICE_ATTR(hci_version, S_IRUGO, show_hci_version, NULL);
 static DEVICE_ATTR(hci_revision, S_IRUGO, show_hci_revision, NULL);
 
 static DEVICE_ATTR(idle_timeout, S_IRUGO | S_IWUSR,
-				show_idle_timeout, store_idle_timeout);
+		   show_idle_timeout, store_idle_timeout);
 static DEVICE_ATTR(sniff_max_interval, S_IRUGO | S_IWUSR,
-				show_sniff_max_interval, store_sniff_max_interval);
+		   show_sniff_max_interval, store_sniff_max_interval);
 static DEVICE_ATTR(sniff_min_interval, S_IRUGO | S_IWUSR,
-				show_sniff_min_interval, store_sniff_min_interval);
+		   show_sniff_min_interval, store_sniff_min_interval);
 
 static struct attribute *bt_host_attrs[] = {
 	&dev_attr_bus.attr,
@@ -384,8 +385,9 @@ static const struct attribute_group *bt_host_groups[] = {
 
 static void bt_host_release(struct device *dev)
 {
-	void *data = dev_get_drvdata(dev);
-	kfree(data);
+	struct hci_dev *hdev = to_hci_dev(dev);
+	kfree(hdev);
+	module_put(THIS_MODULE);
 }
 
 static struct device_type bt_host = {
@@ -397,12 +399,12 @@ static struct device_type bt_host = {
 static int inquiry_cache_show(struct seq_file *f, void *p)
 {
 	struct hci_dev *hdev = f->private;
-	struct inquiry_cache *cache = &hdev->inq_cache;
+	struct discovery_state *cache = &hdev->discovery;
 	struct inquiry_entry *e;
 
-	hci_dev_lock_bh(hdev);
+	hci_dev_lock(hdev);
 
-	for (e = cache->list; e; e = e->next) {
+	list_for_each_entry(e, &cache->all, all) {
 		struct inquiry_data *data = &e->data;
 		seq_printf(f, "%s %d %d %d 0x%.2x%.2x%.2x 0x%.4x %d %d %u\n",
 			   batostr(&data->bdaddr),
@@ -413,7 +415,7 @@ static int inquiry_cache_show(struct seq_file *f, void *p)
 			   data->rssi, data->ssp_mode, e->timestamp);
 	}
 
-	hci_dev_unlock_bh(hdev);
+	hci_dev_unlock(hdev);
 
 	return 0;
 }
@@ -433,19 +435,14 @@ static const struct file_operations inquiry_cache_fops = {
 static int blacklist_show(struct seq_file *f, void *p)
 {
 	struct hci_dev *hdev = f->private;
-	struct list_head *l;
+	struct bdaddr_list *b;
 
-	hci_dev_lock_bh(hdev);
+	hci_dev_lock(hdev);
 
-	list_for_each(l, &hdev->blacklist) {
-		struct bdaddr_list *b;
-
-		b = list_entry(l, struct bdaddr_list, list);
-
+	list_for_each_entry(b, &hdev->blacklist, list)
 		seq_printf(f, "%s\n", batostr(&b->bdaddr));
-	}
 
-	hci_dev_unlock_bh(hdev);
+	hci_dev_unlock(hdev);
 
 	return 0;
 }
@@ -461,22 +458,101 @@ static const struct file_operations blacklist_fops = {
 	.llseek		= seq_lseek,
 	.release	= single_release,
 };
-int hci_register_sysfs(struct hci_dev *hdev)
+
+static void print_bt_uuid(struct seq_file *f, u8 *uuid)
+{
+	__be32 data0, data4;
+	__be16 data1, data2, data3, data5;
+
+	memcpy(&data0, &uuid[0], 4);
+	memcpy(&data1, &uuid[4], 2);
+	memcpy(&data2, &uuid[6], 2);
+	memcpy(&data3, &uuid[8], 2);
+	memcpy(&data4, &uuid[10], 4);
+	memcpy(&data5, &uuid[14], 2);
+
+	seq_printf(f, "%.8x-%.4x-%.4x-%.4x-%.8x%.4x\n",
+		   ntohl(data0), ntohs(data1), ntohs(data2), ntohs(data3),
+		   ntohl(data4), ntohs(data5));
+}
+
+static int uuids_show(struct seq_file *f, void *p)
+{
+	struct hci_dev *hdev = f->private;
+	struct bt_uuid *uuid;
+
+	hci_dev_lock(hdev);
+
+	list_for_each_entry(uuid, &hdev->uuids, list)
+		print_bt_uuid(f, uuid->uuid);
+
+	hci_dev_unlock(hdev);
+
+	return 0;
+}
+
+static int uuids_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, uuids_show, inode->i_private);
+}
+
+static const struct file_operations uuids_fops = {
+	.open		= uuids_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int auto_accept_delay_set(void *data, u64 val)
+{
+	struct hci_dev *hdev = data;
+
+	hci_dev_lock(hdev);
+
+	hdev->auto_accept_delay = val;
+
+	hci_dev_unlock(hdev);
+
+	return 0;
+}
+
+static int auto_accept_delay_get(void *data, u64 *val)
+{
+	struct hci_dev *hdev = data;
+
+	hci_dev_lock(hdev);
+
+	*val = hdev->auto_accept_delay;
+
+	hci_dev_unlock(hdev);
+
+	return 0;
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(auto_accept_delay_fops, auto_accept_delay_get,
+			auto_accept_delay_set, "%llu\n");
+
+void hci_init_sysfs(struct hci_dev *hdev)
+{
+	struct device *dev = &hdev->dev;
+
+	dev->type = &bt_host;
+	dev->class = bt_class;
+
+	__module_get(THIS_MODULE);
+	device_initialize(dev);
+}
+
+int hci_add_sysfs(struct hci_dev *hdev)
 {
 	struct device *dev = &hdev->dev;
 	int err;
 
 	BT_DBG("%p name %s bus %d", hdev, hdev->name, hdev->bus);
 
-	dev->type = &bt_host;
-	dev->class = bt_class;
-	dev->parent = hdev->parent;
-
 	dev_set_name(dev, "%s", hdev->name);
 
-	dev_set_drvdata(dev, hdev);
-
-	err = device_register(dev);
+	err = device_add(dev);
 	if (err < 0)
 		return err;
 
@@ -488,15 +564,19 @@ int hci_register_sysfs(struct hci_dev *hdev)
 		return 0;
 
 	debugfs_create_file("inquiry_cache", 0444, hdev->debugfs,
-						hdev, &inquiry_cache_fops);
+			    hdev, &inquiry_cache_fops);
 
 	debugfs_create_file("blacklist", 0444, hdev->debugfs,
-						hdev, &blacklist_fops);
+			    hdev, &blacklist_fops);
 
+	debugfs_create_file("uuids", 0444, hdev->debugfs, hdev, &uuids_fops);
+
+	debugfs_create_file("auto_accept_delay", 0444, hdev->debugfs, hdev,
+			    &auto_accept_delay_fops);
 	return 0;
 }
 
-void hci_unregister_sysfs(struct hci_dev *hdev)
+void hci_del_sysfs(struct hci_dev *hdev)
 {
 	BT_DBG("%p name %s bus %d", hdev, hdev->name, hdev->bus);
 

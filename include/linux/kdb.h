@@ -16,7 +16,7 @@
 #ifdef	CONFIG_KGDB_KDB
 #include <linux/init.h>
 #include <linux/sched.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 
 #define KDB_POLL_FUNC_MAX	5
 extern int kdb_poll_idx;
@@ -75,8 +75,6 @@ extern const char *kdb_diemsg;
 #define KDB_FLAG_CATASTROPHIC	(1 << 1) /* A catastrophic event has occurred */
 #define KDB_FLAG_CMD_INTERRUPT	(1 << 2) /* Previous command was interrupted */
 #define KDB_FLAG_NOIPI		(1 << 3) /* Do not send IPIs */
-#define KDB_FLAG_ONLY_DO_DUMP	(1 << 4) /* Only do a dump, used when
-					  * kdb is off */
 #define KDB_FLAG_NO_CONSOLE	(1 << 5) /* No console is available,
 					  * kdb is disabled */
 #define KDB_FLAG_NO_VT_CONSOLE	(1 << 6) /* No VT console is available, do
@@ -114,12 +112,9 @@ typedef enum {
 } kdb_reason_t;
 
 extern int kdb_trap_printk;
-extern int vkdb_printf(const char *fmt, va_list args)
-	    __attribute__ ((format (printf, 1, 0)));
-extern int kdb_printf(const char *, ...)
-	    __attribute__ ((format (printf, 1, 2)));
-typedef int (*kdb_printf_t)(const char *, ...)
-	     __attribute__ ((format (printf, 1, 2)));
+extern __printf(1, 0) int vkdb_printf(const char *fmt, va_list args);
+extern __printf(1, 2) int kdb_printf(const char *, ...);
+typedef __printf(1, 2) int (*kdb_printf_t)(const char *, ...);
 
 extern void kdb_init(int level);
 

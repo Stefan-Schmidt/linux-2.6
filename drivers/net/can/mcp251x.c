@@ -83,6 +83,11 @@
 #define INSTRUCTION_LOAD_TXB(n)	(0x40 + 2 * (n))
 #define INSTRUCTION_READ_RXB(n)	(((n) == 0) ? 0x90 : 0x94)
 #define INSTRUCTION_RESET	0xC0
+#define RTS_TXB0		0x01
+#define RTS_TXB1		0x02
+#define RTS_TXB2		0x04
+#define INSTRUCTION_RTS(n)	(0x80 | ((n) & 0x07))
+
 
 /* MPC251x registers */
 #define CANSTAT	      0x0e
@@ -214,7 +219,7 @@ static int mcp251x_enable_dma; /* Enable SPI DMA. Default: 0 (Off) */
 module_param(mcp251x_enable_dma, int, S_IRUGO);
 MODULE_PARM_DESC(mcp251x_enable_dma, "Enable SPI DMA. Default: 0 (Off)");
 
-static struct can_bittiming_const mcp251x_bittiming_const = {
+static const struct can_bittiming_const mcp251x_bittiming_const = {
 	.name = DEVICE_NAME,
 	.tseg1_min = 3,
 	.tseg1_max = 16,
@@ -397,6 +402,7 @@ static void mcp251x_hw_tx_frame(struct spi_device *spi, u8 *buf,
 static void mcp251x_hw_tx(struct spi_device *spi, struct can_frame *frame,
 			  int tx_buf_idx)
 {
+	struct mcp251x_priv *priv = dev_get_drvdata(&spi->dev);
 	u32 sid, eid, exide, rtr;
 	u8 buf[SPI_TRANSFER_BUF_LEN];
 
@@ -418,7 +424,10 @@ static void mcp251x_hw_tx(struct spi_device *spi, struct can_frame *frame,
 	buf[TXBDLC_OFF] = (rtr << DLC_RTR_SHIFT) | frame->can_dlc;
 	memcpy(buf + TXBDAT_OFF, frame->data, frame->can_dlc);
 	mcp251x_hw_tx_frame(spi, buf, frame->can_dlc, tx_buf_idx);
-	mcp251x_write_reg(spi, TXBCTRL(tx_buf_idx), TXBCTRL_TXREQ);
+
+	/* use INSTRUCTION_RTS, to avoid "repeated frame problem" */
+	priv->spi_tx_buf[0] = INSTRUCTION_RTS(1 << tx_buf_idx);
+	mcp251x_spi_trans(priv->spi, 1);
 }
 
 static void mcp251x_hw_rx_frame(struct spi_device *spi, u8 *buf,
@@ -712,8 +721,7 @@ static void mcp251x_error_skb(struct net_device *net, int can_id, int data1)
 		frame->data[1] = data1;
 		netif_rx_ni(skb);
 	} else {
-		dev_err(&net->dev,
-			"cannot allocate error skb\n");
+		netdev_err(net, "cannot allocate error skb\n");
 	}
 }
 
@@ -931,7 +939,8 @@ static int mcp251x_open(struct net_device *net)
 	priv->tx_len = 0;
 
 	ret = request_threaded_irq(spi->irq, NULL, mcp251x_can_ist,
-			  IRQF_TRIGGER_FALLING, DEVICE_NAME, priv);
+		  pdata->irq_flags ? pdata->irq_flags : IRQF_TRIGGER_FALLING,
+		  DEVICE_NAME, priv);
 	if (ret) {
 		dev_err(&spi->dev, "failed to acquire irq %d\n", spi->irq);
 		if (pdata->transceiver_enable)
@@ -940,7 +949,7 @@ static int mcp251x_open(struct net_device *net)
 		goto open_unlock;
 	}
 
-	priv->wq = create_freezeable_workqueue("mcp251x_wq");
+	priv->wq = create_freezable_workqueue("mcp251x_wq");
 	INIT_WORK(&priv->tx_work, mcp251x_tx_work_handler);
 	INIT_WORK(&priv->restart_work, mcp251x_restart_work_handler);
 
@@ -1020,8 +1029,7 @@ static int __devinit mcp251x_can_probe(struct spi_device *spi)
 						      GFP_DMA);
 
 		if (priv->spi_tx_buf) {
-			priv->spi_rx_buf = (u8 *)(priv->spi_tx_buf +
-						  (PAGE_SIZE / 2));
+			priv->spi_rx_buf = (priv->spi_tx_buf + (PAGE_SIZE / 2));
 			priv->spi_rx_dma = (dma_addr_t)(priv->spi_tx_dma +
 							(PAGE_SIZE / 2));
 		} else {

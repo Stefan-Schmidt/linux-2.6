@@ -26,7 +26,7 @@
 #include <linux/pci.h>
 #include <linux/slab.h>
 #include <linux/gameport.h>
-#include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <sound/core.h>
 #include <sound/control.h>
 #include <sound/pcm.h>
@@ -44,8 +44,8 @@ MODULE_SUPPORTED_DEVICE("{{Cirrus Logic,CS4281}}");
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
-static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable switches */
-static int dual_codec[SNDRV_CARDS];	/* dual codec */
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable switches */
+static bool dual_codec[SNDRV_CARDS];	/* dual codec */
 
 module_param_array(index, int, NULL, 0444);
 MODULE_PARM_DESC(index, "Index value for CS4281 soundcard.");
@@ -1382,7 +1382,7 @@ static int __devinit snd_cs4281_create(struct snd_card *card,
 	}
 	
 	if (request_irq(pci->irq, snd_cs4281_interrupt, IRQF_SHARED,
-			"CS4281", chip)) {
+			KBUILD_MODNAME, chip)) {
 		snd_printk(KERN_ERR "unable to grab IRQ %d\n", pci->irq);
 		snd_cs4281_free(chip);
 		return -ENOMEM;
@@ -1997,9 +1997,10 @@ static int saved_regs[SUSPEND_REGISTERS] = {
 
 #define CLKCR1_CKRA                             0x00010000L
 
-static int cs4281_suspend(struct pci_dev *pci, pm_message_t state)
+static int cs4281_suspend(struct device *dev)
 {
-	struct snd_card *card = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct cs4281 *chip = card->private_data;
 	u32 ulCLK;
 	unsigned int i;
@@ -2040,13 +2041,14 @@ static int cs4281_suspend(struct pci_dev *pci, pm_message_t state)
 
 	pci_disable_device(pci);
 	pci_save_state(pci);
-	pci_set_power_state(pci, pci_choose_state(pci, state));
+	pci_set_power_state(pci, PCI_D3hot);
 	return 0;
 }
 
-static int cs4281_resume(struct pci_dev *pci)
+static int cs4281_resume(struct device *dev)
 {
-	struct snd_card *card = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct cs4281 *chip = card->private_data;
 	unsigned int i;
 	u32 ulCLK;
@@ -2082,28 +2084,21 @@ static int cs4281_resume(struct pci_dev *pci)
 	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
 	return 0;
 }
+
+static SIMPLE_DEV_PM_OPS(cs4281_pm, cs4281_suspend, cs4281_resume);
+#define CS4281_PM_OPS	&cs4281_pm
+#else
+#define CS4281_PM_OPS	NULL
 #endif /* CONFIG_PM */
 
-static struct pci_driver driver = {
-	.name = "CS4281",
+static struct pci_driver cs4281_driver = {
+	.name = KBUILD_MODNAME,
 	.id_table = snd_cs4281_ids,
 	.probe = snd_cs4281_probe,
 	.remove = __devexit_p(snd_cs4281_remove),
-#ifdef CONFIG_PM
-	.suspend = cs4281_suspend,
-	.resume = cs4281_resume,
-#endif
+	.driver = {
+		.pm = CS4281_PM_OPS,
+	},
 };
 	
-static int __init alsa_card_cs4281_init(void)
-{
-	return pci_register_driver(&driver);
-}
-
-static void __exit alsa_card_cs4281_exit(void)
-{
-	pci_unregister_driver(&driver);
-}
-
-module_init(alsa_card_cs4281_init)
-module_exit(alsa_card_cs4281_exit)
+module_pci_driver(cs4281_driver);

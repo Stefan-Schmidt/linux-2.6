@@ -28,8 +28,9 @@
 #include <linux/fs.h>
 #include <linux/string.h>
 #include <linux/kernel.h>
-#include <linux/module.h>
 #include <linux/spinlock.h>
+#include <linux/jump_label.h>
+
 #include <asm/pgtable.h>	/* MODULE_START */
 
 struct mips_hi16 {
@@ -38,43 +39,17 @@ struct mips_hi16 {
 	Elf_Addr value;
 };
 
-static struct mips_hi16 *mips_hi16_list;
-
 static LIST_HEAD(dbe_list);
 static DEFINE_SPINLOCK(dbe_lock);
 
+#ifdef MODULE_START
 void *module_alloc(unsigned long size)
 {
-#ifdef MODULE_START
-	struct vm_struct *area;
-
-	size = PAGE_ALIGN(size);
-	if (!size)
-		return NULL;
-
-	area = __get_vm_area(size, VM_ALLOC, MODULE_START, MODULE_END);
-	if (!area)
-		return NULL;
-
-	return __vmalloc_area(area, GFP_KERNEL, PAGE_KERNEL);
-#else
-	if (size == 0)
-		return NULL;
-	return vmalloc(size);
+	return __vmalloc_node_range(size, 1, MODULE_START, MODULE_END,
+				GFP_KERNEL, PAGE_KERNEL, -1,
+				__builtin_return_address(0));
+}
 #endif
-}
-
-/* Free memory returned from module_alloc */
-void module_free(struct module *mod, void *module_region)
-{
-	vfree(module_region);
-}
-
-int module_frob_arch_sections(Elf_Ehdr *hdr, Elf_Shdr *sechdrs,
-			      char *secstrings, struct module *mod)
-{
-	return 0;
-}
 
 static int apply_r_mips_none(struct module *me, u32 *location, Elf_Addr v)
 {
@@ -151,8 +126,8 @@ static int apply_r_mips_hi16_rel(struct module *me, u32 *location, Elf_Addr v)
 
 	n->addr = (Elf_Addr *)location;
 	n->value = v;
-	n->next = mips_hi16_list;
-	mips_hi16_list = n;
+	n->next = me->arch.r_mips_hi16_list;
+	me->arch.r_mips_hi16_list = n;
 
 	return 0;
 }
@@ -165,18 +140,28 @@ static int apply_r_mips_hi16_rela(struct module *me, u32 *location, Elf_Addr v)
 	return 0;
 }
 
+static void free_relocation_chain(struct mips_hi16 *l)
+{
+	struct mips_hi16 *next;
+
+	while (l) {
+		next = l->next;
+		kfree(l);
+		l = next;
+	}
+}
+
 static int apply_r_mips_lo16_rel(struct module *me, u32 *location, Elf_Addr v)
 {
 	unsigned long insnlo = *location;
+	struct mips_hi16 *l;
 	Elf_Addr val, vallo;
 
 	/* Sign extend the addend we extract from the lo insn.  */
 	vallo = ((insnlo & 0xffff) ^ 0x8000) - 0x8000;
 
-	if (mips_hi16_list != NULL) {
-		struct mips_hi16 *l;
-
-		l = mips_hi16_list;
+	if (me->arch.r_mips_hi16_list != NULL) {
+		l = me->arch.r_mips_hi16_list;
 		while (l != NULL) {
 			struct mips_hi16 *next;
 			unsigned long insn;
@@ -211,7 +196,7 @@ static int apply_r_mips_lo16_rel(struct module *me, u32 *location, Elf_Addr v)
 			l = next;
 		}
 
-		mips_hi16_list = NULL;
+		me->arch.r_mips_hi16_list = NULL;
 	}
 
 	/*
@@ -224,6 +209,9 @@ static int apply_r_mips_lo16_rel(struct module *me, u32 *location, Elf_Addr v)
 	return 0;
 
 out_danger:
+	free_relocation_chain(l);
+	me->arch.r_mips_hi16_list = NULL;
+
 	pr_err("module %s: dangerous R_MIPS_LO16 REL relocation\n", me->name);
 
 	return -ENOEXEC;
@@ -296,6 +284,7 @@ int apply_relocate(Elf_Shdr *sechdrs, const char *strtab,
 	pr_debug("Applying relocate section %u to %u\n", relsec,
 	       sechdrs[relsec].sh_info);
 
+	me->arch.r_mips_hi16_list = NULL;
 	for (i = 0; i < sechdrs[relsec].sh_size / sizeof(*rel); i++) {
 		/* This is where to make the change */
 		location = (void *)sechdrs[sechdrs[relsec].sh_info].sh_addr
@@ -317,6 +306,19 @@ int apply_relocate(Elf_Shdr *sechdrs, const char *strtab,
 		res = reloc_handlers_rel[ELF_MIPS_R_TYPE(rel[i])](me, location, v);
 		if (res)
 			return res;
+	}
+
+	/*
+	 * Normally the hi16 list should be deallocated at this point.  A
+	 * malformed binary however could contain a series of R_MIPS_HI16
+	 * relocations not followed by a R_MIPS_LO16 relocation.  In that
+	 * case, free up the list and return an error.
+	 */
+	if (me->arch.r_mips_hi16_list) {
+		free_relocation_chain(me->arch.r_mips_hi16_list);
+		me->arch.r_mips_hi16_list = NULL;
+
+		return -ENOEXEC;
 	}
 
 	return 0;
@@ -389,6 +391,9 @@ int module_finalize(const Elf_Ehdr *hdr,
 {
 	const Elf_Shdr *s;
 	char *secstrings = (void *)hdr + sechdrs[hdr->e_shstrndx].sh_offset;
+
+	/* Make jump label nops. */
+	jump_label_apply_nops(me);
 
 	INIT_LIST_HEAD(&me->arch.dbe_list);
 	for (s = sechdrs; s < sechdrs + hdr->e_shnum; s++) {

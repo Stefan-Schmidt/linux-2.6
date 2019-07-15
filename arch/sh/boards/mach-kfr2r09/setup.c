@@ -10,7 +10,8 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
-#include <linux/mfd/sh_mobile_sdhi.h>
+#include <linux/mmc/host.h>
+#include <linux/mmc/sh_mobile_sdhi.h>
 #include <linux/mfd/tmio.h>
 #include <linux/mtd/physmap.h>
 #include <linux/mtd/onenand.h>
@@ -20,7 +21,11 @@
 #include <linux/input.h>
 #include <linux/input/sh_keysc.h>
 #include <linux/i2c.h>
+#include <linux/regulator/fixed.h>
+#include <linux/regulator/machine.h>
 #include <linux/usb/r8a66597.h>
+#include <linux/videodev2.h>
+#include <linux/sh_intc.h>
 #include <media/rj54n1cb0c.h>
 #include <media/soc_camera.h>
 #include <media/sh_mobile_ceu.h>
@@ -108,7 +113,7 @@ static struct resource kfr2r09_sh_keysc_resources[] = {
 		.flags  = IORESOURCE_MEM,
 	},
 	[1] = {
-		.start  = 79,
+		.start  = evt2irq(0xbe0),
 		.flags  = IORESOURCE_IRQ,
 	},
 };
@@ -121,12 +126,9 @@ static struct platform_device kfr2r09_sh_keysc_device = {
 	.dev	= {
 		.platform_data	= &kfr2r09_sh_keysc_info,
 	},
-	.archdata = {
-		.hwblk_id = HWBLK_KEYSC,
-	},
 };
 
-const static struct fb_videomode kfr2r09_lcdc_modes[] = {
+static const struct fb_videomode kfr2r09_lcdc_modes[] = {
 	{
 		.name = "TX07D34VM0AAA",
 		.xres = 240,
@@ -145,17 +147,15 @@ static struct sh_mobile_lcdc_info kfr2r09_sh_lcdc_info = {
 	.clock_source = LCDC_CLK_BUS,
 	.ch[0] = {
 		.chan = LCDC_CHAN_MAINLCD,
-		.bpp = 16,
+		.fourcc = V4L2_PIX_FMT_RGB565,
 		.interface_type = SYS18,
 		.clock_divider = 6,
 		.flags = LCDC_FLAGS_DWPOL,
-		.lcd_cfg = kfr2r09_lcdc_modes,
-		.num_cfg = ARRAY_SIZE(kfr2r09_lcdc_modes),
-		.lcd_size_cfg = {
+		.lcd_modes = kfr2r09_lcdc_modes,
+		.num_modes = ARRAY_SIZE(kfr2r09_lcdc_modes),
+		.panel_cfg = {
 			.width = 35,
 			.height = 58,
-		},
-		.board_cfg = {
 			.setup_sys = kfr2r09_lcd_setup,
 			.start_transfer = kfr2r09_lcd_start,
 			.display_on = kfr2r09_lcd_on,
@@ -178,7 +178,7 @@ static struct resource kfr2r09_sh_lcdc_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 106,
+		.start	= evt2irq(0xf40),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -189,9 +189,6 @@ static struct platform_device kfr2r09_sh_lcdc_device = {
 	.resource	= kfr2r09_sh_lcdc_resources,
 	.dev	= {
 		.platform_data	= &kfr2r09_sh_lcdc_info,
-	},
-	.archdata = {
-		.hwblk_id = HWBLK_LCDC,
 	},
 };
 
@@ -206,8 +203,8 @@ static struct resource kfr2r09_usb0_gadget_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 65,
-		.end	= 65,
+		.start	= evt2irq(0xa20),
+		.end	= evt2irq(0xa20),
 		.flags	= IORESOURCE_IRQ | IRQF_TRIGGER_LOW,
 	},
 };
@@ -236,8 +233,8 @@ static struct resource kfr2r09_ceu_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start  = 52,
-		.end  = 52,
+		.start  = evt2irq(0x880),
+		.end	= evt2irq(0x880),
 		.flags  = IORESOURCE_IRQ,
 	},
 	[2] = {
@@ -252,9 +249,6 @@ static struct platform_device kfr2r09_ceu_device = {
 	.resource	= kfr2r09_ceu_resources,
 	.dev	= {
 		.platform_data	= &sh_mobile_ceu_info,
-	},
-	.archdata = {
-		.hwblk_id = HWBLK_CEU0,
 	},
 };
 
@@ -349,15 +343,22 @@ static struct platform_device kfr2r09_camera = {
 	},
 };
 
+/* Fixed 3.3V regulator to be used by SDHI0 */
+static struct regulator_consumer_supply fixed3v3_power_consumers[] =
+{
+	REGULATOR_SUPPLY("vmmc", "sh_mobile_sdhi.0"),
+	REGULATOR_SUPPLY("vqmmc", "sh_mobile_sdhi.0"),
+};
+
 static struct resource kfr2r09_sh_sdhi0_resources[] = {
 	[0] = {
 		.name	= "SDHI0",
 		.start  = 0x04ce0000,
-		.end    = 0x04ce01ff,
+		.end    = 0x04ce00ff,
 		.flags  = IORESOURCE_MEM,
 	},
 	[1] = {
-		.start  = 100,
+		.start  = evt2irq(0xe80),
 		.flags  = IORESOURCE_IRQ,
 	},
 };
@@ -366,6 +367,7 @@ static struct sh_mobile_sdhi_info sh7724_sdhi0_data = {
 	.dma_slave_tx	= SHDMA_SLAVE_SDHI0_TX,
 	.dma_slave_rx	= SHDMA_SLAVE_SDHI0_RX,
 	.tmio_flags	= TMIO_MMC_WRPROTECT_DISABLE,
+	.tmio_caps      = MMC_CAP_SDIO_IRQ,
 };
 
 static struct platform_device kfr2r09_sh_sdhi0_device = {
@@ -374,9 +376,6 @@ static struct platform_device kfr2r09_sh_sdhi0_device = {
 	.resource       = kfr2r09_sh_sdhi0_resources,
 	.dev = {
 		.platform_data	= &sh7724_sdhi0_data,
-	},
-	.archdata = {
-		.hwblk_id = HWBLK_SDHI0,
 	},
 };
 
@@ -532,6 +531,9 @@ static int __init kfr2r09_devices_setup(void)
 					&kfr2r09_sdram_enter_end,
 					&kfr2r09_sdram_leave_start,
 					&kfr2r09_sdram_leave_end);
+
+	regulator_register_always_on(0, "fixed-3.3V", fixed3v3_power_consumers,
+				     ARRAY_SIZE(fixed3v3_power_consumers), 3300000);
 
 	/* enable SCIF1 serial port for YC401 console support */
 	gpio_request(GPIO_FN_SCIF1_RXD, NULL);

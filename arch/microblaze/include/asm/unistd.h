@@ -386,13 +386,20 @@
 #define __NR_fanotify_init	368
 #define __NR_fanotify_mark	369
 #define __NR_prlimit64		370
+#define __NR_name_to_handle_at	371
+#define __NR_open_by_handle_at	372
+#define __NR_clock_adjtime	373
+#define __NR_syncfs		374
+#define __NR_setns		375
+#define __NR_sendmmsg		376
+#define __NR_process_vm_readv	377
+#define __NR_process_vm_writev	378
 
-#define __NR_syscalls		371
+#define __NR_syscalls		379
 
 #ifdef __KERNEL__
 #ifndef __ASSEMBLY__
 
-#define __ARCH_WANT_IPC_PARSE_VERSION
 /* #define __ARCH_WANT_OLD_READDIR */
 /* #define __ARCH_WANT_OLD_STAT */
 #define __ARCH_WANT_STAT64

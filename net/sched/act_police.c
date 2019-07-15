@@ -22,8 +22,8 @@
 #include <net/act_api.h>
 #include <net/netlink.h>
 
-#define L2T(p,L)   qdisc_l2t((p)->tcfp_R_tab, L)
-#define L2T_P(p,L) qdisc_l2t((p)->tcfp_P_tab, L)
+#define L2T(p, L)   qdisc_l2t((p)->tcfp_R_tab, L)
+#define L2T_P(p, L) qdisc_l2t((p)->tcfp_P_tab, L)
 
 #define POL_TAB_MASK     15
 static struct tcf_common *tcf_police_ht[POL_TAB_MASK + 1];
@@ -37,8 +37,7 @@ static struct tcf_hashinfo police_hash_info = {
 };
 
 /* old policer structure from before tc actions */
-struct tc_police_compat
-{
+struct tc_police_compat {
 	u32			index;
 	int			action;
 	u32			limit;
@@ -97,11 +96,6 @@ nla_put_failure:
 	goto done;
 }
 
-static void tcf_police_free_rcu(struct rcu_head *head)
-{
-	kfree(container_of(head, struct tcf_police, tcf_rcu));
-}
-
 static void tcf_police_destroy(struct tcf_police *p)
 {
 	unsigned int h = tcf_hash(p->tcf_index, POL_TAB_MASK);
@@ -122,7 +116,7 @@ static void tcf_police_destroy(struct tcf_police *p)
 			 * gen_estimator est_timer() might access p->tcf_lock
 			 * or bstats, wait a RCU grace period before freeing p
 			 */
-			call_rcu(&p->tcf_rcu, tcf_police_free_rcu);
+			kfree_rcu(p, tcf_rcu);
 			return;
 		}
 	}
@@ -139,7 +133,7 @@ static const struct nla_policy police_policy[TCA_POLICE_MAX + 1] = {
 static int tcf_act_police_locate(struct nlattr *nla, struct nlattr *est,
 				 struct tc_action *a, int ovr, int bind)
 {
-	unsigned h;
+	unsigned int h;
 	int ret = 0, err;
 	struct nlattr *tb[TCA_POLICE_MAX + 1];
 	struct tc_police *parm;
@@ -288,7 +282,7 @@ static int tcf_act_police_cleanup(struct tc_action *a, int bind)
 	return ret;
 }
 
-static int tcf_act_police(struct sk_buff *skb, struct tc_action *a,
+static int tcf_act_police(struct sk_buff *skb, const struct tc_action *a,
 			  struct tcf_result *res)
 {
 	struct tcf_police *police = a->priv;
@@ -298,8 +292,7 @@ static int tcf_act_police(struct sk_buff *skb, struct tc_action *a,
 
 	spin_lock(&police->tcf_lock);
 
-	police->tcf_bstats.bytes += qdisc_pkt_len(skb);
-	police->tcf_bstats.packets++;
+	bstats_update(&police->tcf_bstats, skb);
 
 	if (police->tcfp_ewma_rate &&
 	    police->tcf_rate_est.bps >= police->tcfp_ewma_rate) {
@@ -363,11 +356,14 @@ tcf_act_police_dump(struct sk_buff *skb, struct tc_action *a, int bind, int ref)
 		opt.rate = police->tcfp_R_tab->rate;
 	if (police->tcfp_P_tab)
 		opt.peakrate = police->tcfp_P_tab->rate;
-	NLA_PUT(skb, TCA_POLICE_TBF, sizeof(opt), &opt);
-	if (police->tcfp_result)
-		NLA_PUT_U32(skb, TCA_POLICE_RESULT, police->tcfp_result);
-	if (police->tcfp_ewma_rate)
-		NLA_PUT_U32(skb, TCA_POLICE_AVRATE, police->tcfp_ewma_rate);
+	if (nla_put(skb, TCA_POLICE_TBF, sizeof(opt), &opt))
+		goto nla_put_failure;
+	if (police->tcfp_result &&
+	    nla_put_u32(skb, TCA_POLICE_RESULT, police->tcfp_result))
+		goto nla_put_failure;
+	if (police->tcfp_ewma_rate &&
+	    nla_put_u32(skb, TCA_POLICE_AVRATE, police->tcfp_ewma_rate))
+		goto nla_put_failure;
 	return skb->len;
 
 nla_put_failure:
@@ -403,7 +399,6 @@ static void __exit
 police_cleanup_module(void)
 {
 	tcf_unregister_action(&act_police_ops);
-	rcu_barrier(); /* Wait for completion of call_rcu()'s (tcf_police_free_rcu) */
 }
 
 module_init(police_init_module);

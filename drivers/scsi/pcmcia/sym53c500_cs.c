@@ -547,7 +547,7 @@ SYM53C500_info(struct Scsi_Host *SChost)
 }
 
 static int 
-SYM53C500_queue(struct scsi_cmnd *SCpnt, void (*done)(struct scsi_cmnd *))
+SYM53C500_queue_lck(struct scsi_cmnd *SCpnt, void (*done)(struct scsi_cmnd *))
 {
 	int i;
 	int port_base = SCpnt->device->host->io_port;
@@ -582,6 +582,8 @@ SYM53C500_queue(struct scsi_cmnd *SCpnt, void (*done)(struct scsi_cmnd *))
 
 	return 0;
 }
+
+static DEF_SCSI_QCMD(SYM53C500_queue)
 
 static int 
 SYM53C500_host_reset(struct scsi_cmnd *SCpnt)
@@ -863,7 +865,7 @@ MODULE_AUTHOR("Bob Tracy <rct@frus.com>");
 MODULE_DESCRIPTION("SYM53C500 PCMCIA SCSI driver");
 MODULE_LICENSE("GPL");
 
-static struct pcmcia_device_id sym53c500_ids[] = {
+static const struct pcmcia_device_id sym53c500_ids[] = {
 	PCMCIA_DEVICE_PROD_ID12("BASICS by New Media Corporation", "SCSI Sym53C500", 0x23c78a9d, 0x0099e7f7),
 	PCMCIA_DEVICE_PROD_ID12("New Media Corporation", "SCSI Bus Toaster Sym53C500", 0x085a850b, 0x45432eb8),
 	PCMCIA_DEVICE_PROD_ID2("SCSI9000", 0x21648f44),

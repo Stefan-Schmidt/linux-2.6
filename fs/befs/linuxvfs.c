@@ -34,7 +34,7 @@ static int befs_readdir(struct file *, void *, filldir_t);
 static int befs_get_block(struct inode *, sector_t, struct buffer_head *, int);
 static int befs_readpage(struct file *file, struct page *page);
 static sector_t befs_bmap(struct address_space *mapping, sector_t block);
-static struct dentry *befs_lookup(struct inode *, struct dentry *, struct nameidata *);
+static struct dentry *befs_lookup(struct inode *, struct dentry *, unsigned int);
 static struct inode *befs_iget(struct super_block *, unsigned long);
 static struct inode *befs_alloc_inode(struct super_block *sb);
 static void befs_destroy_inode(struct inode *inode);
@@ -75,7 +75,6 @@ static const struct inode_operations befs_dir_inode_operations = {
 
 static const struct address_space_operations befs_aops = {
 	.readpage	= befs_readpage,
-	.sync_page	= block_sync_page,
 	.bmap		= befs_bmap,
 };
 
@@ -160,7 +159,7 @@ befs_get_block(struct inode *inode, sector_t block,
 }
 
 static struct dentry *
-befs_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
+befs_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
 {
 	struct inode *inode = NULL;
 	struct super_block *sb = dir->i_sb;
@@ -284,10 +283,15 @@ befs_alloc_inode(struct super_block *sb)
         return &bi->vfs_inode;
 }
 
-static void
-befs_destroy_inode(struct inode *inode)
+static void befs_i_callback(struct rcu_head *head)
 {
+	struct inode *inode = container_of(head, struct inode, i_rcu);
         kmem_cache_free(befs_inode_cachep, BEFS_I(inode));
+}
+
+static void befs_destroy_inode(struct inode *inode)
+{
+	call_rcu(&inode->i_rcu, befs_i_callback);
 }
 
 static void init_once(void *foo)
@@ -352,7 +356,7 @@ static struct inode *befs_iget(struct super_block *sb, unsigned long ino)
 	inode->i_gid = befs_sb->mount_opts.use_gid ?
 	    befs_sb->mount_opts.gid : (gid_t) fs32_to_cpu(sb, raw_inode->gid);
 
-	inode->i_nlink = 1;
+	set_nlink(inode, 1);
 
 	/*
 	 * BEFS's time is 64 bits, but current VFS is 32 bits...
@@ -384,7 +388,7 @@ static struct inode *befs_iget(struct super_block *sb, unsigned long ino)
 		int num_blks;
 
 		befs_ino->i_data.ds =
-		    fsds_to_cpu(sb, raw_inode->data.datastream);
+		    fsds_to_cpu(sb, &raw_inode->data.datastream);
 
 		num_blks = befs_count_blocks(sb, &befs_ino->i_data.ds);
 		inode->i_blocks =
@@ -469,17 +473,22 @@ befs_follow_link(struct dentry *dentry, struct nameidata *nd)
 		befs_data_stream *data = &befs_ino->i_data.ds;
 		befs_off_t len = data->size;
 
-		befs_debug(sb, "Follow long symlink");
-
-		link = kmalloc(len, GFP_NOFS);
-		if (!link) {
-			link = ERR_PTR(-ENOMEM);
-		} else if (befs_read_lsymlink(sb, data, link, len) != len) {
-			kfree(link);
-			befs_error(sb, "Failed to read entire long symlink");
+		if (len == 0) {
+			befs_error(sb, "Long symlink with illegal length");
 			link = ERR_PTR(-EIO);
 		} else {
-			link[len - 1] = '\0';
+			befs_debug(sb, "Follow long symlink");
+
+			link = kmalloc(len, GFP_NOFS);
+			if (!link) {
+				link = ERR_PTR(-ENOMEM);
+			} else if (befs_read_lsymlink(sb, data, link, len) != len) {
+				kfree(link);
+				befs_error(sb, "Failed to read entire long symlink");
+				link = ERR_PTR(-EIO);
+			} else {
+				link[len - 1] = '\0';
+			}
 		}
 	} else {
 		link = befs_ino->i_data.symlink;
@@ -729,7 +738,7 @@ parse_options(char *options, befs_mount_options * opts)
 
 /* This function has the responsibiltiy of getting the
  * filesystem ready for unmounting. 
- * Basicly, we free everything that we allocated in
+ * Basically, we free everything that we allocated in
  * befs_read_inode
  */
 static void
@@ -843,9 +852,8 @@ befs_fill_super(struct super_block *sb, void *data, int silent)
 		ret = PTR_ERR(root);
 		goto unacquire_priv_sbp;
 	}
-	sb->s_root = d_alloc_root(root);
+	sb->s_root = d_make_root(root);
 	if (!sb->s_root) {
-		iput(root);
 		befs_error(sb, "get root inode failed");
 		goto unacquire_priv_sbp;
 	}

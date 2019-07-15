@@ -23,12 +23,11 @@
  * 02110-1301, USA.
  *
  */
-
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/input.h>
-#include <linux/io.h>
+#include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/gpio_keys.h>
 #include <linux/i2c.h>
@@ -37,20 +36,20 @@
 #include <linux/leds.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/ads7846.h>
+#include <linux/omapfb.h>
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 
 #include <plat/omap7xx.h>
-#include <plat/common.h>
 #include <plat/board.h>
 #include <plat/keypad.h>
-#include <plat/usb.h>
 #include <plat/mmc.h>
 
 #include <mach/irqs.h>
+#include <mach/usb.h>
 
-#include <linux/delay.h>
+#include "common.h"
 
 /* LCD register definition */
 #define       OMAP_LCDC_CONTROL               (0xfffec000 + 0x00)
@@ -180,64 +179,68 @@
 
 /* Keyboard definition */
 
-static int htc_herald_keymap[] = {
+static const unsigned int htc_herald_keymap[] = {
 	KEY(0, 0, KEY_RECORD), /* Mail button */
-	KEY(0, 1, KEY_CAMERA), /* Camera */
-	KEY(0, 2, KEY_PHONE), /* Send key */
-	KEY(0, 3, KEY_VOLUMEUP), /* Volume up */
-	KEY(0, 4, KEY_F2),  /* Right bar (landscape) */
-	KEY(0, 5, KEY_MAIL), /* Win key (portrait) */
-	KEY(0, 6, KEY_DIRECTORY), /* Right bar (protrait) */
-	KEY(1, 0, KEY_LEFTCTRL), /* Windows key */
+	KEY(1, 0, KEY_CAMERA), /* Camera */
+	KEY(2, 0, KEY_PHONE), /* Send key */
+	KEY(3, 0, KEY_VOLUMEUP), /* Volume up */
+	KEY(4, 0, KEY_F2),  /* Right bar (landscape) */
+	KEY(5, 0, KEY_MAIL), /* Win key (portrait) */
+	KEY(6, 0, KEY_DIRECTORY), /* Right bar (protrait) */
+	KEY(0, 1, KEY_LEFTCTRL), /* Windows key */
 	KEY(1, 1, KEY_COMMA),
-	KEY(1, 2, KEY_M),
-	KEY(1, 3, KEY_K),
-	KEY(1, 4, KEY_SLASH), /* OK key */
-	KEY(1, 5, KEY_I),
-	KEY(1, 6, KEY_U),
-	KEY(2, 0, KEY_LEFTALT),
-	KEY(2, 1, KEY_TAB),
+	KEY(2, 1, KEY_M),
+	KEY(3, 1, KEY_K),
+	KEY(4, 1, KEY_SLASH), /* OK key */
+	KEY(5, 1, KEY_I),
+	KEY(6, 1, KEY_U),
+	KEY(0, 2, KEY_LEFTALT),
+	KEY(1, 2, KEY_TAB),
 	KEY(2, 2, KEY_N),
-	KEY(2, 3, KEY_J),
-	KEY(2, 4, KEY_ENTER),
-	KEY(2, 5, KEY_H),
-	KEY(2, 6, KEY_Y),
-	KEY(3, 0, KEY_SPACE),
-	KEY(3, 1, KEY_L),
-	KEY(3, 2, KEY_B),
+	KEY(3, 2, KEY_J),
+	KEY(4, 2, KEY_ENTER),
+	KEY(5, 2, KEY_H),
+	KEY(6, 2, KEY_Y),
+	KEY(0, 3, KEY_SPACE),
+	KEY(1, 3, KEY_L),
+	KEY(2, 3, KEY_B),
 	KEY(3, 3, KEY_V),
-	KEY(3, 4, KEY_BACKSPACE),
-	KEY(3, 5, KEY_G),
-	KEY(3, 6, KEY_T),
-	KEY(4, 0, KEY_CAPSLOCK), /* Shift */
-	KEY(4, 1, KEY_C),
-	KEY(4, 2, KEY_F),
-	KEY(4, 3, KEY_R),
+	KEY(4, 3, KEY_BACKSPACE),
+	KEY(5, 3, KEY_G),
+	KEY(6, 3, KEY_T),
+	KEY(0, 4, KEY_CAPSLOCK), /* Shift */
+	KEY(1, 4, KEY_C),
+	KEY(2, 4, KEY_F),
+	KEY(3, 4, KEY_R),
 	KEY(4, 4, KEY_O),
-	KEY(4, 5, KEY_E),
-	KEY(4, 6, KEY_D),
-	KEY(5, 0, KEY_X),
-	KEY(5, 1, KEY_Z),
-	KEY(5, 2, KEY_S),
-	KEY(5, 3, KEY_W),
-	KEY(5, 4, KEY_P),
+	KEY(5, 4, KEY_E),
+	KEY(6, 4, KEY_D),
+	KEY(0, 5, KEY_X),
+	KEY(1, 5, KEY_Z),
+	KEY(2, 5, KEY_S),
+	KEY(3, 5, KEY_W),
+	KEY(4, 5, KEY_P),
 	KEY(5, 5, KEY_Q),
-	KEY(5, 6, KEY_A),
-	KEY(6, 0, KEY_CONNECT), /* Voice button */
-	KEY(6, 2, KEY_CANCEL), /* End key */
-	KEY(6, 3, KEY_VOLUMEDOWN), /* Volume down */
-	KEY(6, 4, KEY_F1), /* Left bar (landscape) */
-	KEY(6, 5, KEY_WWW), /* OK button (portrait) */
+	KEY(6, 5, KEY_A),
+	KEY(0, 6, KEY_CONNECT), /* Voice button */
+	KEY(2, 6, KEY_CANCEL), /* End key */
+	KEY(3, 6, KEY_VOLUMEDOWN), /* Volume down */
+	KEY(4, 6, KEY_F1), /* Left bar (landscape) */
+	KEY(5, 6, KEY_WWW), /* OK button (portrait) */
 	KEY(6, 6, KEY_CALENDAR), /* Left bar (portrait) */
-	0
 };
 
-struct omap_kp_platform_data htcherald_kp_data = {
+static const struct matrix_keymap_data htc_herald_keymap_data = {
+	.keymap		= htc_herald_keymap,
+	.keymap_size	= ARRAY_SIZE(htc_herald_keymap),
+};
+
+static struct omap_kp_platform_data htcherald_kp_data = {
 	.rows	= 7,
 	.cols	= 7,
 	.delay = 20,
-	.rep = 1,
-	.keymap = htc_herald_keymap,
+	.rep = true,
+	.keymap_data = &htc_herald_keymap_data,
 };
 
 static struct resource kp_resources[] = {
@@ -278,7 +281,7 @@ static struct gpio_keys_button herald_gpio_keys_table[] = {
 static struct gpio_keys_platform_data herald_gpio_keys_data = {
 	.buttons	= herald_gpio_keys_table,
 	.nbuttons	= ARRAY_SIZE(herald_gpio_keys_table),
-	.rep		= 1,
+	.rep		= true,
 };
 
 static struct platform_device herald_gpiokeys_device = {
@@ -321,13 +324,11 @@ static struct platform_device gpio_leds_device = {
 
 static struct resource htcpld_resources[] = {
 	[0] = {
-		.start  = OMAP_GPIO_IRQ(HTCHERALD_GIRQ_BTNS),
-		.end    = OMAP_GPIO_IRQ(HTCHERALD_GIRQ_BTNS),
 		.flags  = IORESOURCE_IRQ,
 	},
 };
 
-struct htcpld_chip_platform_data htcpld_chips[] = {
+static struct htcpld_chip_platform_data htcpld_chips[] = {
 	[0] = {
 		.addr		= 0x03,
 		.reset		= 0x04,
@@ -362,7 +363,7 @@ struct htcpld_chip_platform_data htcpld_chips[] = {
 	},
 };
 
-struct htcpld_core_platform_data htcpld_pfdata = {
+static struct htcpld_core_platform_data htcpld_pfdata = {
 	.int_reset_gpio_hi = HTCPLD_GPIO_INT_RESET_HI,
 	.int_reset_gpio_lo = HTCPLD_GPIO_INT_RESET_LO,
 	.i2c_adapter_id	   = 1,
@@ -393,10 +394,6 @@ static struct omap_usb_config htcherald_usb_config __initdata = {
 /* LCD Device resources */
 static struct omap_lcd_config htcherald_lcd_config __initdata = {
 	.ctrl_name	= "internal",
-};
-
-static struct omap_board_config_kernel htcherald_config[] __initdata = {
-	{ OMAP_TAG_LCD, &htcherald_lcd_config },
 };
 
 static struct platform_device lcd_device = {
@@ -439,7 +436,7 @@ static const struct ads7846_platform_data htcherald_ts_platform_data = {
 	.keep_vref_on		= 1,
 	.x_plate_ohms		= 496,
 	.gpio_pendown		= HTCHERALD_GPIO_TS,
-	.pressure_max		= 100000,
+	.pressure_max		= 10000,
 	.pressure_min		= 5000,
 	.x_min			= 528,
 	.x_max			= 3760,
@@ -451,7 +448,6 @@ static struct spi_board_info __initdata htcherald_spi_board_info[] = {
 	{
 		.modalias		= "ads7846",
 		.platform_data		= &htcherald_ts_platform_data,
-		.irq			= OMAP_GPIO_IRQ(HTCHERALD_GPIO_TS),
 		.max_speed_hz		= 2500000,
 		.bus_num		= 2,
 		.chip_select		= 1,
@@ -496,7 +492,7 @@ static void __init htcherald_lcd_init(void)
 
 static void __init htcherald_map_io(void)
 {
-	omap1_map_common_io();
+	omap7xx_map_io();
 
 	/*
 	 * The LCD panel must be disabled and DMA turned off here, as doing
@@ -577,10 +573,8 @@ static void __init htcherald_init(void)
 	printk(KERN_INFO "HTC Herald init.\n");
 
 	/* Do board initialization before we register all the devices */
-	omap_gpio_init();
-
-	omap_board_config = htcherald_config;
-	omap_board_config_size = ARRAY_SIZE(htcherald_config);
+	htcpld_resources[0].start = gpio_to_irq(HTCHERALD_GIRQ_BTNS);
+	htcpld_resources[0].end = gpio_to_irq(HTCHERALD_GIRQ_BTNS);
 	platform_add_devices(devices, ARRAY_SIZE(devices));
 
 	htcherald_disable_watchdog();
@@ -588,6 +582,7 @@ static void __init htcherald_init(void)
 	htcherald_usb_enable();
 	omap1_usb_init(&htcherald_usb_config);
 
+	htcherald_spi_board_info[0].irq = gpio_to_irq(HTCHERALD_GPIO_TS);
 	spi_register_board_info(htcherald_spi_board_info,
 		ARRAY_SIZE(htcherald_spi_board_info));
 
@@ -597,22 +592,20 @@ static void __init htcherald_init(void)
 	htc_mmc_data[0] = &htc_mmc1_data;
 	omap1_init_mmc(htc_mmc_data, 1);
 #endif
-}
 
-static void __init htcherald_init_irq(void)
-{
-	printk(KERN_INFO "htcherald_init_irq.\n");
-	omap1_init_common_hw();
-	omap_init_irq();
+	omapfb_set_lcd_config(&htcherald_lcd_config);
 }
 
 MACHINE_START(HERALD, "HTC Herald")
 	/* Maintainer: Cory Maccarrone <darkstar6262@gmail.com> */
 	/* Maintainer: wing-linux.sourceforge.net */
-	.boot_params    = 0x10000100,
+	.atag_offset    = 0x100,
 	.map_io         = htcherald_map_io,
+	.init_early     = omap1_init_early,
 	.reserve	= omap_reserve,
-	.init_irq       = htcherald_init_irq,
+	.init_irq       = omap1_init_irq,
 	.init_machine   = htcherald_init,
-	.timer          = &omap_timer,
+	.init_late	= omap1_init_late,
+	.timer          = &omap1_timer,
+	.restart	= omap1_restart,
 MACHINE_END

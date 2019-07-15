@@ -363,7 +363,7 @@ int ieee80211_wx_set_encode(struct ieee80211_device *ieee,
 				       (*crypt)->priv);
 		sec.flags |= (1 << key);
 		/* This ensures a key will be activated if no key is
-		 * explicitely set */
+		 * explicitly set */
 		if (key == sec.active_key)
 			sec.flags |= SEC_ACTIVE_KEY;
 		ieee->tx_keyidx = key;//by wb 080312
@@ -735,7 +735,6 @@ int ieee80211_wx_set_gen_ie(struct ieee80211_device *ieee, u8 *ie, size_t len)
 		ieee->wpa_ie_len = len;
 	}
 	else{
-		if (ieee->wpa_ie)
 		kfree(ieee->wpa_ie);
 		ieee->wpa_ie = NULL;
 		ieee->wpa_ie_len = 0;

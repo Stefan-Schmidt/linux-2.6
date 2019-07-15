@@ -14,6 +14,14 @@
 struct ceph_auth_client;
 struct ceph_authorizer;
 
+struct ceph_auth_handshake {
+	struct ceph_authorizer *authorizer;
+	void *authorizer_buf;
+	size_t authorizer_buf_len;
+	void *authorizer_reply_buf;
+	size_t authorizer_reply_buf_len;
+};
+
 struct ceph_auth_client_ops {
 	const char *name;
 
@@ -43,9 +51,7 @@ struct ceph_auth_client_ops {
 	 * the response to authenticate the service.
 	 */
 	int (*create_authorizer)(struct ceph_auth_client *ac, int peer_type,
-				 struct ceph_authorizer **a,
-				 void **buf, size_t *len,
-				 void **reply_buf, size_t *reply_len);
+				 struct ceph_auth_handshake *auth);
 	int (*verify_authorizer_reply)(struct ceph_auth_client *ac,
 				       struct ceph_authorizer *a, size_t len);
 	void (*destroy_authorizer)(struct ceph_auth_client *ac,
@@ -67,12 +73,12 @@ struct ceph_auth_client {
 	bool negotiating;       /* true if negotiating protocol */
 	const char *name;       /* entity name */
 	u64 global_id;          /* our unique id in system */
-	const char *secret;     /* our secret key */
+	const struct ceph_crypto_key *key;     /* our secret key */
 	unsigned want_keys;     /* which services we want */
 };
 
 extern struct ceph_auth_client *ceph_auth_init(const char *name,
-					       const char *secret);
+					       const struct ceph_crypto_key *key);
 extern void ceph_auth_destroy(struct ceph_auth_client *ac);
 
 extern void ceph_auth_reset(struct ceph_auth_client *ac);

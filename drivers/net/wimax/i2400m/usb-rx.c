@@ -58,7 +58,7 @@
  *    a zillion reads; by serializing, we are throttling.
  *
  *  - RX data processing can get heavy enough so that it is not
- *    appropiate for doing it in the USB callback; thus we run it in a
+ *    appropriate for doing it in the USB callback; thus we run it in a
  *    process context.
  *
  * We provide a read buffer of an arbitrary size (short of a page); if
@@ -277,7 +277,7 @@ retry:
 		d_printf(1, dev, "RX: size changed to %d, received %d, "
 			 "copied %d, capacity %ld\n",
 			 rx_size, read_size, rx_skb->len,
-			 (long) (skb_end_pointer(new_skb) - new_skb->head));
+			 (long) skb_end_offset(new_skb));
 		goto retry;
 	}
 		/* In most cases, it happens due to the hardware scheduling a

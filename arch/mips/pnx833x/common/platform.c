@@ -165,7 +165,7 @@ static struct i2c_pnx0105_dev pnx833x_i2c_dev[] = {
 	{
 		.base = PNX833X_I2C0_PORTS_START,
 		.irq = -1, /* should be PNX833X_PIC_I2C0_INT but polling is faster */
-		.clock = 6,	/* 0 == 400 kHz, 4 == 100 kHz(Maximum HDMI), 6 = 50kHz(Prefered HDCP) */
+		.clock = 6,	/* 0 == 400 kHz, 4 == 100 kHz(Maximum HDMI), 6 = 50kHz(Preferred HDCP) */
 		.bus_addr = 0,	/* no slave support */
 	},
 	{
@@ -244,11 +244,6 @@ static struct platform_device pnx833x_sata_device = {
 	.resource      = pnx833x_sata_resources,
 };
 
-static const char *part_probes[] = {
-	"cmdlinepart",
-	NULL
-};
-
 static void
 pnx833x_flash_nand_cmd_ctrl(struct mtd_info *mtd, int cmd, unsigned int ctrl)
 {
@@ -268,7 +263,6 @@ static struct platform_nand_data pnx833x_flash_nand_data = {
 	.chip = {
 		.nr_chips		= 1,
 		.chip_delay		= 25,
-		.part_probe_types 	= part_probes,
 	},
 	.ctrl = {
 		.cmd_ctrl 		= pnx833x_flash_nand_cmd_ctrl

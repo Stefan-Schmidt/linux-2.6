@@ -205,7 +205,7 @@ static int cb710_wait_while_busy(struct cb710_slot *slot, uint8_t mask)
 			"WAIT12: waited %d loops, mask %02X, entry val %08X, exit val %08X\n",
 			limit, mask, e, x);
 #endif
-	return 0;
+	return err;
 }
 
 static void cb710_mmc_set_transfer_size(struct cb710_slot *slot,
@@ -780,18 +780,7 @@ static struct platform_driver cb710_mmc_driver = {
 #endif
 };
 
-static int __init cb710_mmc_init_module(void)
-{
-	return platform_driver_register(&cb710_mmc_driver);
-}
-
-static void __exit cb710_mmc_cleanup_module(void)
-{
-	platform_driver_unregister(&cb710_mmc_driver);
-}
-
-module_init(cb710_mmc_init_module);
-module_exit(cb710_mmc_cleanup_module);
+module_platform_driver(cb710_mmc_driver);
 
 MODULE_AUTHOR("Michał Mirosław <mirq-linux@rere.qmqm.pl>");
 MODULE_DESCRIPTION("ENE CB710 memory card reader driver - MMC/SD part");

@@ -174,7 +174,7 @@ static int m52790_probe(struct i2c_client *client,
 	v4l_info(client, "chip found @ 0x%x (%s)\n",
 			client->addr << 1, client->adapter->name);
 
-	state = kmalloc(sizeof(struct m52790_state), GFP_KERNEL);
+	state = kzalloc(sizeof(struct m52790_state), GFP_KERNEL);
 	if (state == NULL)
 		return -ENOMEM;
 
@@ -213,15 +213,4 @@ static struct i2c_driver m52790_driver = {
 	.id_table	= m52790_id,
 };
 
-static __init int init_m52790(void)
-{
-	return i2c_add_driver(&m52790_driver);
-}
-
-static __exit void exit_m52790(void)
-{
-	i2c_del_driver(&m52790_driver);
-}
-
-module_init(init_m52790);
-module_exit(exit_m52790);
+module_i2c_driver(m52790_driver);

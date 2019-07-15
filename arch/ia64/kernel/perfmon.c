@@ -49,7 +49,6 @@
 #include <asm/perfmon.h>
 #include <asm/processor.h>
 #include <asm/signal.h>
-#include <asm/system.h>
 #include <asm/uaccess.h>
 #include <asm/delay.h>
 
@@ -605,23 +604,14 @@ pfm_unprotect_ctx_ctxsw(pfm_context_t *x, unsigned long f)
 	spin_unlock(&(x)->ctx_lock);
 }
 
-static inline unsigned int
-pfm_do_munmap(struct mm_struct *mm, unsigned long addr, size_t len, int acct)
-{
-	return do_munmap(mm, addr, len);
-}
-
-static inline unsigned long 
-pfm_get_unmapped_area(struct file *file, unsigned long addr, unsigned long len, unsigned long pgoff, unsigned long flags, unsigned long exec)
-{
-	return get_unmapped_area(file, addr, len, pgoff, flags);
-}
-
+/* forward declaration */
+static const struct dentry_operations pfmfs_dentry_operations;
 
 static struct dentry *
 pfmfs_mount(struct file_system_type *fs_type, int flags, const char *dev_name, void *data)
 {
-	return mount_pseudo(fs_type, "pfm:", NULL, PFMFS_MAGIC);
+	return mount_pseudo(fs_type, "pfm:", NULL, &pfmfs_dentry_operations,
+			PFMFS_MAGIC);
 }
 
 static struct file_system_type pfm_fs_type = {
@@ -829,10 +819,9 @@ pfm_rvmalloc(unsigned long size)
 	unsigned long addr;
 
 	size = PAGE_ALIGN(size);
-	mem  = vmalloc(size);
+	mem  = vzalloc(size);
 	if (mem) {
 		//printk("perfmon: CPU%d pfm_rvmalloc(%ld)=%p\n", smp_processor_id(), size, mem);
-		memset(mem, 0, size);
 		addr = (unsigned long)mem;
 		while (size > 0) {
 			pfm_reserve_page(addr);
@@ -1457,8 +1446,9 @@ pfm_unreserve_session(pfm_context_t *ctx, int is_syswide, unsigned int cpu)
  * a PROTECT_CTX() section.
  */
 static int
-pfm_remove_smpl_mapping(struct task_struct *task, void *vaddr, unsigned long size)
+pfm_remove_smpl_mapping(void *vaddr, unsigned long size)
 {
+	struct task_struct *task = current;
 	int r;
 
 	/* sanity checks */
@@ -1472,13 +1462,8 @@ pfm_remove_smpl_mapping(struct task_struct *task, void *vaddr, unsigned long siz
 	/*
 	 * does the actual unmapping
 	 */
-	down_write(&task->mm->mmap_sem);
+	r = vm_munmap((unsigned long)vaddr, size);
 
-	DPRINT(("down_write done smpl_vaddr=%p size=%lu\n", vaddr, size));
-
-	r = pfm_do_munmap(task->mm, (unsigned long)vaddr, size, 0);
-
-	up_write(&task->mm->mmap_sem);
 	if (r !=0) {
 		printk(KERN_ERR "perfmon: [%d] unable to unmap sampling buffer @%p size=%lu\n", task_pid_nr(task), vaddr, size);
 	}
@@ -1542,7 +1527,7 @@ pfm_exit_smpl_buffer(pfm_buffer_fmt_t *fmt)
  * any operations on the root directory. However, we need a non-trivial
  * d_name - pfm: will go nicely and kill the special-casing in procfs.
  */
-static struct vfsmount *pfmfs_mnt;
+static struct vfsmount *pfmfs_mnt __read_mostly;
 
 static int __init
 init_pfm_fs(void)
@@ -1944,7 +1929,7 @@ pfm_flush(struct file *filp, fl_owner_t id)
 	 * because some VM function reenables interrupts.
 	 *
 	 */
-	if (smpl_buf_vaddr) pfm_remove_smpl_mapping(current, smpl_buf_vaddr, smpl_buf_size);
+	if (smpl_buf_vaddr) pfm_remove_smpl_mapping(smpl_buf_vaddr, smpl_buf_size);
 
 	return 0;
 }
@@ -2185,7 +2170,7 @@ static const struct file_operations pfm_file_ops = {
 };
 
 static int
-pfmfs_delete_dentry(struct dentry *dentry)
+pfmfs_delete_dentry(const struct dentry *dentry)
 {
 	return 1;
 }
@@ -2226,14 +2211,13 @@ pfm_alloc_file(pfm_context_t *ctx)
 	/*
 	 * allocate a new dcache entry
 	 */
-	path.dentry = d_alloc(pfmfs_mnt->mnt_sb->s_root, &this);
+	path.dentry = d_alloc(pfmfs_mnt->mnt_root, &this);
 	if (!path.dentry) {
 		iput(inode);
 		return ERR_PTR(-ENOMEM);
 	}
 	path.mnt = mntget(pfmfs_mnt);
 
-	path.dentry->d_op = &pfmfs_dentry_operations;
 	d_add(path.dentry, inode);
 
 	file = alloc_file(&path, FMODE_READ, &pfm_file_ops);
@@ -2343,8 +2327,8 @@ pfm_smpl_buffer_alloc(struct task_struct *task, struct file *filp, pfm_context_t
 	down_write(&task->mm->mmap_sem);
 
 	/* find some free area in address space, must have mmap sem held */
-	vma->vm_start = pfm_get_unmapped_area(NULL, 0, size, 0, MAP_PRIVATE|MAP_ANONYMOUS, 0);
-	if (vma->vm_start == 0UL) {
+	vma->vm_start = get_unmapped_area(NULL, 0, size, 0, MAP_PRIVATE|MAP_ANONYMOUS);
+	if (IS_ERR_VALUE(vma->vm_start)) {
 		DPRINT(("Cannot find unmapped area for size %ld\n", size));
 		up_write(&task->mm->mmap_sem);
 		goto error;
@@ -2369,7 +2353,6 @@ pfm_smpl_buffer_alloc(struct task_struct *task, struct file *filp, pfm_context_t
 	 */
 	insert_vm_struct(mm, vma);
 
-	mm->total_vm  += size >> PAGE_SHIFT;
 	vm_stat_account(vma->vm_mm, vma->vm_flags, vma->vm_file,
 							vma_pages(vma));
 	up_write(&task->mm->mmap_sem);

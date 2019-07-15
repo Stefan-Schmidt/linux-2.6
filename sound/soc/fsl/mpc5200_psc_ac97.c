@@ -226,12 +226,12 @@ static int psc_ac97_probe(struct snd_soc_dai *cpu_dai)
 /**
  * psc_ac97_dai_template: template CPU Digital Audio Interface
  */
-static struct snd_soc_dai_ops psc_ac97_analog_ops = {
+static const struct snd_soc_dai_ops psc_ac97_analog_ops = {
 	.hw_params	= psc_ac97_hw_analog_params,
 	.trigger	= psc_ac97_trigger,
 };
 
-static struct snd_soc_dai_ops psc_ac97_digital_ops = {
+static const struct snd_soc_dai_ops psc_ac97_digital_ops = {
 	.hw_params	= psc_ac97_hw_digital_params,
 };
 
@@ -272,8 +272,7 @@ static struct snd_soc_dai_driver psc_ac97_dai[] = {
  * - Probe/remove operations
  * - OF device match table
  */
-static int __devinit psc_ac97_of_probe(struct platform_device *op,
-				      const struct of_device_id *match)
+static int __devinit psc_ac97_of_probe(struct platform_device *op)
 {
 	int rc;
 	struct snd_ac97 ac97;
@@ -316,7 +315,7 @@ static struct of_device_id psc_ac97_match[] __devinitdata = {
 };
 MODULE_DEVICE_TABLE(of, psc_ac97_match);
 
-static struct of_platform_driver psc_ac97_driver = {
+static struct platform_driver psc_ac97_driver = {
 	.probe = psc_ac97_of_probe,
 	.remove = __devexit_p(psc_ac97_of_remove),
 	.driver = {
@@ -326,21 +325,7 @@ static struct of_platform_driver psc_ac97_driver = {
 	},
 };
 
-/* ---------------------------------------------------------------------
- * Module setup and teardown; simply register the of_platform driver
- * for the PSC in AC97 mode.
- */
-static int __init psc_ac97_init(void)
-{
-	return of_register_platform_driver(&psc_ac97_driver);
-}
-module_init(psc_ac97_init);
-
-static void __exit psc_ac97_exit(void)
-{
-	of_unregister_platform_driver(&psc_ac97_driver);
-}
-module_exit(psc_ac97_exit);
+module_platform_driver(psc_ac97_driver);
 
 MODULE_AUTHOR("Jon Smirl <jonsmirl@gmail.com>");
 MODULE_DESCRIPTION("mpc5200 AC97 module");

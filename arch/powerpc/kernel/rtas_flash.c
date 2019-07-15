@@ -17,6 +17,7 @@
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/proc_fs.h>
+#include <linux/reboot.h>
 #include <asm/delay.h>
 #include <asm/uaccess.h>
 #include <asm/rtas.h>
@@ -256,31 +257,16 @@ static ssize_t rtas_flash_read(struct file *file, char __user *buf,
 	struct proc_dir_entry *dp = PDE(file->f_path.dentry->d_inode);
 	struct rtas_update_flash_t *uf;
 	char msg[RTAS_MSG_MAXLEN];
-	int msglen;
 
-	uf = (struct rtas_update_flash_t *) dp->data;
+	uf = dp->data;
 
 	if (!strcmp(dp->name, FIRMWARE_FLASH_NAME)) {
 		get_flash_status_msg(uf->status, msg);
 	} else {	   /* FIRMWARE_UPDATE_NAME */
 		sprintf(msg, "%d\n", uf->status);
 	}
-	msglen = strlen(msg);
-	if (msglen > count)
-		msglen = count;
 
-	if (ppos && *ppos != 0)
-		return 0;	/* be cheap */
-
-	if (!access_ok(VERIFY_WRITE, buf, msglen))
-		return -EINVAL;
-
-	if (copy_to_user(buf, msg, msglen))
-		return -EFAULT;
-
-	if (ppos)
-		*ppos = msglen;
-	return msglen;
+	return simple_read_from_buffer(buf, count, ppos, msg, strlen(msg));
 }
 
 /* constructor for flash_block_cache */
@@ -394,26 +380,13 @@ static ssize_t manage_flash_read(struct file *file, char __user *buf,
 	char msg[RTAS_MSG_MAXLEN];
 	int msglen;
 
-	args_buf = (struct rtas_manage_flash_t *) dp->data;
+	args_buf = dp->data;
 	if (args_buf == NULL)
 		return 0;
 
 	msglen = sprintf(msg, "%d\n", args_buf->status);
-	if (msglen > count)
-		msglen = count;
 
-	if (ppos && *ppos != 0)
-		return 0;	/* be cheap */
-
-	if (!access_ok(VERIFY_WRITE, buf, msglen))
-		return -EINVAL;
-
-	if (copy_to_user(buf, msg, msglen))
-		return -EFAULT;
-
-	if (ppos)
-		*ppos = msglen;
-	return msglen;
+	return simple_read_from_buffer(buf, count, ppos, msg, msglen);
 }
 
 static ssize_t manage_flash_write(struct file *file, const char __user *buf,
@@ -495,24 +468,11 @@ static ssize_t validate_flash_read(struct file *file, char __user *buf,
 	char msg[RTAS_MSG_MAXLEN];
 	int msglen;
 
-	args_buf = (struct rtas_validate_flash_t *) dp->data;
+	args_buf = dp->data;
 
-	if (ppos && *ppos != 0)
-		return 0;	/* be cheap */
-	
 	msglen = get_validate_flash_msg(args_buf, msg);
-	if (msglen > count)
-		msglen = count;
 
-	if (!access_ok(VERIFY_WRITE, buf, msglen))
-		return -EINVAL;
-
-	if (copy_to_user(buf, msg, msglen))
-		return -EFAULT;
-
-	if (ppos)
-		*ppos = msglen;
-	return msglen;
+	return simple_read_from_buffer(buf, count, ppos, msg, msglen);
 }
 
 static ssize_t validate_flash_write(struct file *file, const char __user *buf,
@@ -606,6 +566,12 @@ static void rtas_flash_firmware(int reboot_type)
 		printk(KERN_ALERT "FLASH: firmware will not be flashed\n");
 		return;
 	}
+
+	/*
+	 * Just before starting the firmware flash, cancel the event scan work
+	 * to avoid any soft lockup issues.
+	 */
+	rtas_cancel_event_scan();
 
 	/*
 	 * NOTE: the "first" block must be under 4GB, so we create
@@ -743,7 +709,7 @@ static int __init rtas_flash_init(void)
 
 	if (rtas_token("ibm,update-flash-64-and-reboot") ==
 		       RTAS_UNKNOWN_SERVICE) {
-		printk(KERN_ERR "rtas_flash: no firmware flash support\n");
+		pr_info("rtas_flash: no firmware flash support\n");
 		return 1;
 	}
 

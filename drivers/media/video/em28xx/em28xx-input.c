@@ -25,7 +25,6 @@
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
-#include <linux/input.h>
 #include <linux/usb.h>
 #include <linux/slab.h>
 
@@ -64,7 +63,7 @@ struct em28xx_ir_poll_result {
 
 struct em28xx_IR {
 	struct em28xx *dev;
-	struct input_dev *input;
+	struct rc_dev *rc;
 	char name[32];
 	char phys[32];
 
@@ -75,17 +74,13 @@ struct em28xx_IR {
 	unsigned int last_readcount;
 
 	int  (*get_key)(struct em28xx_IR *, struct em28xx_ir_poll_result *);
-
-	/* IR device properties */
-
-	struct ir_dev_props props;
 };
 
 /**********************************************************
  I2C IR based get keycodes - should be used with ir-kbd-i2c
  **********************************************************/
 
-int em28xx_get_key_terratec(struct IR_i2c *ir, u32 *ir_key, u32 *ir_raw)
+static int em28xx_get_key_terratec(struct IR_i2c *ir, u32 *ir_key, u32 *ir_raw)
 {
 	unsigned char b;
 
@@ -113,7 +108,7 @@ int em28xx_get_key_terratec(struct IR_i2c *ir, u32 *ir_key, u32 *ir_raw)
 	return 1;
 }
 
-int em28xx_get_key_em_haup(struct IR_i2c *ir, u32 *ir_key, u32 *ir_raw)
+static int em28xx_get_key_em_haup(struct IR_i2c *ir, u32 *ir_key, u32 *ir_raw)
 {
 	unsigned char buf[2];
 	u16 code;
@@ -162,7 +157,7 @@ int em28xx_get_key_em_haup(struct IR_i2c *ir, u32 *ir_key, u32 *ir_raw)
 	return 1;
 }
 
-int em28xx_get_key_pinnacle_usb_grey(struct IR_i2c *ir, u32 *ir_key,
+static int em28xx_get_key_pinnacle_usb_grey(struct IR_i2c *ir, u32 *ir_key,
 				     u32 *ir_raw)
 {
 	unsigned char buf[3];
@@ -184,7 +179,8 @@ int em28xx_get_key_pinnacle_usb_grey(struct IR_i2c *ir, u32 *ir_key,
 	return 1;
 }
 
-int em28xx_get_key_winfast_usbii_deluxe(struct IR_i2c *ir, u32 *ir_key, u32 *ir_raw)
+static int em28xx_get_key_winfast_usbii_deluxe(struct IR_i2c *ir, u32 *ir_key,
+					u32 *ir_raw)
 {
 	unsigned char subaddr, keydetect, key;
 
@@ -302,16 +298,17 @@ static void em28xx_ir_handle_key(struct em28xx_IR *ir)
 			poll_result.toggle_bit, poll_result.read_count,
 			poll_result.rc_address, poll_result.rc_data[0]);
 		if (ir->full_code)
-			ir_keydown(ir->input,
+			rc_keydown(ir->rc,
 				   poll_result.rc_address << 8 |
 				   poll_result.rc_data[0],
 				   poll_result.toggle_bit);
 		else
-			ir_keydown(ir->input,
+			rc_keydown(ir->rc,
 				   poll_result.rc_data[0],
 				   poll_result.toggle_bit);
 
-		if (ir->dev->chip_id == CHIP_ID_EM2874)
+		if (ir->dev->chip_id == CHIP_ID_EM2874 ||
+		    ir->dev->chip_id == CHIP_ID_EM2884)
 			/* The em2874 clears the readcount field every time the
 			   register is read.  The em2860/2880 datasheet says that it
 			   is supposed to clear the readcount, but it doesn't.  So with
@@ -331,9 +328,9 @@ static void em28xx_ir_work(struct work_struct *work)
 	schedule_delayed_work(&ir->work, msecs_to_jiffies(ir->polling));
 }
 
-static int em28xx_ir_start(void *priv)
+static int em28xx_ir_start(struct rc_dev *rc)
 {
-	struct em28xx_IR *ir = priv;
+	struct em28xx_IR *ir = rc->priv;
 
 	INIT_DELAYED_WORK(&ir->work, em28xx_ir_work);
 	schedule_delayed_work(&ir->work, 0);
@@ -341,30 +338,30 @@ static int em28xx_ir_start(void *priv)
 	return 0;
 }
 
-static void em28xx_ir_stop(void *priv)
+static void em28xx_ir_stop(struct rc_dev *rc)
 {
-	struct em28xx_IR *ir = priv;
+	struct em28xx_IR *ir = rc->priv;
 
 	cancel_delayed_work_sync(&ir->work);
 }
 
-int em28xx_ir_change_protocol(void *priv, u64 ir_type)
+static int em28xx_ir_change_protocol(struct rc_dev *rc_dev, u64 rc_type)
 {
 	int rc = 0;
-	struct em28xx_IR *ir = priv;
+	struct em28xx_IR *ir = rc_dev->priv;
 	struct em28xx *dev = ir->dev;
 	u8 ir_config = EM2874_IR_RC5;
 
 	/* Adjust xclk based o IR table for RC5/NEC tables */
 
-	if (ir_type == IR_TYPE_RC5) {
+	if (rc_type == RC_TYPE_RC5) {
 		dev->board.xclk |= EM28XX_XCLK_IR_RC5_MODE;
 		ir->full_code = 1;
-	} else if (ir_type == IR_TYPE_NEC) {
+	} else if (rc_type == RC_TYPE_NEC) {
 		dev->board.xclk &= ~EM28XX_XCLK_IR_RC5_MODE;
 		ir_config = EM2874_IR_NEC;
 		ir->full_code = 1;
-	} else if (ir_type != IR_TYPE_UNKNOWN)
+	} else if (rc_type != RC_TYPE_UNKNOWN)
 		rc = -EINVAL;
 
 	em28xx_write_reg_bits(dev, EM28XX_R0F_XCLK, dev->board.xclk,
@@ -376,105 +373,63 @@ int em28xx_ir_change_protocol(void *priv, u64 ir_type)
 	case CHIP_ID_EM2883:
 		ir->get_key = default_polling_getkey;
 		break;
+	case CHIP_ID_EM2884:
 	case CHIP_ID_EM2874:
+	case CHIP_ID_EM28174:
 		ir->get_key = em2874_polling_getkey;
 		em28xx_write_regs(dev, EM2874_R50_IR_CONFIG, &ir_config, 1);
 		break;
 	default:
-		printk("Unrecognized em28xx chip id: IR not supported\n");
+		printk("Unrecognized em28xx chip id 0x%02x: IR not supported\n",
+			dev->chip_id);
 		rc = -EINVAL;
 	}
 
 	return rc;
 }
 
-int em28xx_ir_init(struct em28xx *dev)
+static void em28xx_register_i2c_ir(struct em28xx *dev)
 {
-	struct em28xx_IR *ir;
-	struct input_dev *input_dev;
-	int err = -ENOMEM;
+	/* Leadtek winfast tv USBII deluxe can find a non working IR-device */
+	/* at address 0x18, so if that address is needed for another board in */
+	/* the future, please put it after 0x1f. */
+	struct i2c_board_info info;
+	const unsigned short addr_list[] = {
+		 0x1f, 0x30, 0x47, I2C_CLIENT_END
+	};
 
-	if (dev->board.ir_codes == NULL) {
-		/* No remote control support */
-		return 0;
+	memset(&info, 0, sizeof(struct i2c_board_info));
+	memset(&dev->init_data, 0, sizeof(dev->init_data));
+	strlcpy(info.type, "ir_video", I2C_NAME_SIZE);
+
+	/* detect & configure */
+	switch (dev->model) {
+	case EM2800_BOARD_TERRATEC_CINERGY_200:
+	case EM2820_BOARD_TERRATEC_CINERGY_250:
+		dev->init_data.ir_codes = RC_MAP_EM_TERRATEC;
+		dev->init_data.get_key = em28xx_get_key_terratec;
+		dev->init_data.name = "i2c IR (EM28XX Terratec)";
+		break;
+	case EM2820_BOARD_PINNACLE_USB_2:
+		dev->init_data.ir_codes = RC_MAP_PINNACLE_GREY;
+		dev->init_data.get_key = em28xx_get_key_pinnacle_usb_grey;
+		dev->init_data.name = "i2c IR (EM28XX Pinnacle PCTV)";
+		break;
+	case EM2820_BOARD_HAUPPAUGE_WINTV_USB_2:
+		dev->init_data.ir_codes = RC_MAP_HAUPPAUGE;
+		dev->init_data.get_key = em28xx_get_key_em_haup;
+		dev->init_data.name = "i2c IR (EM2840 Hauppauge)";
+		break;
+	case EM2820_BOARD_LEADTEK_WINFAST_USBII_DELUXE:
+		dev->init_data.ir_codes = RC_MAP_WINFAST_USBII_DELUXE;
+		dev->init_data.get_key = em28xx_get_key_winfast_usbii_deluxe;
+		dev->init_data.name = "i2c IR (EM2820 Winfast TV USBII Deluxe)";
+		break;
 	}
 
-	ir = kzalloc(sizeof(*ir), GFP_KERNEL);
-	input_dev = input_allocate_device();
-	if (!ir || !input_dev)
-		goto err_out_free;
-
-	/* record handles to ourself */
-	ir->dev = dev;
-	dev->ir = ir;
-
-	ir->input = input_dev;
-
-	/*
-	 * em2874 supports more protocols. For now, let's just announce
-	 * the two protocols that were already tested
-	 */
-	ir->props.allowed_protos = IR_TYPE_RC5 | IR_TYPE_NEC;
-	ir->props.priv = ir;
-	ir->props.change_protocol = em28xx_ir_change_protocol;
-	ir->props.open = em28xx_ir_start;
-	ir->props.close = em28xx_ir_stop;
-
-	/* By default, keep protocol field untouched */
-	err = em28xx_ir_change_protocol(ir, IR_TYPE_UNKNOWN);
-	if (err)
-		goto err_out_free;
-
-	/* This is how often we ask the chip for IR information */
-	ir->polling = 100; /* ms */
-
-	/* init input device */
-	snprintf(ir->name, sizeof(ir->name), "em28xx IR (%s)",
-						dev->name);
-
-	usb_make_path(dev->udev, ir->phys, sizeof(ir->phys));
-	strlcat(ir->phys, "/input0", sizeof(ir->phys));
-
-	input_dev->name = ir->name;
-	input_dev->phys = ir->phys;
-	input_dev->id.bustype = BUS_USB;
-	input_dev->id.version = 1;
-	input_dev->id.vendor = le16_to_cpu(dev->udev->descriptor.idVendor);
-	input_dev->id.product = le16_to_cpu(dev->udev->descriptor.idProduct);
-
-	input_dev->dev.parent = &dev->udev->dev;
-
-
-
-	/* all done */
-	err = ir_input_register(ir->input, dev->board.ir_codes,
-				&ir->props, MODULE_NAME);
-	if (err)
-		goto err_out_stop;
-
-	return 0;
- err_out_stop:
-	dev->ir = NULL;
- err_out_free:
-	kfree(ir);
-	return err;
-}
-
-int em28xx_ir_fini(struct em28xx *dev)
-{
-	struct em28xx_IR *ir = dev->ir;
-
-	/* skip detach on non attached boards */
-	if (!ir)
-		return 0;
-
-	em28xx_ir_stop(ir);
-	ir_input_unregister(ir->input);
-	kfree(ir);
-
-	/* done */
-	dev->ir = NULL;
-	return 0;
+	if (dev->init_data.name)
+		info.platform_data = &dev->init_data;
+	i2c_new_probed_device(&dev->i2c_adap, &info, addr_list, NULL);
 }
 
 /**********************************************************
@@ -509,7 +464,7 @@ static void em28xx_query_sbutton(struct work_struct *work)
 			      msecs_to_jiffies(EM28XX_SBUTTON_QUERY_INTERVAL));
 }
 
-void em28xx_register_snapshot_button(struct em28xx *dev)
+static void em28xx_register_snapshot_button(struct em28xx *dev)
 {
 	struct input_dev *input_dev;
 	int err;
@@ -553,13 +508,138 @@ void em28xx_register_snapshot_button(struct em28xx *dev)
 
 }
 
-void em28xx_deregister_snapshot_button(struct em28xx *dev)
+static void em28xx_deregister_snapshot_button(struct em28xx *dev)
 {
 	if (dev->sbutton_input_dev != NULL) {
 		em28xx_info("Deregistering snapshot button\n");
-		cancel_rearming_delayed_work(&dev->sbutton_query_work);
+		cancel_delayed_work_sync(&dev->sbutton_query_work);
 		input_unregister_device(dev->sbutton_input_dev);
 		dev->sbutton_input_dev = NULL;
 	}
 	return;
 }
+
+static int em28xx_ir_init(struct em28xx *dev)
+{
+	struct em28xx_IR *ir;
+	struct rc_dev *rc;
+	int err = -ENOMEM;
+
+	if (dev->board.ir_codes == NULL) {
+		/* No remote control support */
+		em28xx_warn("Remote control support is not available for "
+				"this card.\n");
+		return 0;
+	}
+
+	ir = kzalloc(sizeof(*ir), GFP_KERNEL);
+	rc = rc_allocate_device();
+	if (!ir || !rc)
+		goto err_out_free;
+
+	/* record handles to ourself */
+	ir->dev = dev;
+	dev->ir = ir;
+	ir->rc = rc;
+
+	/*
+	 * em2874 supports more protocols. For now, let's just announce
+	 * the two protocols that were already tested
+	 */
+	rc->allowed_protos = RC_TYPE_RC5 | RC_TYPE_NEC;
+	rc->priv = ir;
+	rc->change_protocol = em28xx_ir_change_protocol;
+	rc->open = em28xx_ir_start;
+	rc->close = em28xx_ir_stop;
+
+	/* By default, keep protocol field untouched */
+	err = em28xx_ir_change_protocol(rc, RC_TYPE_UNKNOWN);
+	if (err)
+		goto err_out_free;
+
+	/* This is how often we ask the chip for IR information */
+	ir->polling = 100; /* ms */
+
+	/* init input device */
+	snprintf(ir->name, sizeof(ir->name), "em28xx IR (%s)",
+						dev->name);
+
+	usb_make_path(dev->udev, ir->phys, sizeof(ir->phys));
+	strlcat(ir->phys, "/input0", sizeof(ir->phys));
+
+	rc->input_name = ir->name;
+	rc->input_phys = ir->phys;
+	rc->input_id.bustype = BUS_USB;
+	rc->input_id.version = 1;
+	rc->input_id.vendor = le16_to_cpu(dev->udev->descriptor.idVendor);
+	rc->input_id.product = le16_to_cpu(dev->udev->descriptor.idProduct);
+	rc->dev.parent = &dev->udev->dev;
+	rc->map_name = dev->board.ir_codes;
+	rc->driver_name = MODULE_NAME;
+
+	/* all done */
+	err = rc_register_device(rc);
+	if (err)
+		goto err_out_stop;
+
+	em28xx_register_i2c_ir(dev);
+
+#if defined(CONFIG_MODULES) && defined(MODULE)
+	if (dev->board.has_ir_i2c)
+		request_module("ir-kbd-i2c");
+#endif
+	if (dev->board.has_snapshot_button)
+		em28xx_register_snapshot_button(dev);
+
+	return 0;
+
+ err_out_stop:
+	dev->ir = NULL;
+ err_out_free:
+	rc_free_device(rc);
+	kfree(ir);
+	return err;
+}
+
+static int em28xx_ir_fini(struct em28xx *dev)
+{
+	struct em28xx_IR *ir = dev->ir;
+
+	em28xx_deregister_snapshot_button(dev);
+
+	/* skip detach on non attached boards */
+	if (!ir)
+		return 0;
+
+	if (ir->rc)
+		rc_unregister_device(ir->rc);
+
+	/* done */
+	kfree(ir);
+	dev->ir = NULL;
+	return 0;
+}
+
+static struct em28xx_ops rc_ops = {
+	.id   = EM28XX_RC,
+	.name = "Em28xx Input Extension",
+	.init = em28xx_ir_init,
+	.fini = em28xx_ir_fini,
+};
+
+static int __init em28xx_rc_register(void)
+{
+	return em28xx_register_extension(&rc_ops);
+}
+
+static void __exit em28xx_rc_unregister(void)
+{
+	em28xx_unregister_extension(&rc_ops);
+}
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Mauro Carvalho Chehab <mchehab@redhat.com>");
+MODULE_DESCRIPTION("Em28xx Input driver");
+
+module_init(em28xx_rc_register);
+module_exit(em28xx_rc_unregister);

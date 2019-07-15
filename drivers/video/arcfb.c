@@ -336,8 +336,8 @@ static void arcfb_lcd_update_horiz(struct arcfb_par *par, unsigned int left,
 }
 
 /*
- * here we start the process of spliting out the fb update into
- * individual blocks of pixels. we end up spliting into 64x64 blocks
+ * here we start the process of splitting out the fb update into
+ * individual blocks of pixels. we end up splitting into 64x64 blocks
  * and finally down to 64x8 pages.
  */
 static void arcfb_lcd_update(struct arcfb_par *par, unsigned int dx,
@@ -515,10 +515,9 @@ static int __devinit arcfb_probe(struct platform_device *dev)
 
 	/* We need a flat backing store for the Arc's
 	   less-flat actual paged framebuffer */
-	if (!(videomemory = vmalloc(videomemorysize)))
+	videomemory = vzalloc(videomemorysize);
+	if (!videomemory)
 		return retval;
-
-	memset(videomemory, 0, videomemorysize);
 
 	info = framebuffer_alloc(sizeof(struct arcfb_par), &dev->dev);
 	if (!info)

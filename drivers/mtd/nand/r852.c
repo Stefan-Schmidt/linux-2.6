@@ -22,7 +22,7 @@
 #include "r852.h"
 
 
-static int r852_enable_dma = 1;
+static bool r852_enable_dma = 1;
 module_param(r852_enable_dma, bool, S_IRUGO);
 MODULE_PARM_DESC(r852_enable_dma, "Enable usage of the DMA (default)");
 
@@ -185,7 +185,7 @@ static void r852_do_dma(struct r852_device *dev, uint8_t *buf, int do_read)
 
 	dbg_verbose("doing dma %s ", do_read ? "read" : "write");
 
-	/* Set intial dma state: for reading first fill on board buffer,
+	/* Set initial dma state: for reading first fill on board buffer,
 	  from device, for writes first fill the buffer  from memory*/
 	dev->dma_state = do_read ? DMA_INTERNAL : DMA_MEMORY;
 
@@ -539,14 +539,11 @@ exit:
  * nand_read_oob_syndrome assumes we can send column address - we can't
  */
 static int r852_read_oob(struct mtd_info *mtd, struct nand_chip *chip,
-			     int page, int sndcmd)
+			     int page)
 {
-	if (sndcmd) {
-		chip->cmdfunc(mtd, NAND_CMD_READOOB, 0, page);
-		sndcmd = 0;
-	}
+	chip->cmdfunc(mtd, NAND_CMD_READOOB, 0, page);
 	chip->read_buf(mtd, chip->oob_poi, mtd->oobsize);
-	return sndcmd;
+	return 0;
 }
 
 /*
@@ -766,7 +763,7 @@ static irqreturn_t r852_irq(int irq, void *data)
 		ret = IRQ_HANDLED;
 		dev->card_detected = !!(card_status & R852_CARD_IRQ_INSERT);
 
-		/* we shouldn't recieve any interrupts if we wait for card
+		/* we shouldn't receive any interrupts if we wait for card
 			to settle */
 		WARN_ON(dev->card_unstable);
 
@@ -794,13 +791,13 @@ static irqreturn_t r852_irq(int irq, void *data)
 		ret = IRQ_HANDLED;
 
 		if (dma_status & R852_DMA_IRQ_ERROR) {
-			dbg("recieved dma error IRQ");
+			dbg("received dma error IRQ");
 			r852_dma_done(dev, -EIO);
 			complete(&dev->dma_done);
 			goto out;
 		}
 
-		/* recieved DMA interrupt out of nowhere? */
+		/* received DMA interrupt out of nowhere? */
 		WARN_ON_ONCE(dev->dma_stage == 0);
 
 		if (dev->dma_stage == 0)
@@ -891,6 +888,7 @@ int  r852_probe(struct pci_dev *pci_dev, const struct pci_device_id *id)
 	chip->ecc.mode = NAND_ECC_HW_SYNDROME;
 	chip->ecc.size = R852_DMA_LEN;
 	chip->ecc.bytes = SM_OOB_SIZE;
+	chip->ecc.strength = 2;
 	chip->ecc.hwctl = r852_ecc_hwctl;
 	chip->ecc.calculate = r852_ecc_calculate;
 	chip->ecc.correct = r852_ecc_correct;
@@ -930,7 +928,7 @@ int  r852_probe(struct pci_dev *pci_dev, const struct pci_device_id *id)
 
 	init_completion(&dev->dma_done);
 
-	dev->card_workqueue = create_freezeable_workqueue(DRV_NAME);
+	dev->card_workqueue = create_freezable_workqueue(DRV_NAME);
 
 	if (!dev->card_workqueue)
 		goto error9;
@@ -960,7 +958,7 @@ int  r852_probe(struct pci_dev *pci_dev, const struct pci_device_id *id)
 		&dev->card_detect_work, 0);
 
 
-	printk(KERN_NOTICE DRV_NAME ": driver loaded succesfully\n");
+	printk(KERN_NOTICE DRV_NAME ": driver loaded successfully\n");
 	return 0;
 
 error10:
@@ -1027,7 +1025,7 @@ void r852_shutdown(struct pci_dev *pci_dev)
 }
 
 #ifdef CONFIG_PM
-int r852_suspend(struct device *device)
+static int r852_suspend(struct device *device)
 {
 	struct r852_device *dev = pci_get_drvdata(to_pci_dev(device));
 
@@ -1048,7 +1046,7 @@ int r852_suspend(struct device *device)
 	return 0;
 }
 
-int r852_resume(struct device *device)
+static int r852_resume(struct device *device)
 {
 	struct r852_device *dev = pci_get_drvdata(to_pci_dev(device));
 
@@ -1092,7 +1090,7 @@ static const struct pci_device_id r852_pci_id_tbl[] = {
 
 MODULE_DEVICE_TABLE(pci, r852_pci_id_tbl);
 
-SIMPLE_DEV_PM_OPS(r852_pm_ops, r852_suspend, r852_resume);
+static SIMPLE_DEV_PM_OPS(r852_pm_ops, r852_suspend, r852_resume);
 
 static struct pci_driver r852_pci_driver = {
 	.name		= DRV_NAME,
@@ -1103,18 +1101,7 @@ static struct pci_driver r852_pci_driver = {
 	.driver.pm	= &r852_pm_ops,
 };
 
-static __init int r852_module_init(void)
-{
-	return pci_register_driver(&r852_pci_driver);
-}
-
-static void __exit r852_module_exit(void)
-{
-	pci_unregister_driver(&r852_pci_driver);
-}
-
-module_init(r852_module_init);
-module_exit(r852_module_exit);
+module_pci_driver(r852_pci_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Maxim Levitsky <maximlevitsky@gmail.com>");

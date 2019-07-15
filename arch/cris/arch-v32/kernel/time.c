@@ -18,7 +18,6 @@
 #include <asm/signal.h>
 #include <asm/io.h>
 #include <asm/delay.h>
-#include <asm/rtc.h>
 #include <asm/irq.h>
 #include <asm/irq_regs.h>
 
@@ -47,14 +46,12 @@ static struct clocksource cont_rotime = {
 	.rating = 300,
 	.read   = read_cont_rotime,
 	.mask   = CLOCKSOURCE_MASK(32),
-	.shift  = 10,
 	.flags  = CLOCK_SOURCE_IS_CONTINUOUS,
 };
 
 static int __init etrax_init_cont_rotime(void)
 {
-	cont_rotime.mult = clocksource_khz2mult(100000, cont_rotime.shift);
-	clocksource_register(&cont_rotime);
+	clocksource_register_khz(&cont_rotime, 100000);
 	return 0;
 }
 arch_initcall(etrax_init_cont_rotime);
@@ -69,7 +66,6 @@ unsigned long timer_regs[NR_CPUS] =
 };
 
 extern int set_rtc_mmss(unsigned long nowtime);
-extern int have_rtc;
 
 #ifdef CONFIG_CPU_FREQ
 static int
@@ -183,7 +179,7 @@ void handle_watchdog_bite(struct pt_regs *regs)
 
 /*
  * timer_interrupt() needs to keep up the real-time clock,
- * as well as call the "do_timer()" routine every clocktick.
+ * as well as call the "xtime_update()" routine every clocktick.
  */
 extern void cris_do_profile(struct pt_regs *regs);
 
@@ -216,9 +212,7 @@ static inline irqreturn_t timer_interrupt(int irq, void *dev_id)
 		return IRQ_HANDLED;
 
 	/* Call the real timer interrupt handler */
-	write_seqlock(&xtime_lock);
-	do_timer(1);
-	write_sequnlock(&xtime_lock);
+	xtime_update(1);
         return IRQ_HANDLED;
 }
 
@@ -268,11 +262,6 @@ void __init time_init(void)
 	 * clock has started.
 	 */
 	loops_per_usec = 50;
-
-	if(RTC_INIT() < 0)
-		have_rtc = 0;
-	else
-		have_rtc = 1;
 
 	/* Start CPU local timer. */
 	cris_timer_init();

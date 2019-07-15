@@ -13,41 +13,40 @@
 #include <linux/pci.h>
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
-#include <linux/pci.h>
 #include <linux/platform_device.h>
 #include <linux/videodev2.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-chip-ident.h>
+#include <media/ov7670.h>
 #include <media/videobuf-dma-sg.h>
-#include <linux/device.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
-#include <linux/pm_qos_params.h>
+#include <linux/pm_qos.h>
 #include <linux/via-core.h>
 #include <linux/via-gpio.h>
 #include <linux/via_i2c.h>
+#include <asm/olpc.h>
 
 #include "via-camera.h"
 
+MODULE_ALIAS("platform:viafb-camera");
 MODULE_AUTHOR("Jonathan Corbet <corbet@lwn.net>");
 MODULE_DESCRIPTION("VIA framebuffer-based camera controller driver");
 MODULE_LICENSE("GPL");
 
-static int flip_image;
+static bool flip_image;
 module_param(flip_image, bool, 0444);
 MODULE_PARM_DESC(flip_image,
 		"If set, the sensor will be instructed to flip the image "
 		"vertically.");
 
-#ifdef CONFIG_OLPC_XO_1_5
-static int override_serial;
+static bool override_serial;
 module_param(override_serial, bool, 0444);
 MODULE_PARM_DESC(override_serial,
 		"The camera driver will normally refuse to load if "
 		"the XO 1.5 serial port is enabled.  Set this option "
-		"to force the issue.");
-#endif
+		"to force-enable the camera.");
 
 /*
  * Basic window sizes.
@@ -71,7 +70,7 @@ struct via_camera {
 	struct mutex lock;
 	enum viacam_opstate opstate;
 	unsigned long flags;
-	struct pm_qos_request_list qos_request;
+	struct pm_qos_request qos_request;
 	/*
 	 * GPIO info for power/reset management
 	 */
@@ -158,14 +157,10 @@ static struct via_format {
 		.mbus_code	= V4L2_MBUS_FMT_YUYV8_2X8,
 		.bpp		= 2,
 	},
-	{
-		.desc		= "RGB 565",
-		.pixelformat	= V4L2_PIX_FMT_RGB565,
-		.mbus_code	= V4L2_MBUS_FMT_RGB565_2X8_LE,
-		.bpp		= 2,
-	},
 	/* RGB444 and Bayer should be doable, but have never been
-	   tested with this driver. */
+	   tested with this driver. RGB565 seems to work at the default
+	   resolution, but results in color corruption when being scaled by
+	   viacam_set_scaled(), and is disabled as a result. */
 };
 #define N_VIA_FMTS ARRAY_SIZE(via_formats)
 
@@ -968,7 +963,7 @@ static int viacam_do_try_fmt(struct via_camera *cam,
 
 	upix->pixelformat = f->pixelformat;
 	viacam_fmt_pre(upix, spix);
-	v4l2_fill_mbus_format(&mbus_fmt, upix, f->mbus_code);
+	v4l2_fill_mbus_format(&mbus_fmt, spix, f->mbus_code);
 	ret = sensor_call(cam, video, try_mbus_fmt, &mbus_fmt);
 	v4l2_fill_pix_format(spix, &mbus_fmt);
 	viacam_fmt_post(upix, spix);
@@ -1161,16 +1156,6 @@ out:
 	return ret;
 }
 
-#ifdef CONFIG_VIDEO_V4L1_COMPAT
-static int viacam_vidiocgmbuf(struct file *filp, void *priv,
-		struct video_mbuf *mbuf)
-{
-	struct via_camera *cam = priv;
-
-	return videobuf_cgmbuf(&cam->vb_queue, mbuf, 6);
-}
-#endif
-
 /* G/S_PARM */
 
 static int viacam_g_parm(struct file *filp, void *priv,
@@ -1251,9 +1236,6 @@ static const struct v4l2_ioctl_ops viacam_ioctl_ops = {
 	.vidioc_s_parm		= viacam_s_parm,
 	.vidioc_enum_framesizes = viacam_enum_framesizes,
 	.vidioc_enum_frameintervals = viacam_enum_frameintervals,
-#ifdef CONFIG_VIDEO_V4L1_COMPAT
-	.vidiocgmbuf		= viacam_vidiocgmbuf,
-#endif
 };
 
 /*----------------------------------------------------------------------------*/
@@ -1261,6 +1243,62 @@ static const struct v4l2_ioctl_ops viacam_ioctl_ops = {
 /*
  * Power management.
  */
+#ifdef CONFIG_PM
+
+static int viacam_suspend(void *priv)
+{
+	struct via_camera *cam = priv;
+	enum viacam_opstate state = cam->opstate;
+
+	if (cam->opstate != S_IDLE) {
+		viacam_stop_engine(cam);
+		cam->opstate = state; /* So resume restarts */
+	}
+
+	return 0;
+}
+
+static int viacam_resume(void *priv)
+{
+	struct via_camera *cam = priv;
+	int ret = 0;
+
+	/*
+	 * Get back to a reasonable operating state.
+	 */
+	via_write_reg_mask(VIASR, 0x78, 0, 0x80);
+	via_write_reg_mask(VIASR, 0x1e, 0xc0, 0xc0);
+	viacam_int_disable(cam);
+	set_bit(CF_CONFIG_NEEDED, &cam->flags);
+	/*
+	 * Make sure the sensor's power state is correct
+	 */
+	if (cam->users > 0)
+		via_sensor_power_up(cam);
+	else
+		via_sensor_power_down(cam);
+	/*
+	 * If it was operating, try to restart it.
+	 */
+	if (cam->opstate != S_IDLE) {
+		mutex_lock(&cam->lock);
+		ret = viacam_configure_sensor(cam);
+		if (!ret)
+			ret = viacam_config_controller(cam);
+		mutex_unlock(&cam->lock);
+		if (!ret)
+			viacam_start_engine(cam);
+	}
+
+	return ret;
+}
+
+static struct viafb_pm_hooks viacam_pm_hooks = {
+	.suspend = viacam_suspend,
+	.resume = viacam_resume
+};
+
+#endif /* CONFIG_PM */
 
 /*
  * Setup stuff.
@@ -1276,12 +1314,55 @@ static struct video_device viacam_v4l_template = {
 	.release	= video_device_release_empty, /* Check this */
 };
 
+/*
+ * The OLPC folks put the serial port on the same pin as
+ * the camera.	They also get grumpy if we break the
+ * serial port and keep them from using it.  So we have
+ * to check the serial enable bit and not step on it.
+ */
+#define VIACAM_SERIAL_DEVFN 0x88
+#define VIACAM_SERIAL_CREG 0x46
+#define VIACAM_SERIAL_BIT 0x40
+
+static __devinit bool viacam_serial_is_enabled(void)
+{
+	struct pci_bus *pbus = pci_find_bus(0, 0);
+	u8 cbyte;
+
+	if (!pbus)
+		return false;
+	pci_bus_read_config_byte(pbus, VIACAM_SERIAL_DEVFN,
+			VIACAM_SERIAL_CREG, &cbyte);
+	if ((cbyte & VIACAM_SERIAL_BIT) == 0)
+		return false; /* Not enabled */
+	if (override_serial == 0) {
+		printk(KERN_NOTICE "Via camera: serial port is enabled, " \
+				"refusing to load.\n");
+		printk(KERN_NOTICE "Specify override_serial=1 to force " \
+				"module loading.\n");
+		return true;
+	}
+	printk(KERN_NOTICE "Via camera: overriding serial port\n");
+	pci_bus_write_config_byte(pbus, VIACAM_SERIAL_DEVFN,
+			VIACAM_SERIAL_CREG, cbyte & ~VIACAM_SERIAL_BIT);
+	return false;
+}
+
+static struct ov7670_config sensor_cfg = {
+	/* The XO-1.5 (only known user) clocks the camera at 90MHz. */
+	.clock_speed = 90,
+};
 
 static __devinit int viacam_probe(struct platform_device *pdev)
 {
 	int ret;
 	struct i2c_adapter *sensor_adapter;
 	struct viafb_dev *viadev = pdev->dev.platform_data;
+	struct i2c_board_info ov7670_info = {
+		.type = "ov7670",
+		.addr = 0x42 >> 1,
+		.platform_data = &sensor_cfg,
+	};
 
 	/*
 	 * Note that there are actually two capture channels on
@@ -1307,6 +1388,10 @@ static __devinit int viacam_probe(struct platform_device *pdev)
 		printk(KERN_ERR "viacam: No I/O memory, so no pictures\n");
 		return -ENOMEM;
 	}
+
+	if (machine_is_olpc() && viacam_serial_is_enabled())
+		return -EBUSY;
+
 	/*
 	 * Basic structure initialization.
 	 */
@@ -1359,8 +1444,8 @@ static __devinit int viacam_probe(struct platform_device *pdev)
 	 * is OLPC-specific.  0x42 assumption is ov7670-specific.
 	 */
 	sensor_adapter = viafb_find_i2c_adapter(VIA_PORT_31);
-	cam->sensor = v4l2_i2c_new_subdev(&cam->v4l2_dev, sensor_adapter,
-			"ov7670", "ov7670", 0x42 >> 1, NULL);
+	cam->sensor = v4l2_i2c_new_subdev_board(&cam->v4l2_dev, sensor_adapter,
+			&ov7670_info, NULL);
 	if (cam->sensor == NULL) {
 		dev_err(&pdev->dev, "Unable to find the sensor!\n");
 		ret = -ENODEV;
@@ -1383,6 +1468,14 @@ static __devinit int viacam_probe(struct platform_device *pdev)
 	if (ret)
 		goto out_irq;
 	video_set_drvdata(&cam->vdev, cam);
+
+#ifdef CONFIG_PM
+	/*
+	 * Hook into PM events
+	 */
+	viacam_pm_hooks.private = cam;
+	viafb_pm_register(&viacam_pm_hooks);
+#endif
 
 	/* Power the sensor down until somebody opens the device */
 	via_sensor_power_down(cam);
@@ -1410,7 +1503,6 @@ static __devexit int viacam_remove(struct platform_device *pdev)
 	return 0;
 }
 
-
 static struct platform_driver viacam_driver = {
 	.driver = {
 		.name = "viafb-camera",
@@ -1419,56 +1511,4 @@ static struct platform_driver viacam_driver = {
 	.remove = viacam_remove,
 };
 
-
-#ifdef CONFIG_OLPC_XO_1_5
-/*
- * The OLPC folks put the serial port on the same pin as
- * the camera.	They also get grumpy if we break the
- * serial port and keep them from using it.  So we have
- * to check the serial enable bit and not step on it.
- */
-#define VIACAM_SERIAL_DEVFN 0x88
-#define VIACAM_SERIAL_CREG 0x46
-#define VIACAM_SERIAL_BIT 0x40
-
-static __devinit int viacam_check_serial_port(void)
-{
-	struct pci_bus *pbus = pci_find_bus(0, 0);
-	u8 cbyte;
-
-	pci_bus_read_config_byte(pbus, VIACAM_SERIAL_DEVFN,
-			VIACAM_SERIAL_CREG, &cbyte);
-	if ((cbyte & VIACAM_SERIAL_BIT) == 0)
-		return 0; /* Not enabled */
-	if (override_serial == 0) {
-		printk(KERN_NOTICE "Via camera: serial port is enabled, " \
-				"refusing to load.\n");
-		printk(KERN_NOTICE "Specify override_serial=1 to force " \
-				"module loading.\n");
-		return -EBUSY;
-	}
-	printk(KERN_NOTICE "Via camera: overriding serial port\n");
-	pci_bus_write_config_byte(pbus, VIACAM_SERIAL_DEVFN,
-			VIACAM_SERIAL_CREG, cbyte & ~VIACAM_SERIAL_BIT);
-	return 0;
-}
-#endif
-
-
-
-
-static int viacam_init(void)
-{
-#ifdef CONFIG_OLPC_XO_1_5
-	if (viacam_check_serial_port())
-		return -EBUSY;
-#endif
-	return platform_driver_register(&viacam_driver);
-}
-module_init(viacam_init);
-
-static void viacam_exit(void)
-{
-	platform_driver_unregister(&viacam_driver);
-}
-module_exit(viacam_exit);
+module_platform_driver(viacam_driver);

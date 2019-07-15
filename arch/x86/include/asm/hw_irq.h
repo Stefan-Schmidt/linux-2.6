@@ -21,7 +21,7 @@
 #include <linux/profile.h>
 #include <linux/smp.h>
 
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <asm/irq.h>
 #include <asm/sections.h>
 
@@ -34,7 +34,6 @@ extern void irq_work_interrupt(void);
 extern void spurious_interrupt(void);
 extern void thermal_interrupt(void);
 extern void reschedule_interrupt(void);
-extern void mce_self_interrupt(void);
 
 extern void invalidate_interrupt(void);
 extern void invalidate_interrupt0(void);
@@ -45,6 +44,30 @@ extern void invalidate_interrupt4(void);
 extern void invalidate_interrupt5(void);
 extern void invalidate_interrupt6(void);
 extern void invalidate_interrupt7(void);
+extern void invalidate_interrupt8(void);
+extern void invalidate_interrupt9(void);
+extern void invalidate_interrupt10(void);
+extern void invalidate_interrupt11(void);
+extern void invalidate_interrupt12(void);
+extern void invalidate_interrupt13(void);
+extern void invalidate_interrupt14(void);
+extern void invalidate_interrupt15(void);
+extern void invalidate_interrupt16(void);
+extern void invalidate_interrupt17(void);
+extern void invalidate_interrupt18(void);
+extern void invalidate_interrupt19(void);
+extern void invalidate_interrupt20(void);
+extern void invalidate_interrupt21(void);
+extern void invalidate_interrupt22(void);
+extern void invalidate_interrupt23(void);
+extern void invalidate_interrupt24(void);
+extern void invalidate_interrupt25(void);
+extern void invalidate_interrupt26(void);
+extern void invalidate_interrupt27(void);
+extern void invalidate_interrupt28(void);
+extern void invalidate_interrupt29(void);
+extern void invalidate_interrupt30(void);
+extern void invalidate_interrupt31(void);
 
 extern void irq_move_cleanup_interrupt(void);
 extern void reboot_interrupt(void);
@@ -96,7 +119,7 @@ struct irq_cfg {
 	cpumask_var_t		old_domain;
 	u8			vector;
 	u8			move_in_progress : 1;
-#ifdef CONFIG_INTR_REMAP
+#ifdef CONFIG_IRQ_REMAP
 	struct irq_2_iommu	irq_2_iommu;
 #endif
 };

@@ -15,13 +15,6 @@
 
 #ifdef CONFIG_X86_32
 # define MAX_MPC_ENTRY 1024
-# define MAX_APICS      256
-#else
-# if NR_CPUS <= 255
-#  define MAX_APICS     255
-# else
-#  define MAX_APICS   32768
-# endif
 #endif
 
 /* Intel MP Floating Pointer Structure */
@@ -91,7 +84,7 @@ struct mpc_bus {
 #define BUSTYPE_EISA	"EISA"
 #define BUSTYPE_ISA	"ISA"
 #define BUSTYPE_INTERN	"INTERN"	/* Internal BUS */
-#define BUSTYPE_MCA	"MCA"
+#define BUSTYPE_MCA	"MCA"		/* Obsolete */
 #define BUSTYPE_VL	"VL"		/* Local bus */
 #define BUSTYPE_PCI	"PCI"
 #define BUSTYPE_PCMCIA	"PCMCIA"
@@ -176,6 +169,5 @@ enum mp_bustype {
 	MP_BUS_ISA = 1,
 	MP_BUS_EISA,
 	MP_BUS_PCI,
-	MP_BUS_MCA,
 };
 #endif /* _ASM_X86_MPSPEC_DEF_H */

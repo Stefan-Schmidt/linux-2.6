@@ -2,7 +2,7 @@
  * Shared interrupt handling code for IPR and INTC2 types of IRQs.
  *
  * Copyright (C) 2007, 2008 Magnus Damm
- * Copyright (C) 2009, 2010 Paul Mundt
+ * Copyright (C) 2009 - 2012 Paul Mundt
  *
  * Based on intc2.c and ipr.c
  *
@@ -22,24 +22,29 @@
 #include <linux/irq.h>
 #include <linux/io.h>
 #include <linux/slab.h>
+#include <linux/stat.h>
 #include <linux/interrupt.h>
 #include <linux/sh_intc.h>
-#include <linux/sysdev.h>
+#include <linux/irqdomain.h>
+#include <linux/device.h>
+#include <linux/syscore_ops.h>
 #include <linux/list.h>
 #include <linux/spinlock.h>
 #include <linux/radix-tree.h>
+#include <linux/export.h>
+#include <linux/sort.h>
 #include "internals.h"
 
 LIST_HEAD(intc_list);
 DEFINE_RAW_SPINLOCK(intc_big_lock);
-unsigned int nr_intc_controllers;
+static unsigned int nr_intc_controllers;
 
 /*
  * Default priority level
  * - this needs to be at least 2 for 5-bit priorities on 7780
  */
 static unsigned int default_prio_level = 2;	/* 2 - 16 */
-static unsigned int intc_prio_level[NR_IRQS];	/* for now */
+static unsigned int intc_prio_level[INTC_NR_IRQS];	/* for now */
 
 unsigned int intc_get_dfl_prio_level(void)
 {
@@ -62,7 +67,7 @@ void intc_set_prio_level(unsigned int irq, unsigned int level)
 
 static void intc_redirect_irq(unsigned int irq, struct irq_desc *desc)
 {
-	generic_handle_irq((unsigned int)get_irq_data(irq));
+	generic_handle_irq((unsigned int)irq_get_handler_data(irq));
 }
 
 static void __init intc_register_irq(struct intc_desc *desc,
@@ -79,7 +84,7 @@ static void __init intc_register_irq(struct intc_desc *desc,
 	 * Register the IRQ position with the global IRQ map, then insert
 	 * it in to the radix tree.
 	 */
-	irq_reserve_irqs(irq, 1);
+	irq_reserve_irq(irq);
 
 	raw_spin_lock_irqsave(&intc_big_lock, flags);
 	radix_tree_insert(&d->tree, enum_id, intc_irq_xlate_get(irq));
@@ -115,9 +120,9 @@ static void __init intc_register_irq(struct intc_desc *desc,
 	irq_data = irq_get_irq_data(irq);
 
 	disable_irq_nosync(irq);
-	set_irq_chip_and_handler_name(irq, &d->chip,
-				      handle_level_irq, "level");
-	set_irq_chip_data(irq, (void *)data[primary]);
+	irq_set_chip_and_handler_name(irq, &d->chip, handle_level_irq,
+				      "level");
+	irq_set_chip_data(irq, (void *)data[primary]);
 
 	/*
 	 * set priority level
@@ -198,6 +203,7 @@ int __init register_intc_controller(struct intc_desc *desc)
 	list_add_tail(&d->list, &intc_list);
 
 	raw_spin_lock_init(&d->lock);
+	INIT_RADIX_TREE(&d->tree, GFP_ATOMIC);
 
 	d->index = nr_intc_controllers;
 
@@ -263,6 +269,9 @@ int __init register_intc_controller(struct intc_desc *desc)
 			k += save_reg(d, k, hw->prio_regs[i].set_reg, smp);
 			k += save_reg(d, k, hw->prio_regs[i].clr_reg, smp);
 		}
+
+		sort(d->prio, hw->nr_prio_regs, sizeof(*d->prio),
+		     intc_handle_int_cmp, NULL);
 	}
 
 	if (hw->sense_regs) {
@@ -273,6 +282,9 @@ int __init register_intc_controller(struct intc_desc *desc)
 
 		for (i = 0; i < hw->nr_sense_regs; i++)
 			k += save_reg(d, k, hw->sense_regs[i].reg, 0);
+
+		sort(d->sense, hw->nr_sense_regs, sizeof(*d->sense),
+		     intc_handle_int_cmp, NULL);
 	}
 
 	if (hw->subgroups)
@@ -299,6 +311,8 @@ int __init register_intc_controller(struct intc_desc *desc)
 
 	BUG_ON(k > 256); /* _INTC_ADDR_E() and _INTC_ADDR_D() are 8 bits */
 
+	intc_irq_domain_init(d, hw);
+
 	/* register the vectors one by one */
 	for (i = 0; i < hw->nr_vectors; i++) {
 		struct intc_vect *vect = hw->vectors + i;
@@ -308,10 +322,18 @@ int __init register_intc_controller(struct intc_desc *desc)
 		if (!vect->enum_id)
 			continue;
 
-		res = irq_alloc_desc_at(irq, numa_node_id());
-		if (res != irq && res != -EEXIST) {
-			pr_err("can't get irq_desc for %d\n", irq);
-			continue;
+		res = irq_create_identity_mapping(d->domain, irq);
+		if (unlikely(res)) {
+			if (res == -EEXIST) {
+				res = irq_domain_associate(d->domain, irq, irq);
+				if (unlikely(res)) {
+					pr_err("domain association failure\n");
+					continue;
+				}
+			} else {
+				pr_err("can't identity map IRQ %d\n", irq);
+				continue;
+			}
 		}
 
 		intc_irq_xlate_set(irq, vect->enum_id, d);
@@ -329,18 +351,29 @@ int __init register_intc_controller(struct intc_desc *desc)
 			 * IRQ support, each vector still needs to have
 			 * its own backing irq_desc.
 			 */
-			res = irq_alloc_desc_at(irq2, numa_node_id());
-			if (res != irq2 && res != -EEXIST) {
-				pr_err("can't get irq_desc for %d\n", irq2);
-				continue;
+			res = irq_create_identity_mapping(d->domain, irq2);
+			if (unlikely(res)) {
+				if (res == -EEXIST) {
+					res = irq_domain_associate(d->domain,
+								   irq2, irq2);
+					if (unlikely(res)) {
+						pr_err("domain association "
+						       "failure\n");
+						continue;
+					}
+				} else {
+					pr_err("can't identity map IRQ %d\n",
+					       irq);
+					continue;
+				}
 			}
 
 			vect2->enum_id = 0;
 
 			/* redirect this interrupts to the first one */
-			set_irq_chip(irq2, &dummy_irq_chip);
-			set_irq_chained_handler(irq2, intc_redirect_irq);
-			set_irq_data(irq2, (void *)irq);
+			irq_set_chip(irq2, &dummy_irq_chip);
+			irq_set_chained_handler(irq2, intc_redirect_irq);
+			irq_set_handler_data(irq2, (void *)irq);
 		}
 	}
 
@@ -349,6 +382,8 @@ int __init register_intc_controller(struct intc_desc *desc)
 	/* enable bits matching force_enable after registering irqs */
 	if (desc->force_enable)
 		intc_enable_disable_enum(desc, d, desc->force_enable, 1);
+
+	d->skip_suspend = desc->skip_syscore_suspend;
 
 	nr_intc_controllers++;
 
@@ -375,108 +410,108 @@ err0:
 	return -ENOMEM;
 }
 
-static ssize_t
-show_intc_name(struct sys_device *dev, struct sysdev_attribute *attr, char *buf)
+static int intc_suspend(void)
 {
 	struct intc_desc_int *d;
 
-	d = container_of(dev, struct intc_desc_int, sysdev);
+	list_for_each_entry(d, &intc_list, list) {
+		int irq;
 
-	return sprintf(buf, "%s\n", d->chip.name);
-}
+		if (d->skip_suspend)
+			continue;
 
-static SYSDEV_ATTR(name, S_IRUGO, show_intc_name, NULL);
-
-static int intc_suspend(struct sys_device *dev, pm_message_t state)
-{
-	struct intc_desc_int *d;
-	struct irq_data *data;
-	struct irq_desc *desc;
-	struct irq_chip *chip;
-	int irq;
-
-	/* get intc controller associated with this sysdev */
-	d = container_of(dev, struct intc_desc_int, sysdev);
-
-	switch (state.event) {
-	case PM_EVENT_ON:
-		if (d->state.event != PM_EVENT_FREEZE)
-			break;
-
+		/* enable wakeup irqs belonging to this intc controller */
 		for_each_active_irq(irq) {
-			desc = irq_to_desc(irq);
+			struct irq_data *data;
+			struct irq_chip *chip;
+
 			data = irq_get_irq_data(irq);
 			chip = irq_data_get_irq_chip(data);
+			if (chip != &d->chip)
+				continue;
+			if (irqd_is_wakeup_set(data))
+				chip->irq_enable(data);
+		}
+	}
+	return 0;
+}
 
+static void intc_resume(void)
+{
+	struct intc_desc_int *d;
+
+	list_for_each_entry(d, &intc_list, list) {
+		int irq;
+
+		if (d->skip_suspend)
+			continue;
+
+		for_each_active_irq(irq) {
+			struct irq_data *data;
+			struct irq_chip *chip;
+
+			data = irq_get_irq_data(irq);
+			chip = irq_data_get_irq_chip(data);
 			/*
 			 * This will catch the redirect and VIRQ cases
 			 * due to the dummy_irq_chip being inserted.
 			 */
 			if (chip != &d->chip)
 				continue;
-			if (desc->status & IRQ_DISABLED)
+			if (irqd_irq_disabled(data))
 				chip->irq_disable(data);
 			else
 				chip->irq_enable(data);
 		}
-		break;
-	case PM_EVENT_FREEZE:
-		/* nothing has to be done */
-		break;
-	case PM_EVENT_SUSPEND:
-		/* enable wakeup irqs belonging to this intc controller */
-		for_each_active_irq(irq) {
-			desc = irq_to_desc(irq);
-			data = irq_get_irq_data(irq);
-			chip = irq_data_get_irq_chip(data);
-
-			if (chip != &d->chip)
-				continue;
-			if ((desc->status & IRQ_WAKEUP))
-				chip->irq_enable(data);
-		}
-		break;
 	}
-
-	d->state = state;
-
-	return 0;
 }
 
-static int intc_resume(struct sys_device *dev)
-{
-	return intc_suspend(dev, PMSG_ON);
-}
-
-struct sysdev_class intc_sysdev_class = {
-	.name		= "intc",
+struct syscore_ops intc_syscore_ops = {
 	.suspend	= intc_suspend,
 	.resume		= intc_resume,
 };
 
-/* register this intc as sysdev to allow suspend/resume */
-static int __init register_intc_sysdevs(void)
+struct bus_type intc_subsys = {
+	.name		= "intc",
+	.dev_name	= "intc",
+};
+
+static ssize_t
+show_intc_name(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct intc_desc_int *d;
+
+	d = container_of(dev, struct intc_desc_int, dev);
+
+	return sprintf(buf, "%s\n", d->chip.name);
+}
+
+static DEVICE_ATTR(name, S_IRUGO, show_intc_name, NULL);
+
+static int __init register_intc_devs(void)
 {
 	struct intc_desc_int *d;
 	int error;
 
-	error = sysdev_class_register(&intc_sysdev_class);
+	register_syscore_ops(&intc_syscore_ops);
+
+	error = subsys_system_register(&intc_subsys, NULL);
 	if (!error) {
 		list_for_each_entry(d, &intc_list, list) {
-			d->sysdev.id = d->index;
-			d->sysdev.cls = &intc_sysdev_class;
-			error = sysdev_register(&d->sysdev);
+			d->dev.id = d->index;
+			d->dev.bus = &intc_subsys;
+			error = device_register(&d->dev);
 			if (error == 0)
-				error = sysdev_create_file(&d->sysdev,
-							   &attr_name);
+				error = device_create_file(&d->dev,
+							   &dev_attr_name);
 			if (error)
 				break;
 		}
 	}
 
 	if (error)
-		pr_err("sysdev registration error\n");
+		pr_err("device registration error\n");
 
 	return error;
 }
-device_initcall(register_intc_sysdevs);
+device_initcall(register_intc_devs);

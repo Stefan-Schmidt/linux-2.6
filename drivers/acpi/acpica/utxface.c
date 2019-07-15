@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2012, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -41,12 +41,14 @@
  * POSSIBILITY OF SUCH DAMAGES.
  */
 
+#include <linux/export.h>
 #include <acpi/acpi.h>
 #include "accommon.h"
 #include "acevents.h"
 #include "acnamesp.h"
 #include "acdebug.h"
 #include "actables.h"
+#include "acinterp.h"
 
 #define _COMPONENT          ACPI_UTILITIES
 ACPI_MODULE_NAME("utxface")
@@ -129,7 +131,7 @@ acpi_status __init acpi_initialize_subsystem(void)
  *
  * FUNCTION:    acpi_enable_subsystem
  *
- * PARAMETERS:  Flags           - Init/enable Options
+ * PARAMETERS:  flags           - Init/enable Options
  *
  * RETURN:      Status
  *
@@ -142,6 +144,8 @@ acpi_status acpi_enable_subsystem(u32 flags)
 	acpi_status status = AE_OK;
 
 	ACPI_FUNCTION_TRACE(acpi_enable_subsystem);
+
+#if (!ACPI_REDUCED_HARDWARE)
 
 	/* Enable ACPI mode */
 
@@ -167,6 +171,7 @@ acpi_status acpi_enable_subsystem(u32 flags)
 		ACPI_WARNING((AE_INFO, "Could not map the FACS table"));
 		return_ACPI_STATUS(status);
 	}
+#endif				/* !ACPI_REDUCED_HARDWARE */
 
 	/*
 	 * Install the default op_region handlers. These are installed unless
@@ -182,7 +187,7 @@ acpi_status acpi_enable_subsystem(u32 flags)
 			return_ACPI_STATUS(status);
 		}
 	}
-
+#if (!ACPI_REDUCED_HARDWARE)
 	/*
 	 * Initialize ACPI Event handling (Fixed and General Purpose)
 	 *
@@ -218,6 +223,7 @@ acpi_status acpi_enable_subsystem(u32 flags)
 			return_ACPI_STATUS(status);
 		}
 	}
+#endif				/* !ACPI_REDUCED_HARDWARE */
 
 	return_ACPI_STATUS(status);
 }
@@ -228,7 +234,7 @@ ACPI_EXPORT_SYMBOL(acpi_enable_subsystem)
  *
  * FUNCTION:    acpi_initialize_objects
  *
- * PARAMETERS:  Flags           - Init/enable Options
+ * PARAMETERS:  flags           - Init/enable Options
  *
  * RETURN:      Status
  *
@@ -403,7 +409,7 @@ ACPI_EXPORT_SYMBOL(acpi_subsystem_status)
  * PARAMETERS:  out_buffer      - A buffer to receive the resources for the
  *                                device
  *
- * RETURN:      Status          - the status of the call
+ * RETURN:      status          - the status of the call
  *
  * DESCRIPTION: This function is called to get information about the current
  *              state of the ACPI subsystem.  It will return system information
@@ -474,8 +480,8 @@ ACPI_EXPORT_SYMBOL(acpi_get_system_info)
  *
  * FUNCTION:    acpi_install_initialization_handler
  *
- * PARAMETERS:  Handler             - Callback procedure
- *              Function            - Not (currently) used, see below
+ * PARAMETERS:  handler             - Callback procedure
+ *              function            - Not (currently) used, see below
  *
  * RETURN:      Status
  *
@@ -612,7 +618,7 @@ ACPI_EXPORT_SYMBOL(acpi_remove_interface)
  *
  * FUNCTION:    acpi_install_interface_handler
  *
- * PARAMETERS:  Handler             - The _OSI interface handler to install
+ * PARAMETERS:  handler             - The _OSI interface handler to install
  *                                    NULL means "remove existing handler"
  *
  * RETURN:      Status
@@ -639,4 +645,41 @@ acpi_status acpi_install_interface_handler(acpi_interface_handler handler)
 }
 
 ACPI_EXPORT_SYMBOL(acpi_install_interface_handler)
+
+/*****************************************************************************
+ *
+ * FUNCTION:    acpi_check_address_range
+ *
+ * PARAMETERS:  space_id            - Address space ID
+ *              address             - Start address
+ *              length              - Length
+ *              warn                - TRUE if warning on overlap desired
+ *
+ * RETURN:      Count of the number of conflicts detected.
+ *
+ * DESCRIPTION: Check if the input address range overlaps any of the
+ *              ASL operation region address ranges.
+ *
+ ****************************************************************************/
+u32
+acpi_check_address_range(acpi_adr_space_type space_id,
+			 acpi_physical_address address,
+			 acpi_size length, u8 warn)
+{
+	u32 overlaps;
+	acpi_status status;
+
+	status = acpi_ut_acquire_mutex(ACPI_MTX_NAMESPACE);
+	if (ACPI_FAILURE(status)) {
+		return (0);
+	}
+
+	overlaps = acpi_ut_check_address_range(space_id, address,
+					       (u32)length, warn);
+
+	(void)acpi_ut_release_mutex(ACPI_MTX_NAMESPACE);
+	return (overlaps);
+}
+
+ACPI_EXPORT_SYMBOL(acpi_check_address_range)
 #endif				/* !ACPI_ASL_COMPILER */

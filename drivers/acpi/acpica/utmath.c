@@ -5,7 +5,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2012, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -73,8 +73,8 @@ typedef union uint64_overlay {
  *
  * FUNCTION:    acpi_ut_short_divide
  *
- * PARAMETERS:  Dividend            - 64-bit dividend
- *              Divisor             - 32-bit divisor
+ * PARAMETERS:  dividend            - 64-bit dividend
+ *              divisor             - 32-bit divisor
  *              out_quotient        - Pointer to where the quotient is returned
  *              out_remainder       - Pointer to where the remainder is returned
  *

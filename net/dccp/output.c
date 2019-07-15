@@ -27,11 +27,13 @@ static inline void dccp_event_ack_sent(struct sock *sk)
 	inet_csk_clear_xmit_timer(sk, ICSK_TIME_DACK);
 }
 
-static void dccp_skb_entail(struct sock *sk, struct sk_buff *skb)
+/* enqueue @skb on sk_send_head for retransmission, return clone to send now */
+static struct sk_buff *dccp_skb_entail(struct sock *sk, struct sk_buff *skb)
 {
 	skb_set_owner_w(skb, sk);
 	WARN_ON(sk->sk_send_head);
 	sk->sk_send_head = skb;
+	return skb_clone(sk->sk_send_head, gfp_any());
 }
 
 /*
@@ -43,7 +45,7 @@ static void dccp_skb_entail(struct sock *sk, struct sk_buff *skb)
 static int dccp_transmit_skb(struct sock *sk, struct sk_buff *skb)
 {
 	if (likely(skb != NULL)) {
-		const struct inet_sock *inet = inet_sk(sk);
+		struct inet_sock *inet = inet_sk(sk);
 		const struct inet_connection_sock *icsk = inet_csk(sk);
 		struct dccp_sock *dp = dccp_sk(sk);
 		struct dccp_skb_cb *dcb = DCCP_SKB_CB(skb);
@@ -136,14 +138,14 @@ static int dccp_transmit_skb(struct sock *sk, struct sk_buff *skb)
 
 		DCCP_INC_STATS(DCCP_MIB_OUTSEGS);
 
-		err = icsk->icsk_af_ops->queue_xmit(skb);
+		err = icsk->icsk_af_ops->queue_xmit(skb, &inet->cork.fl);
 		return net_xmit_eval(err);
 	}
 	return -ENOBUFS;
 }
 
 /**
- * dccp_determine_ccmps  -  Find out about CCID-specfic packet-size limits
+ * dccp_determine_ccmps  -  Find out about CCID-specific packet-size limits
  * We only consider the HC-sender CCID for setting the CCMPS (RFC 4340, 14.),
  * since the RX CCID is restricted to feedback packets (Acks), which are small
  * in comparison with the data traffic. A value of 0 means "no current CCMPS".
@@ -212,6 +214,7 @@ void dccp_write_space(struct sock *sk)
  * dccp_wait_for_ccid  -  Await CCID send permission
  * @sk:    socket to wait for
  * @delay: timeout in jiffies
+ *
  * This is used by CCIDs which need to delay the send time in process context.
  */
 static int dccp_wait_for_ccid(struct sock *sk, unsigned long delay)
@@ -242,7 +245,7 @@ static void dccp_xmit_packet(struct sock *sk)
 {
 	int err, len;
 	struct dccp_sock *dp = dccp_sk(sk);
-	struct sk_buff *skb = skb_dequeue(&sk->sk_write_queue);
+	struct sk_buff *skb = dccp_qpolicy_pop(sk);
 
 	if (unlikely(skb == NULL))
 		return;
@@ -283,6 +286,15 @@ static void dccp_xmit_packet(struct sock *sk)
 	 * any local drop will eventually be reported via receiver feedback.
 	 */
 	ccid_hc_tx_packet_sent(dp->dccps_hc_tx_ccid, sk, len);
+
+	/*
+	 * If the CCID needs to transfer additional header options out-of-band
+	 * (e.g. Ack Vectors or feature-negotiation options), it activates this
+	 * flag to schedule a Sync. The Sync will automatically incorporate all
+	 * currently pending header options, thus clearing the backlog.
+	 */
+	if (dp->dccps_sync_scheduled)
+		dccp_send_sync(sk, dp->dccps_gsr, DCCP_PKT_SYNC);
 }
 
 /**
@@ -336,7 +348,7 @@ void dccp_write_xmit(struct sock *sk)
 	struct dccp_sock *dp = dccp_sk(sk);
 	struct sk_buff *skb;
 
-	while ((skb = skb_peek(&sk->sk_write_queue))) {
+	while ((skb = dccp_qpolicy_top(sk))) {
 		int rc = ccid_hc_tx_send_packet(dp->dccps_hc_tx_ccid, sk, skb);
 
 		switch (ccid_packet_dequeue_eval(rc)) {
@@ -350,8 +362,7 @@ void dccp_write_xmit(struct sock *sk)
 			dccp_xmit_packet(sk);
 			break;
 		case CCID_PACKET_ERR:
-			skb_dequeue(&sk->sk_write_queue);
-			kfree_skb(skb);
+			dccp_qpolicy_drop(sk, skb);
 			dccp_pr_debug("packet discarded due to err=%d\n", rc);
 		}
 	}
@@ -398,10 +409,10 @@ struct sk_buff *dccp_make_response(struct sock *sk, struct dst_entry *dst,
 	skb_dst_set(skb, dst_clone(dst));
 
 	dreq = dccp_rsk(req);
-	if (inet_rsk(req)->acked)	/* increase ISS upon retransmission */
-		dccp_inc_seqno(&dreq->dreq_iss);
+	if (inet_rsk(req)->acked)	/* increase GSS upon retransmission */
+		dccp_inc_seqno(&dreq->dreq_gss);
 	DCCP_SKB_CB(skb)->dccpd_type = DCCP_PKT_RESPONSE;
-	DCCP_SKB_CB(skb)->dccpd_seq  = dreq->dreq_iss;
+	DCCP_SKB_CB(skb)->dccpd_seq  = dreq->dreq_gss;
 
 	/* Resolve feature dependencies resulting from choice of CCID */
 	if (dccp_feat_server_ccid_dependencies(dreq))
@@ -419,8 +430,8 @@ struct sk_buff *dccp_make_response(struct sock *sk, struct dst_entry *dst,
 			   DCCP_SKB_CB(skb)->dccpd_opt_len) / 4;
 	dh->dccph_type	= DCCP_PKT_RESPONSE;
 	dh->dccph_x	= 1;
-	dccp_hdr_set_seq(dh, dreq->dreq_iss);
-	dccp_hdr_set_ack(dccp_hdr_ack_bits(skb), dreq->dreq_isr);
+	dccp_hdr_set_seq(dh, dreq->dreq_gss);
+	dccp_hdr_set_ack(dccp_hdr_ack_bits(skb), dreq->dreq_gsr);
 	dccp_hdr_response(skb)->dccph_resp_service = dreq->dreq_service;
 
 	dccp_csum_outgoing(skb);
@@ -544,8 +555,7 @@ int dccp_connect(struct sock *sk)
 
 	DCCP_SKB_CB(skb)->dccpd_type = DCCP_PKT_REQUEST;
 
-	dccp_skb_entail(sk, skb);
-	dccp_transmit_skb(sk, skb_clone(skb, GFP_KERNEL));
+	dccp_transmit_skb(sk, dccp_skb_entail(sk, skb));
 	DCCP_INC_STATS(DCCP_MIB_ACTIVEOPENS);
 
 	/* Timer for repeating the REQUEST until an answer. */
@@ -636,6 +646,12 @@ void dccp_send_sync(struct sock *sk, const u64 ackno,
 	DCCP_SKB_CB(skb)->dccpd_type = pkt_type;
 	DCCP_SKB_CB(skb)->dccpd_ack_seq = ackno;
 
+	/*
+	 * Clear the flag in case the Sync was scheduled for out-of-band data,
+	 * such as carrying a long Ack Vector.
+	 */
+	dccp_sk(sk)->dccps_sync_scheduled = 0;
+
 	dccp_transmit_skb(sk, skb);
 }
 
@@ -664,8 +680,7 @@ void dccp_send_close(struct sock *sk, const int active)
 		DCCP_SKB_CB(skb)->dccpd_type = DCCP_PKT_CLOSE;
 
 	if (active) {
-		dccp_skb_entail(sk, skb);
-		dccp_transmit_skb(sk, skb_clone(skb, prio));
+		skb = dccp_skb_entail(sk, skb);
 		/*
 		 * Retransmission timer for active-close: RFC 4340, 8.3 requires
 		 * to retransmit the Close/CloseReq until the CLOSING/CLOSEREQ
@@ -678,6 +693,6 @@ void dccp_send_close(struct sock *sk, const int active)
 		 */
 		inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS,
 					  DCCP_TIMEOUT_INIT, DCCP_RTO_MAX);
-	} else
-		dccp_transmit_skb(sk, skb);
+	}
+	dccp_transmit_skb(sk, skb);
 }

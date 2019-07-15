@@ -1,8 +1,6 @@
 /*
- *  include/asm-s390/timex.h
- *
  *  S390 version
- *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright IBM Corp. 1999
  *
  *  Derived from "include/asm-i386/timex.h"
  *    Copyright (C) 1992, Linus Torvalds
@@ -10,6 +8,8 @@
 
 #ifndef _ASM_S390_TIMEX_H
 #define _ASM_S390_TIMEX_H
+
+#include <asm/lowcore.h>
 
 /* The value of the TOD clock for 1.1.1970. */
 #define TOD_UNIX_EPOCH 0x7d91048bca000000ULL
@@ -49,15 +49,37 @@ static inline void store_clock_comparator(__u64 *time)
 	asm volatile("stckc %0" : "=Q" (*time));
 }
 
+void clock_comparator_work(void);
+
+static inline unsigned long long local_tick_disable(void)
+{
+	unsigned long long old;
+
+	old = S390_lowcore.clock_comparator;
+	S390_lowcore.clock_comparator = -1ULL;
+	set_clock_comparator(S390_lowcore.clock_comparator);
+	return old;
+}
+
+static inline void local_tick_enable(unsigned long long comp)
+{
+	S390_lowcore.clock_comparator = comp;
+	set_clock_comparator(S390_lowcore.clock_comparator);
+}
+
 #define CLOCK_TICK_RATE	1193180 /* Underlying HZ */
 
 typedef unsigned long long cycles_t;
 
-static inline unsigned long long get_clock (void)
+static inline unsigned long long get_clock(void)
 {
 	unsigned long long clk;
 
+#ifdef CONFIG_HAVE_MARCH_Z9_109_FEATURES
+	asm volatile(".insn s,0xb27c0000,%0" : "=Q" (clk) : : "cc");
+#else
 	asm volatile("stck %0" : "=Q" (clk) : : "cc");
+#endif
 	return clk;
 }
 

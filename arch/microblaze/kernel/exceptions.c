@@ -25,6 +25,7 @@
 #include <linux/errno.h>
 #include <linux/ptrace.h>
 #include <asm/current.h>
+#include <asm/cacheflush.h>
 
 #define MICROBLAZE_ILL_OPCODE_EXCEPTION	0x02
 #define MICROBLAZE_IBUS_EXCEPTION	0x03
@@ -49,9 +50,11 @@ void die(const char *str, struct pt_regs *fp, long err)
 }
 
 /* for user application debugging */
-void sw_exception(struct pt_regs *regs)
+asmlinkage void sw_exception(struct pt_regs *regs)
 {
 	_exception(SIGTRAP, regs, TRAP_BRKPT, regs->r16);
+	flush_dcache_range(regs->r16, regs->r16 + 0x4);
+	flush_icache_range(regs->r16, regs->r16 + 0x4);
 }
 
 void _exception(int signr, struct pt_regs *regs, int code, unsigned long addr)
@@ -116,7 +119,7 @@ asmlinkage void full_exception(struct pt_regs *regs, unsigned int type,
 	case MICROBLAZE_DIV_ZERO_EXCEPTION:
 		if (user_mode(regs)) {
 			pr_debug("Divide by zero exception in user mode\n");
-			_exception(SIGILL, regs, FPE_INTDIV, addr);
+			_exception(SIGFPE, regs, FPE_INTDIV, addr);
 			return;
 		}
 		printk(KERN_WARNING "Divide by zero exception " \

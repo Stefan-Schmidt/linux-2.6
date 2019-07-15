@@ -504,6 +504,8 @@ static struct pcxhr_cmd_info pcxhr_dsp_cmds[] = {
 [CMD_FORMAT_STREAM_IN] =		{ 0x870000, 0, RMH_SSIZE_FIXED },
 [CMD_STREAM_SAMPLE_COUNT] =		{ 0x902000, 2, RMH_SSIZE_FIXED },
 [CMD_AUDIO_LEVEL_ADJUST] =		{ 0xc22000, 0, RMH_SSIZE_FIXED },
+[CMD_GET_TIME_CODE] =			{ 0x060000, 5, RMH_SSIZE_FIXED },
+[CMD_MANAGE_SIGNAL] =			{ 0x0f0000, 0, RMH_SSIZE_FIXED },
 };
 
 #ifdef CONFIG_SND_DEBUG_VERBOSE
@@ -533,6 +535,8 @@ static char* cmd_names[] = {
 [CMD_FORMAT_STREAM_IN] =		"CMD_FORMAT_STREAM_IN",
 [CMD_STREAM_SAMPLE_COUNT] =		"CMD_STREAM_SAMPLE_COUNT",
 [CMD_AUDIO_LEVEL_ADJUST] =		"CMD_AUDIO_LEVEL_ADJUST",
+[CMD_GET_TIME_CODE] =			"CMD_GET_TIME_CODE",
+[CMD_MANAGE_SIGNAL] =			"CMD_MANAGE_SIGNAL",
 };
 #endif
 
@@ -1042,11 +1046,11 @@ void pcxhr_msg_tasklet(unsigned long arg)
 	int i, j;
 
 	if (mgr->src_it_dsp & PCXHR_IRQ_FREQ_CHANGE)
-		snd_printdd("TASKLET : PCXHR_IRQ_FREQ_CHANGE event occured\n");
+		snd_printdd("TASKLET : PCXHR_IRQ_FREQ_CHANGE event occurred\n");
 	if (mgr->src_it_dsp & PCXHR_IRQ_TIME_CODE)
-		snd_printdd("TASKLET : PCXHR_IRQ_TIME_CODE event occured\n");
+		snd_printdd("TASKLET : PCXHR_IRQ_TIME_CODE event occurred\n");
 	if (mgr->src_it_dsp & PCXHR_IRQ_NOTIFY)
-		snd_printdd("TASKLET : PCXHR_IRQ_NOTIFY event occured\n");
+		snd_printdd("TASKLET : PCXHR_IRQ_NOTIFY event occurred\n");
 	if (mgr->src_it_dsp & (PCXHR_IRQ_FREQ_CHANGE | PCXHR_IRQ_TIME_CODE)) {
 		/* clear events FREQ_CHANGE and TIME_CODE */
 		pcxhr_init_rmh(prmh, CMD_TEST_IT);
@@ -1055,7 +1059,7 @@ void pcxhr_msg_tasklet(unsigned long arg)
 			    err, prmh->stat[0]);
 	}
 	if (mgr->src_it_dsp & PCXHR_IRQ_ASYNC) {
-		snd_printdd("TASKLET : PCXHR_IRQ_ASYNC event occured\n");
+		snd_printdd("TASKLET : PCXHR_IRQ_ASYNC event occurred\n");
 
 		pcxhr_init_rmh(prmh, CMD_ASYNC);
 		prmh->cmd[0] |= 1;	/* add SEL_ASYNC_EVENTS */
@@ -1133,13 +1137,12 @@ static u_int64_t pcxhr_stream_read_position(struct pcxhr_mgr *mgr,
 	hw_sample_count = ((u_int64_t)rmh.stat[0]) << 24;
 	hw_sample_count += (u_int64_t)rmh.stat[1];
 
-	snd_printdd("stream %c%d : abs samples real(%ld) timer(%ld)\n",
+	snd_printdd("stream %c%d : abs samples real(%llu) timer(%llu)\n",
 		    stream->pipe->is_capture ? 'C' : 'P',
 		    stream->substream->number,
-		    (long unsigned int)hw_sample_count,
-		    (long unsigned int)(stream->timer_abs_periods +
-					stream->timer_period_frag +
-					mgr->granularity));
+		    hw_sample_count,
+		    stream->timer_abs_periods + stream->timer_period_frag +
+						mgr->granularity);
 	return hw_sample_count;
 }
 
@@ -1233,7 +1236,7 @@ irqreturn_t pcxhr_interrupt(int irq, void *dev_id)
 	reg = PCXHR_INPL(mgr, PCXHR_PLX_L2PCIDB);
 	PCXHR_OUTPL(mgr, PCXHR_PLX_L2PCIDB, reg);
 
-	/* timer irq occured */
+	/* timer irq occurred */
 	if (reg & PCXHR_IRQ_TIMER) {
 		int timer_toggle = reg & PCXHR_IRQ_TIMER;
 		/* is a 24 bit counter */
@@ -1243,10 +1246,18 @@ irqreturn_t pcxhr_interrupt(int irq, void *dev_id)
 
 		if ((dsp_time_diff < 0) &&
 		    (mgr->dsp_time_last != PCXHR_DSP_TIME_INVALID)) {
-			snd_printdd("ERROR DSP TIME old(%d) new(%d) -> "
-				    "resynchronize all streams\n",
+			/* handle dsp counter wraparound without resync */
+			int tmp_diff = dsp_time_diff + PCXHR_DSP_TIME_MASK + 1;
+			snd_printdd("WARNING DSP timestamp old(%d) new(%d)",
 				    mgr->dsp_time_last, dsp_time_new);
-			mgr->dsp_time_err++;
+			if (tmp_diff > 0 && tmp_diff <= (2*mgr->granularity)) {
+				snd_printdd("-> timestamp wraparound OK: "
+					    "diff=%d\n", tmp_diff);
+				dsp_time_diff = tmp_diff;
+			} else {
+				snd_printdd("-> resynchronize all streams\n");
+				mgr->dsp_time_err++;
+			}
 		}
 #ifdef CONFIG_SND_DEBUG_VERBOSE
 		if (dsp_time_diff == 0)
@@ -1288,7 +1299,7 @@ irqreturn_t pcxhr_interrupt(int irq, void *dev_id)
 	if (reg & PCXHR_IRQ_MASK) {
 		if (reg & PCXHR_IRQ_ASYNC) {
 			/* as we didn't request any async notifications,
-			 * some kind of xrun error will probably occured
+			 * some kind of xrun error will probably occurred
 			 */
 			/* better resynchronize all streams next interrupt : */
 			mgr->dsp_time_last = PCXHR_DSP_TIME_INVALID;

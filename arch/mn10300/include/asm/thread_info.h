@@ -20,8 +20,10 @@
 
 #ifdef CONFIG_4KSTACKS
 #define THREAD_SIZE		(4096)
+#define THREAD_SIZE_ORDER	(0)
 #else
 #define THREAD_SIZE		(8192)
+#define THREAD_SIZE_ORDER	(1)
 #endif
 
 #define STACK_WARN		(THREAD_SIZE / 8)
@@ -120,16 +122,9 @@ static inline unsigned long current_stack_pointer(void)
 	return sp;
 }
 
-#define __HAVE_ARCH_THREAD_INFO_ALLOCATOR
-
-/* thread information allocation */
-#ifdef CONFIG_DEBUG_STACK_USAGE
-#define alloc_thread_info(tsk) kzalloc(THREAD_SIZE, GFP_KERNEL)
-#else
-#define alloc_thread_info(tsk) kmalloc(THREAD_SIZE, GFP_KERNEL)
+#ifndef CONFIG_KGDB
+void arch_release_thread_info(struct thread_info *ti);
 #endif
-
-#define free_thread_info(ti)	kfree((ti))
 #define get_thread_info(ti)	get_task_struct((ti)->task)
 #define put_thread_info(ti)	put_task_struct((ti)->task)
 
@@ -159,7 +154,6 @@ static inline unsigned long current_stack_pointer(void)
 #define TIF_RESTORE_SIGMASK	5	/* restore signal mask in do_signal() */
 #define TIF_POLLING_NRFLAG	16	/* true if poll_idle() is polling TIF_NEED_RESCHED */
 #define TIF_MEMDIE		17	/* is terminating due to OOM killer */
-#define TIF_FREEZE		18	/* freezing for suspend */
 
 #define _TIF_SYSCALL_TRACE	+(1 << TIF_SYSCALL_TRACE)
 #define _TIF_NOTIFY_RESUME	+(1 << TIF_NOTIFY_RESUME)
@@ -168,7 +162,6 @@ static inline unsigned long current_stack_pointer(void)
 #define _TIF_SINGLESTEP		+(1 << TIF_SINGLESTEP)
 #define _TIF_RESTORE_SIGMASK	+(1 << TIF_RESTORE_SIGMASK)
 #define _TIF_POLLING_NRFLAG	+(1 << TIF_POLLING_NRFLAG)
-#define _TIF_FREEZE		+(1 << TIF_FREEZE)
 
 #define _TIF_WORK_MASK		0x0000FFFE	/* work to do on interrupt/exception return */
 #define _TIF_ALLWORK_MASK	0x0000FFFF	/* work to do on any return to u-space */

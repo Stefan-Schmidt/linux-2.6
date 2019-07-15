@@ -81,7 +81,8 @@ static int gfs2_uuid_valid(const u8 *uuid)
 
 static ssize_t uuid_show(struct gfs2_sbd *sdp, char *buf)
 {
-	const u8 *uuid = sdp->sd_sb.sb_uuid;
+	struct super_block *s = sdp->sd_vfs;
+	const u8 *uuid = s->s_uuid;
 	buf[0] = '\0';
 	if (!gfs2_uuid_valid(uuid))
 		return 0;
@@ -167,7 +168,7 @@ static ssize_t quota_sync_store(struct gfs2_sbd *sdp, const char *buf,
 	if (simple_strtol(buf, NULL, 0) != 1)
 		return -EINVAL;
 
-	gfs2_quota_sync(sdp->sd_vfs, 0, 1);
+	gfs2_quota_sync(sdp->sd_vfs, 0);
 	return len;
 }
 
@@ -275,7 +276,15 @@ static struct attribute *gfs2_attrs[] = {
 	NULL,
 };
 
+static void gfs2_sbd_release(struct kobject *kobj)
+{
+	struct gfs2_sbd *sdp = container_of(kobj, struct gfs2_sbd, sd_kobj);
+
+	kfree(sdp);
+}
+
 static struct kobj_type gfs2_ktype = {
+	.release = gfs2_sbd_release,
 	.default_attrs = gfs2_attrs,
 	.sysfs_ops     = &gfs2_attr_ops,
 };
@@ -297,7 +306,7 @@ static ssize_t block_show(struct gfs2_sbd *sdp, char *buf)
 	ssize_t ret;
 	int val = 0;
 
-	if (test_bit(DFL_BLOCK_LOCKS, &ls->ls_flags))
+	if (test_bit(DFL_BLOCK_LOCKS, &ls->ls_recover_flags))
 		val = 1;
 	ret = sprintf(buf, "%d\n", val);
 	return ret;
@@ -312,9 +321,9 @@ static ssize_t block_store(struct gfs2_sbd *sdp, const char *buf, size_t len)
 	val = simple_strtol(buf, NULL, 0);
 
 	if (val == 1)
-		set_bit(DFL_BLOCK_LOCKS, &ls->ls_flags);
+		set_bit(DFL_BLOCK_LOCKS, &ls->ls_recover_flags);
 	else if (val == 0) {
-		clear_bit(DFL_BLOCK_LOCKS, &ls->ls_flags);
+		clear_bit(DFL_BLOCK_LOCKS, &ls->ls_recover_flags);
 		smp_mb__after_clear_bit();
 		gfs2_glock_thaw(sdp);
 	} else {
@@ -337,6 +346,9 @@ static ssize_t lkfirst_store(struct gfs2_sbd *sdp, const char *buf, size_t len)
 	rv = sscanf(buf, "%u", &first);
 	if (rv != 1 || first > 1)
 		return -EINVAL;
+	rv = wait_for_completion_killable(&sdp->sd_locking_init);
+	if (rv)
+		return rv;
 	spin_lock(&sdp->sd_jindex_spin);
 	rv = -EBUSY;
 	if (test_bit(SDF_NOJOURNALID, &sdp->sd_flags) == 0)
@@ -346,8 +358,8 @@ static ssize_t lkfirst_store(struct gfs2_sbd *sdp, const char *buf, size_t len)
 		goto out;
 	if (sdp->sd_lockstruct.ls_ops->lm_mount == NULL)
 		goto out;
-        sdp->sd_lockstruct.ls_first = first;
-        rv = 0;
+	sdp->sd_lockstruct.ls_first = first;
+	rv = 0;
 out:
         spin_unlock(&sdp->sd_jindex_spin);
         return rv ? rv : len;
@@ -356,23 +368,15 @@ out:
 static ssize_t first_done_show(struct gfs2_sbd *sdp, char *buf)
 {
 	struct lm_lockstruct *ls = &sdp->sd_lockstruct;
-	return sprintf(buf, "%d\n", ls->ls_first_done);
+	return sprintf(buf, "%d\n", !!test_bit(DFL_FIRST_MOUNT_DONE, &ls->ls_recover_flags));
 }
 
-static ssize_t recover_store(struct gfs2_sbd *sdp, const char *buf, size_t len)
+int gfs2_recover_set(struct gfs2_sbd *sdp, unsigned jid)
 {
-	unsigned jid;
 	struct gfs2_jdesc *jd;
 	int rv;
 
-	rv = sscanf(buf, "%u", &jid);
-	if (rv != 1)
-		return -EINVAL;
-
-	rv = -ESHUTDOWN;
 	spin_lock(&sdp->sd_jindex_spin);
-	if (test_bit(SDF_NORECOVERY, &sdp->sd_flags))
-		goto out;
 	rv = -EBUSY;
 	if (sdp->sd_jdesc->jd_jid == jid)
 		goto out;
@@ -385,6 +389,25 @@ static ssize_t recover_store(struct gfs2_sbd *sdp, const char *buf, size_t len)
 	}
 out:
 	spin_unlock(&sdp->sd_jindex_spin);
+	return rv;
+}
+
+static ssize_t recover_store(struct gfs2_sbd *sdp, const char *buf, size_t len)
+{
+	unsigned jid;
+	int rv;
+
+	rv = sscanf(buf, "%u", &jid);
+	if (rv != 1)
+		return -EINVAL;
+
+	if (test_bit(SDF_NORECOVERY, &sdp->sd_flags)) {
+		rv = -ESHUTDOWN;
+		goto out;
+	}
+
+	rv = gfs2_recover_set(sdp, jid);
+out:
 	return rv ? rv : len;
 }
 
@@ -413,7 +436,9 @@ static ssize_t jid_store(struct gfs2_sbd *sdp, const char *buf, size_t len)
 	rv = sscanf(buf, "%d", &jid);
 	if (rv != 1)
 		return -EINVAL;
-
+	rv = wait_for_completion_killable(&sdp->sd_locking_init);
+	if (rv)
+		return rv;
 	spin_lock(&sdp->sd_jindex_spin);
 	rv = -EINVAL;
 	if (sdp->sd_lockstruct.ls_ops->lm_mount == NULL)
@@ -566,6 +591,7 @@ int gfs2_sys_fs_add(struct gfs2_sbd *sdp)
 	char ro[20];
 	char spectator[20];
 	char *envp[] = { ro, spectator, NULL };
+	int sysfs_frees_sdp = 0;
 
 	sprintf(ro, "RDONLY=%d", (sb->s_flags & MS_RDONLY) ? 1 : 0);
 	sprintf(spectator, "SPECTATOR=%d", sdp->sd_args.ar_spectator ? 1 : 0);
@@ -574,8 +600,10 @@ int gfs2_sys_fs_add(struct gfs2_sbd *sdp)
 	error = kobject_init_and_add(&sdp->sd_kobj, &gfs2_ktype, NULL,
 				     "%s", sdp->sd_table_name);
 	if (error)
-		goto fail;
+		goto fail_reg;
 
+	sysfs_frees_sdp = 1; /* Freeing sdp is now done by sysfs calling
+				function gfs2_sbd_release. */
 	error = sysfs_create_group(&sdp->sd_kobj, &tune_group);
 	if (error)
 		goto fail_reg;
@@ -598,9 +626,13 @@ fail_lock_module:
 fail_tune:
 	sysfs_remove_group(&sdp->sd_kobj, &tune_group);
 fail_reg:
-	kobject_put(&sdp->sd_kobj);
-fail:
+	free_percpu(sdp->sd_lkstats);
 	fs_err(sdp, "error %d adding sysfs files", error);
+	if (sysfs_frees_sdp)
+		kobject_put(&sdp->sd_kobj);
+	else
+		kfree(sdp);
+	sb->s_fs_info = NULL;
 	return error;
 }
 
@@ -616,7 +648,8 @@ static int gfs2_uevent(struct kset *kset, struct kobject *kobj,
 		       struct kobj_uevent_env *env)
 {
 	struct gfs2_sbd *sdp = container_of(kobj, struct gfs2_sbd, sd_kobj);
-	const u8 *uuid = sdp->sd_sb.sb_uuid;
+	struct super_block *s = sdp->sd_vfs;
+	const u8 *uuid = s->s_uuid;
 
 	add_uevent_var(env, "LOCKTABLE=%s", sdp->sd_table_name);
 	add_uevent_var(env, "LOCKPROTO=%s", sdp->sd_proto_name);

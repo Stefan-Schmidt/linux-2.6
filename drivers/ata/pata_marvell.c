@@ -38,7 +38,7 @@ static int marvell_pata_active(struct pci_dev *pdev)
 
 	/* We don't yet know how to do this for other devices */
 	if (pdev->device != 0x6145)
-		return 1;	
+		return 1;
 
 	barp = pci_iomap(pdev, 5, 0x10);
 	if (barp == NULL)
@@ -161,6 +161,9 @@ static const struct pci_device_id marvell_pci_tbl[] = {
 	{ PCI_DEVICE(0x11AB, 0x6121), },
 	{ PCI_DEVICE(0x11AB, 0x6123), },
 	{ PCI_DEVICE(0x11AB, 0x6145), },
+	{ PCI_DEVICE(0x1B4B, 0x91A0), },
+	{ PCI_DEVICE(0x1B4B, 0x91A4), },
+
 	{ }	/* terminate list */
 };
 
@@ -175,22 +178,10 @@ static struct pci_driver marvell_pci_driver = {
 #endif
 };
 
-static int __init marvell_init(void)
-{
-	return pci_register_driver(&marvell_pci_driver);
-}
-
-static void __exit marvell_exit(void)
-{
-	pci_unregister_driver(&marvell_pci_driver);
-}
-
-module_init(marvell_init);
-module_exit(marvell_exit);
+module_pci_driver(marvell_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("SCSI low-level driver for Marvell ATA in legacy mode");
 MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pci, marvell_pci_tbl);
 MODULE_VERSION(DRV_VERSION);
-

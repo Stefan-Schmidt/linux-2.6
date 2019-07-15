@@ -27,6 +27,7 @@
 #include <linux/profile.h>
 
 #include <asm/io.h>
+#include <asm/irq_regs.h>
 #include <asm/timer.h>
 
 #define	TICK_SIZE (tick_nsec / 1000)
@@ -35,9 +36,7 @@ void h8300_timer_tick(void)
 {
 	if (current->pid)
 		profile_tick(CPU_PROFILING);
-	write_seqlock(&xtime_lock);
-	do_timer(1);
-	write_sequnlock(&xtime_lock);
+	xtime_update(1);
 	update_process_times(user_mode(get_irq_regs()));
 }
 

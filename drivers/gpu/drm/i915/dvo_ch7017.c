@@ -227,7 +227,7 @@ static bool ch7017_init(struct intel_dvo_device *dvo,
 	default:
 		DRM_DEBUG_KMS("ch701x not detected, got %d: from %s "
 			      "slave %d.\n",
-			      val, adapter->name,dvo->slave_addr);
+			      val, adapter->name, dvo->slave_addr);
 		goto fail;
 	}
 
@@ -242,7 +242,7 @@ fail:
 
 static enum drm_connector_status ch7017_detect(struct intel_dvo_device *dvo)
 {
-	return connector_status_unknown;
+	return connector_status_connected;
 }
 
 static enum drm_mode_status ch7017_mode_valid(struct intel_dvo_device *dvo,

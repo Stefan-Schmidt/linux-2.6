@@ -15,13 +15,24 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/clk.h>
+#include <linux/err.h>
 #include <linux/io.h>
+#include <linux/clocksource.h>
 
+#include <asm/mach/time.h>
+#include <asm/sched_clock.h>
+
+#include <plat/hardware.h>
 #include <plat/common.h>
 #include <plat/board.h>
 
 #include <plat/clock.h>
 
+/* OMAP2_32KSYNCNT_CR_OFF: offset of 32ksync counter register */
+#define OMAP2_32KSYNCNT_REV_OFF		0x0
+#define OMAP2_32KSYNCNT_REV_SCHEME	(0x3 << 30)
+#define OMAP2_32KSYNCNT_CR_OFF_LOW	0x10
+#define OMAP2_32KSYNCNT_CR_OFF_HIGH	0x30
 
 /*
  * 32KHz clocksource ... always available, on pretty most chips except
@@ -29,95 +40,15 @@
  * higher resolution in free-running counter modes (e.g. 12 MHz xtal),
  * but systems won't necessarily want to spend resources that way.
  */
+static void __iomem *sync32k_cnt_reg;
 
-#define OMAP16XX_TIMER_32K_SYNCHRONIZED		0xfffbc410
-
-#if !(defined(CONFIG_ARCH_OMAP730) || defined(CONFIG_ARCH_OMAP15XX))
-
-#include <linux/clocksource.h>
-
-/*
- * offset_32k holds the init time counter value. It is then subtracted
- * from every counter read to achieve a counter that counts time from the
- * kernel boot (needed for sched_clock()).
- */
-static u32 offset_32k __read_mostly;
-
-#ifdef CONFIG_ARCH_OMAP16XX
-static cycle_t omap16xx_32k_read(struct clocksource *cs)
+static u32 notrace omap_32k_read_sched_clock(void)
 {
-	return omap_readl(OMAP16XX_TIMER_32K_SYNCHRONIZED) - offset_32k;
-}
-#else
-#define omap16xx_32k_read	NULL
-#endif
-
-#ifdef CONFIG_ARCH_OMAP2420
-static cycle_t omap2420_32k_read(struct clocksource *cs)
-{
-	return omap_readl(OMAP2420_32KSYNCT_BASE + 0x10) - offset_32k;
-}
-#else
-#define omap2420_32k_read	NULL
-#endif
-
-#ifdef CONFIG_ARCH_OMAP2430
-static cycle_t omap2430_32k_read(struct clocksource *cs)
-{
-	return omap_readl(OMAP2430_32KSYNCT_BASE + 0x10) - offset_32k;
-}
-#else
-#define omap2430_32k_read	NULL
-#endif
-
-#ifdef CONFIG_ARCH_OMAP3
-static cycle_t omap34xx_32k_read(struct clocksource *cs)
-{
-	return omap_readl(OMAP3430_32KSYNCT_BASE + 0x10) - offset_32k;
-}
-#else
-#define omap34xx_32k_read	NULL
-#endif
-
-#ifdef CONFIG_ARCH_OMAP4
-static cycle_t omap44xx_32k_read(struct clocksource *cs)
-{
-	return omap_readl(OMAP4430_32KSYNCT_BASE + 0x10) - offset_32k;
-}
-#else
-#define omap44xx_32k_read	NULL
-#endif
-
-/*
- * Kernel assumes that sched_clock can be called early but may not have
- * things ready yet.
- */
-static cycle_t omap_32k_read_dummy(struct clocksource *cs)
-{
-	return 0;
-}
-
-static struct clocksource clocksource_32k = {
-	.name		= "32k_counter",
-	.rating		= 250,
-	.read		= omap_32k_read_dummy,
-	.mask		= CLOCKSOURCE_MASK(32),
-	.shift		= 10,
-	.flags		= CLOCK_SOURCE_IS_CONTINUOUS,
-};
-
-/*
- * Returns current time from boot in nsecs. It's OK for this to wrap
- * around for now, as it's just a relative time stamp.
- */
-unsigned long long sched_clock(void)
-{
-	return clocksource_cyc2ns(clocksource_32k.read(&clocksource_32k),
-				  clocksource_32k.mult, clocksource_32k.shift);
+	return sync32k_cnt_reg ? __raw_readl(sync32k_cnt_reg) : 0;
 }
 
 /**
- * read_persistent_clock -  Return time from a persistent clock.
+ * omap_read_persistent_clock -  Return time from a persistent clock.
  *
  * Reads the time from a source which isn't disabled during PM, the
  * 32k sync timer.  Convert the cycles elapsed since last read into
@@ -125,59 +56,65 @@ unsigned long long sched_clock(void)
  */
 static struct timespec persistent_ts;
 static cycles_t cycles, last_cycles;
-void read_persistent_clock(struct timespec *ts)
+static unsigned int persistent_mult, persistent_shift;
+static void omap_read_persistent_clock(struct timespec *ts)
 {
 	unsigned long long nsecs;
 	cycles_t delta;
 	struct timespec *tsp = &persistent_ts;
 
 	last_cycles = cycles;
-	cycles = clocksource_32k.read(&clocksource_32k);
+	cycles = sync32k_cnt_reg ? __raw_readl(sync32k_cnt_reg) : 0;
 	delta = cycles - last_cycles;
 
-	nsecs = clocksource_cyc2ns(delta,
-				   clocksource_32k.mult, clocksource_32k.shift);
+	nsecs = clocksource_cyc2ns(delta, persistent_mult, persistent_shift);
 
 	timespec_add_ns(tsp, nsecs);
 	*ts = *tsp;
 }
 
-static int __init omap_init_clocksource_32k(void)
+/**
+ * omap_init_clocksource_32k - setup and register counter 32k as a
+ * kernel clocksource
+ * @pbase: base addr of counter_32k module
+ * @size: size of counter_32k to map
+ *
+ * Returns 0 upon success or negative error code upon failure.
+ *
+ */
+int __init omap_init_clocksource_32k(void __iomem *vbase)
 {
-	static char err[] __initdata = KERN_ERR
-			"%s: can't register clocksource!\n";
+	int ret;
 
-	if (cpu_is_omap16xx() || cpu_class_is_omap2()) {
-		struct clk *sync_32k_ick;
+	/*
+	 * 32k sync Counter IP register offsets vary between the
+	 * highlander version and the legacy ones.
+	 * The 'SCHEME' bits(30-31) of the revision register is used
+	 * to identify the version.
+	 */
+	if (__raw_readl(vbase + OMAP2_32KSYNCNT_REV_OFF) &
+						OMAP2_32KSYNCNT_REV_SCHEME)
+		sync32k_cnt_reg = vbase + OMAP2_32KSYNCNT_CR_OFF_HIGH;
+	else
+		sync32k_cnt_reg = vbase + OMAP2_32KSYNCNT_CR_OFF_LOW;
 
-		if (cpu_is_omap16xx())
-			clocksource_32k.read = omap16xx_32k_read;
-		else if (cpu_is_omap2420())
-			clocksource_32k.read = omap2420_32k_read;
-		else if (cpu_is_omap2430())
-			clocksource_32k.read = omap2430_32k_read;
-		else if (cpu_is_omap34xx())
-			clocksource_32k.read = omap34xx_32k_read;
-		else if (cpu_is_omap44xx())
-			clocksource_32k.read = omap44xx_32k_read;
-		else
-			return -ENODEV;
+	/*
+	 * 120000 rough estimate from the calculations in
+	 * __clocksource_updatefreq_scale.
+	 */
+	clocks_calc_mult_shift(&persistent_mult, &persistent_shift,
+			32768, NSEC_PER_SEC, 120000);
 
-		sync_32k_ick = clk_get(NULL, "omap_32ksync_ick");
-		if (sync_32k_ick)
-			clk_enable(sync_32k_ick);
-
-		clocksource_32k.mult = clocksource_hz2mult(32768,
-					    clocksource_32k.shift);
-
-		offset_32k = clocksource_32k.read(&clocksource_32k);
-
-		if (clocksource_register(&clocksource_32k))
-			printk(err, clocksource_32k.name);
+	ret = clocksource_mmio_init(sync32k_cnt_reg, "32k_counter", 32768,
+				250, 32, clocksource_mmio_readl_up);
+	if (ret) {
+		pr_err("32k_counter: can't register clocksource\n");
+		return ret;
 	}
+
+	setup_sched_clock(omap_32k_read_sched_clock, 32, 32768);
+	register_persistent_clock(NULL, omap_read_persistent_clock);
+	pr_info("OMAP clocksource: 32k_counter at 32768 Hz\n");
+
 	return 0;
 }
-arch_initcall(omap_init_clocksource_32k);
-
-#endif	/* !(defined(CONFIG_ARCH_OMAP730) || defined(CONFIG_ARCH_OMAP15XX)) */
-

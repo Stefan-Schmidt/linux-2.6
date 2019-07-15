@@ -11,12 +11,14 @@
 #include <linux/fs.h>
 #include <linux/gfp.h>
 #include <linux/mm.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/blkdev.h>
 #include <linux/backing-dev.h>
 #include <linux/task_io_accounting_ops.h>
 #include <linux/pagevec.h>
 #include <linux/pagemap.h>
+#include <linux/syscalls.h>
+#include <linux/file.h>
 
 /*
  * Initialise a struct file's readahead state.  Assumes that the caller has
@@ -109,8 +111,11 @@ EXPORT_SYMBOL(read_cache_pages);
 static int read_pages(struct address_space *mapping, struct file *filp,
 		struct list_head *pages, unsigned nr_pages)
 {
+	struct blk_plug plug;
 	unsigned page_idx;
 	int ret;
+
+	blk_start_plug(&plug);
 
 	if (mapping->a_ops->readpages) {
 		ret = mapping->a_ops->readpages(filp, mapping, pages, nr_pages);
@@ -129,7 +134,10 @@ static int read_pages(struct address_space *mapping, struct file *filp,
 		page_cache_release(page);
 	}
 	ret = 0;
+
 out:
+	blk_finish_plug(&plug);
+
 	return ret;
 }
 
@@ -174,7 +182,7 @@ __do_page_cache_readahead(struct address_space *mapping, struct file *filp,
 		if (page)
 			continue;
 
-		page = page_cache_alloc_cold(mapping);
+		page = page_cache_alloc_readahead(mapping);
 		if (!page)
 			break;
 		page->index = page_offset;
@@ -554,17 +562,43 @@ page_cache_async_readahead(struct address_space *mapping,
 
 	/* do read-ahead */
 	ondemand_readahead(mapping, ra, filp, true, offset, req_size);
-
-#ifdef CONFIG_BLOCK
-	/*
-	 * Normally the current page is !uptodate and lock_page() will be
-	 * immediately called to implicitly unplug the device. However this
-	 * is not always true for RAID conifgurations, where data arrives
-	 * not strictly in their submission order. In this case we need to
-	 * explicitly kick off the IO.
-	 */
-	if (PageUptodate(page))
-		blk_run_backing_dev(mapping->backing_dev_info, NULL);
-#endif
 }
 EXPORT_SYMBOL_GPL(page_cache_async_readahead);
+
+static ssize_t
+do_readahead(struct address_space *mapping, struct file *filp,
+	     pgoff_t index, unsigned long nr)
+{
+	if (!mapping || !mapping->a_ops || !mapping->a_ops->readpage)
+		return -EINVAL;
+
+	force_page_cache_readahead(mapping, filp, index, nr);
+	return 0;
+}
+
+SYSCALL_DEFINE(readahead)(int fd, loff_t offset, size_t count)
+{
+	ssize_t ret;
+	struct file *file;
+
+	ret = -EBADF;
+	file = fget(fd);
+	if (file) {
+		if (file->f_mode & FMODE_READ) {
+			struct address_space *mapping = file->f_mapping;
+			pgoff_t start = offset >> PAGE_CACHE_SHIFT;
+			pgoff_t end = (offset + count - 1) >> PAGE_CACHE_SHIFT;
+			unsigned long len = end - start + 1;
+			ret = do_readahead(mapping, file, start, len);
+		}
+		fput(file);
+	}
+	return ret;
+}
+#ifdef CONFIG_HAVE_SYSCALL_WRAPPERS
+asmlinkage long SyS_readahead(long fd, loff_t offset, long count)
+{
+	return SYSC_readahead((int) fd, offset, (size_t) count);
+}
+SYSCALL_ALIAS(sys_readahead, SyS_readahead);
+#endif

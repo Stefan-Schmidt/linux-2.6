@@ -46,9 +46,7 @@
 
 #include <linux/pci.h>
 #include <linux/i2c.h>
-#include <linux/i2c-algo-bit.h>
 #include <linux/kdev_t.h>
-#include <linux/version.h>
 #include <linux/mutex.h>
 #include <linux/crc32.h>
 #include <linux/kthread.h>
@@ -58,7 +56,6 @@
 #include <media/tveeprom.h>
 #include <media/videobuf-dma-sg.h>
 #include <media/videobuf-dvb.h>
-#include <linux/smp_lock.h>
 #include <dvb_demux.h>
 #include <dvb_frontend.h>
 #include <dvb_net.h>
@@ -84,6 +81,8 @@
 #define SAA7164_BOARD_HAUPPAUGE_HVR2200_3	6
 #define SAA7164_BOARD_HAUPPAUGE_HVR2250_2	7
 #define SAA7164_BOARD_HAUPPAUGE_HVR2250_3	8
+#define SAA7164_BOARD_HAUPPAUGE_HVR2200_4	9
+#define SAA7164_BOARD_HAUPPAUGE_HVR2200_5	10
 
 #define SAA7164_MAX_UNITS		8
 #define SAA7164_TS_NUMBER_OF_LINES	312
@@ -114,7 +113,8 @@
 #define DBGLVL_THR 4096
 #define DBGLVL_CPU 8192
 
-#define SAA7164_NORMS (V4L2_STD_NTSC_M |  V4L2_STD_NTSC_M_JP |  V4L2_STD_NTSC_443)
+#define SAA7164_NORMS \
+	(V4L2_STD_NTSC_M |  V4L2_STD_NTSC_M_JP |  V4L2_STD_NTSC_443)
 
 enum port_t {
 	SAA7164_MPEG_UNDEFINED = 0,
@@ -183,15 +183,11 @@ struct saa7164_subid {
 
 struct saa7164_encoder_fh {
 	struct saa7164_port *port;
-//	u32 freq;
-//	u32 tuner_type;
 	atomic_t v4l_reading;
 };
 
 struct saa7164_vbi_fh {
 	struct saa7164_port *port;
-//	u32 freq;
-//	u32 tuner_type;
 	atomic_t v4l_reading;
 };
 
@@ -254,7 +250,6 @@ struct saa7164_i2c {
 
 	/* I2C I/O */
 	struct i2c_adapter		i2c_adap;
-	struct i2c_algo_bit_data	i2c_algo;
 	struct i2c_client		i2c_client;
 	u32				i2c_rc;
 };
@@ -266,8 +261,6 @@ struct saa7164_ctrl {
 struct saa7164_tvnorm {
 	char		*name;
 	v4l2_std_id	id;
-//	u32		cxiformat;
-//	u32		cxoformat;
 };
 
 struct saa7164_encoder_params {
@@ -448,7 +441,7 @@ struct saa7164_dev {
 	int	nr;
 	int	hwrevision;
 	u32	board;
-	char	name[32];
+	char	name[16];
 
 	/* firmware status */
 	struct saa7164_fw_status	fw_status;
@@ -511,7 +504,8 @@ extern void saa7164_call_i2c_clients(struct saa7164_i2c *bus,
 /* saa7164-bus.c                                               */
 int saa7164_bus_setup(struct saa7164_dev *dev);
 void saa7164_bus_dump(struct saa7164_dev *dev);
-int saa7164_bus_set(struct saa7164_dev *dev, struct tmComResInfo* msg, void *buf);
+int saa7164_bus_set(struct saa7164_dev *dev, struct tmComResInfo* msg,
+	void *buf);
 int saa7164_bus_get(struct saa7164_dev *dev, struct tmComResInfo* msg,
 	void *buf, int peekonly);
 
@@ -553,7 +547,8 @@ int saa7164_api_get_videomux(struct saa7164_port *port);
 int saa7164_api_set_vbi_format(struct saa7164_port *port);
 int saa7164_api_set_debug(struct saa7164_dev *dev, u8 level);
 int saa7164_api_collect_debug(struct saa7164_dev *dev);
-int saa7164_api_get_load_info(struct saa7164_dev *dev, struct tmFwInfoStruct *i);
+int saa7164_api_get_load_info(struct saa7164_dev *dev,
+	struct tmFwInfoStruct *i);
 
 /* ----------------------------------------------------------- */
 /* saa7164-cards.c                                             */
@@ -612,11 +607,6 @@ extern unsigned int saa_debug;
 #define log_warn(fmt, arg...)\
 	do { \
 		printk(KERN_WARNING "%s: " fmt, dev->name, ## arg);\
-	} while (0)
-
-#define log_err(fmt, arg...)\
-	do { \
-		printk(KERN_ERROR "%s: " fmt, dev->name, ## arg);\
 	} while (0)
 
 #define saa7164_readl(reg) readl(dev->lmmio + ((reg) >> 2))

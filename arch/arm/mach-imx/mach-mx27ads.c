@@ -13,7 +13,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
-
+#include <linux/gpio.h>
 #include <linux/platform_device.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/map.h>
@@ -27,14 +27,9 @@
 #include <asm/mach/arch.h>
 #include <asm/mach/time.h>
 #include <asm/mach/map.h>
-#include <mach/gpio.h>
 #include <mach/iomux-mx27.h>
-#include <mach/mxc_nand.h>
-#include <mach/imxfb.h>
-#include <mach/mmc.h>
 
 #include "devices-imx27.h"
-#include "devices.h"
 
 /*
  * Base address of PBC controller, CS4
@@ -228,7 +223,7 @@ static struct imx_fb_videomode mx27ads_modes[] = {
 	},
 };
 
-static struct imx_fb_platform_data mx27ads_fb_data = {
+static const struct imx_fb_platform_data mx27ads_fb_data __initconst = {
 	.mode = mx27ads_modes,
 	.num_modes = ARRAY_SIZE(mx27ads_modes),
 
@@ -251,40 +246,39 @@ static struct imx_fb_platform_data mx27ads_fb_data = {
 static int mx27ads_sdhc1_init(struct device *dev, irq_handler_t detect_irq,
 			      void *data)
 {
-	return request_irq(IRQ_GPIOE(21), detect_irq, IRQF_TRIGGER_RISING,
-			   "sdhc1-card-detect", data);
+	return request_irq(gpio_to_irq(IMX_GPIO_NR(5, 21)), detect_irq,
+			   IRQF_TRIGGER_RISING, "sdhc1-card-detect", data);
 }
 
 static int mx27ads_sdhc2_init(struct device *dev, irq_handler_t detect_irq,
 			      void *data)
 {
-	return request_irq(IRQ_GPIOB(7), detect_irq, IRQF_TRIGGER_RISING,
-			   "sdhc2-card-detect", data);
+	return request_irq(gpio_to_irq(IMX_GPIO_NR(2, 7)), detect_irq,
+			   IRQF_TRIGGER_RISING, "sdhc2-card-detect", data);
 }
 
 static void mx27ads_sdhc1_exit(struct device *dev, void *data)
 {
-	free_irq(IRQ_GPIOE(21), data);
+	free_irq(gpio_to_irq(IMX_GPIO_NR(5, 21)), data);
 }
 
 static void mx27ads_sdhc2_exit(struct device *dev, void *data)
 {
-	free_irq(IRQ_GPIOB(7), data);
+	free_irq(gpio_to_irq(IMX_GPIO_NR(2, 7)), data);
 }
 
-static struct imxmmc_platform_data sdhc1_pdata = {
+static const struct imxmmc_platform_data sdhc1_pdata __initconst = {
 	.init = mx27ads_sdhc1_init,
 	.exit = mx27ads_sdhc1_exit,
 };
 
-static struct imxmmc_platform_data sdhc2_pdata = {
+static const struct imxmmc_platform_data sdhc2_pdata __initconst = {
 	.init = mx27ads_sdhc2_init,
 	.exit = mx27ads_sdhc2_exit,
 };
 
 static struct platform_device *platform_devices[] __initdata = {
 	&mx27ads_nor_mtd_device,
-	&mxc_w1_master_device,
 };
 
 static const struct imxuart_platform_data uart_pdata __initconst = {
@@ -293,6 +287,8 @@ static const struct imxuart_platform_data uart_pdata __initconst = {
 
 static void __init mx27ads_board_init(void)
 {
+	imx27_soc_init();
+
 	mxc_gpio_setup_multiple_pins(mx27ads_pins, ARRAY_SIZE(mx27ads_pins),
 			"mx27ads");
 
@@ -308,12 +304,13 @@ static void __init mx27ads_board_init(void)
 	i2c_register_board_info(1, mx27ads_i2c_devices,
 				ARRAY_SIZE(mx27ads_i2c_devices));
 	imx27_add_imx_i2c(1, &mx27ads_i2c1_data);
-	mxc_register_device(&mxc_fb_device, &mx27ads_fb_data);
-	mxc_register_device(&mxc_sdhc_device0, &sdhc1_pdata);
-	mxc_register_device(&mxc_sdhc_device1, &sdhc2_pdata);
+	imx27_add_imx_fb(&mx27ads_fb_data);
+	imx27_add_mxc_mmc(0, &sdhc1_pdata);
+	imx27_add_mxc_mmc(1, &sdhc2_pdata);
 
 	imx27_add_fec(NULL);
 	platform_add_devices(platform_devices, ARRAY_SIZE(platform_devices));
+	imx27_add_mxc_w1();
 }
 
 static void __init mx27ads_timer_init(void)
@@ -347,9 +344,12 @@ static void __init mx27ads_map_io(void)
 
 MACHINE_START(MX27ADS, "Freescale i.MX27ADS")
 	/* maintainer: Freescale Semiconductor, Inc. */
-	.boot_params    = MX27_PHYS_OFFSET + 0x100,
-	.map_io         = mx27ads_map_io,
-	.init_irq       = mx27_init_irq,
-	.init_machine   = mx27ads_board_init,
-	.timer          = &mx27ads_timer,
+	.atag_offset = 0x100,
+	.map_io = mx27ads_map_io,
+	.init_early = imx27_init_early,
+	.init_irq = mx27_init_irq,
+	.handle_irq = imx27_handle_irq,
+	.timer = &mx27ads_timer,
+	.init_machine = mx27ads_board_init,
+	.restart	= mxc_restart,
 MACHINE_END

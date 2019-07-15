@@ -27,10 +27,16 @@
 struct dvb_frontend;
 struct i2c_adapter;
 
+#define XC5000A 1
+#define XC5000C 2
+
 struct xc5000_config {
 	u8   i2c_address;
 	u32  if_khz;
 	u8   radio_input;
+	u16  xtal_khz;
+
+	int chip_id;
 };
 
 /* xc5000 callback command */
@@ -40,6 +46,7 @@ struct xc5000_config {
 #define XC5000_RADIO_NOT_CONFIGURED		0
 #define XC5000_RADIO_FM1			1
 #define XC5000_RADIO_FM2			2
+#define XC5000_RADIO_FM1_MONO			3
 
 /* For each bridge framework, when it attaches either analog or digital,
  * it has to store a reference back to its _core equivalent structure,

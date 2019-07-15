@@ -42,6 +42,7 @@
 #define SYS_RECVMSG	17		/* sys_recvmsg(2)		*/
 #define SYS_ACCEPT4	18		/* sys_accept4(2)		*/
 #define SYS_RECVMMSG	19		/* sys_recvmmsg(2)		*/
+#define SYS_SENDMMSG	20		/* sys_sendmmsg(2)		*/
 
 typedef enum {
 	SS_FREE = 0,			/* not allocated		*/
@@ -71,6 +72,7 @@ struct net;
 #define SOCK_NOSPACE		2
 #define SOCK_PASSCRED		3
 #define SOCK_PASSSEC		4
+#define SOCK_EXTERNALLY_ALLOCATED 5
 
 #ifndef ARCH_HAS_SOCKET_TYPES
 /**
@@ -118,6 +120,7 @@ enum sock_shutdown_cmd {
 };
 
 struct socket_wq {
+	/* Note: wait MUST be first field of socket_wq */
 	wait_queue_head_t	wait;
 	struct fasync_struct	*fasync_list;
 	struct rcu_head		rcu;
@@ -142,7 +145,7 @@ struct socket {
 
 	unsigned long		flags;
 
-	struct socket_wq	*wq;
+	struct socket_wq __rcu	*wq;
 
 	struct file		*file;
 	struct sock		*sk;
@@ -204,6 +207,7 @@ struct proto_ops {
 				      int offset, size_t size, int flags);
 	ssize_t 	(*splice_read)(struct socket *sock,  loff_t *ppos,
 				       struct pipe_inode_info *pipe, size_t len, unsigned int flags);
+	void		(*set_peek_off)(struct sock *sk, int val);
 };
 
 #define DECLARE_SOCKADDR(type, dst, src)	\
@@ -244,8 +248,32 @@ extern int	     sock_recvmsg(struct socket *sock, struct msghdr *msg,
 				  size_t size, int flags);
 extern int 	     sock_map_fd(struct socket *sock, int flags);
 extern struct socket *sockfd_lookup(int fd, int *err);
+extern struct socket *sock_from_file(struct file *file, int *err);
 #define		     sockfd_put(sock) fput(sock->file)
 extern int	     net_ratelimit(void);
+
+#define net_ratelimited_function(function, ...)			\
+do {								\
+	if (net_ratelimit())					\
+		function(__VA_ARGS__);				\
+} while (0)
+
+#define net_emerg_ratelimited(fmt, ...)				\
+	net_ratelimited_function(pr_emerg, fmt, ##__VA_ARGS__)
+#define net_alert_ratelimited(fmt, ...)				\
+	net_ratelimited_function(pr_alert, fmt, ##__VA_ARGS__)
+#define net_crit_ratelimited(fmt, ...)				\
+	net_ratelimited_function(pr_crit, fmt, ##__VA_ARGS__)
+#define net_err_ratelimited(fmt, ...)				\
+	net_ratelimited_function(pr_err, fmt, ##__VA_ARGS__)
+#define net_notice_ratelimited(fmt, ...)			\
+	net_ratelimited_function(pr_notice, fmt, ##__VA_ARGS__)
+#define net_warn_ratelimited(fmt, ...)				\
+	net_ratelimited_function(pr_warn, fmt, ##__VA_ARGS__)
+#define net_info_ratelimited(fmt, ...)				\
+	net_ratelimited_function(pr_info, fmt, ##__VA_ARGS__)
+#define net_dbg_ratelimited(fmt, ...)				\
+	net_ratelimited_function(pr_debug, fmt, ##__VA_ARGS__)
 
 #define net_random()		random32()
 #define net_srandom(seed)	srandom32((__force u32)seed)
@@ -287,11 +315,8 @@ extern int kernel_sock_shutdown(struct socket *sock,
 	MODULE_ALIAS("net-pf-" __stringify(pf) "-proto-" __stringify(proto) \
 		     "-type-" __stringify(type))
 
-#ifdef CONFIG_SYSCTL
-#include <linux/sysctl.h>
-#include <linux/ratelimit.h>
-extern struct ratelimit_state net_ratelimit_state;
-#endif
-
+#define MODULE_ALIAS_NET_PF_PROTO_NAME(pf, proto, name) \
+	MODULE_ALIAS("net-pf-" __stringify(pf) "-proto-" __stringify(proto) \
+		     name)
 #endif /* __KERNEL__ */
 #endif	/* _LINUX_NET_H */

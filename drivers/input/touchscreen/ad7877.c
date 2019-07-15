@@ -41,9 +41,11 @@
 #include <linux/delay.h>
 #include <linux/input.h>
 #include <linux/interrupt.h>
+#include <linux/pm.h>
 #include <linux/slab.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/ad7877.h>
+#include <linux/module.h>
 #include <asm/irq.h>
 
 #define	TS_PEN_UP_TIMEOUT	msecs_to_jiffies(100)
@@ -486,10 +488,10 @@ static ssize_t ad7877_disable_store(struct device *dev,
 				     const char *buf, size_t count)
 {
 	struct ad7877 *ts = dev_get_drvdata(dev);
-	unsigned long val;
+	unsigned int val;
 	int error;
 
-	error = strict_strtoul(buf, 10, &val);
+	error = kstrtouint(buf, 10, &val);
 	if (error)
 		return error;
 
@@ -516,10 +518,10 @@ static ssize_t ad7877_dac_store(struct device *dev,
 				     const char *buf, size_t count)
 {
 	struct ad7877 *ts = dev_get_drvdata(dev);
-	unsigned long val;
+	unsigned int val;
 	int error;
 
-	error = strict_strtoul(buf, 10, &val);
+	error = kstrtouint(buf, 10, &val);
 	if (error)
 		return error;
 
@@ -546,10 +548,10 @@ static ssize_t ad7877_gpio3_store(struct device *dev,
 				     const char *buf, size_t count)
 {
 	struct ad7877 *ts = dev_get_drvdata(dev);
-	unsigned long val;
+	unsigned int val;
 	int error;
 
-	error = strict_strtoul(buf, 10, &val);
+	error = kstrtouint(buf, 10, &val);
 	if (error)
 		return error;
 
@@ -577,10 +579,10 @@ static ssize_t ad7877_gpio4_store(struct device *dev,
 				     const char *buf, size_t count)
 {
 	struct ad7877 *ts = dev_get_drvdata(dev);
-	unsigned long val;
+	unsigned int val;
 	int error;
 
-	error = strict_strtoul(buf, 10, &val);
+	error = kstrtouint(buf, 10, &val);
 	if (error)
 		return error;
 
@@ -610,10 +612,10 @@ static struct attribute *ad7877_attributes[] = {
 	NULL
 };
 
-static mode_t ad7877_attr_is_visible(struct kobject *kobj,
+static umode_t ad7877_attr_is_visible(struct kobject *kobj,
 				     struct attribute *attr, int n)
 {
-	mode_t mode = attr->mode;
+	umode_t mode = attr->mode;
 
 	if (attr == &dev_attr_aux3.attr) {
 		if (gpio3)
@@ -826,52 +828,39 @@ static int __devexit ad7877_remove(struct spi_device *spi)
 	return 0;
 }
 
-#ifdef CONFIG_PM
-static int ad7877_suspend(struct spi_device *spi, pm_message_t message)
+#ifdef CONFIG_PM_SLEEP
+static int ad7877_suspend(struct device *dev)
 {
-	struct ad7877 *ts = dev_get_drvdata(&spi->dev);
+	struct ad7877 *ts = dev_get_drvdata(dev);
 
 	ad7877_disable(ts);
 
 	return 0;
 }
 
-static int ad7877_resume(struct spi_device *spi)
+static int ad7877_resume(struct device *dev)
 {
-	struct ad7877 *ts = dev_get_drvdata(&spi->dev);
+	struct ad7877 *ts = dev_get_drvdata(dev);
 
 	ad7877_enable(ts);
 
 	return 0;
 }
-#else
-#define ad7877_suspend NULL
-#define ad7877_resume  NULL
 #endif
+
+static SIMPLE_DEV_PM_OPS(ad7877_pm, ad7877_suspend, ad7877_resume);
 
 static struct spi_driver ad7877_driver = {
 	.driver = {
 		.name	= "ad7877",
-		.bus	= &spi_bus_type,
 		.owner	= THIS_MODULE,
+		.pm	= &ad7877_pm,
 	},
 	.probe		= ad7877_probe,
 	.remove		= __devexit_p(ad7877_remove),
-	.suspend	= ad7877_suspend,
-	.resume		= ad7877_resume,
 };
 
-static int __init ad7877_init(void)
-{
-	return spi_register_driver(&ad7877_driver);
-}
-module_init(ad7877_init);
-
-static void __exit ad7877_exit(void)
-{
-	spi_unregister_driver(&ad7877_driver);
-}
-module_exit(ad7877_exit);
+module_spi_driver(ad7877_driver);
 
 MODULE_AUTHOR("Michael Hennerich <hennerich@blackfin.uclinux.org>");
 MODULE_DESCRIPTION("AD7877 touchscreen Driver");

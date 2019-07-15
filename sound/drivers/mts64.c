@@ -22,6 +22,7 @@
 #include <linux/platform_device.h>
 #include <linux/parport.h>
 #include <linux/spinlock.h>
+#include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <sound/core.h>
@@ -35,7 +36,7 @@
 
 static int index[SNDRV_CARDS]  = SNDRV_DEFAULT_IDX;
 static char *id[SNDRV_CARDS]   = SNDRV_DEFAULT_STR;
-static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
 
 static struct platform_device *platform_devices[SNDRV_CARDS]; 
 static int device_count;
@@ -1039,7 +1040,8 @@ static struct platform_driver snd_mts64_driver = {
 	.probe  = snd_mts64_probe,
 	.remove = __devexit_p(snd_mts64_remove),
 	.driver = {
-		.name = PLATFORM_DRIVER
+		.name = PLATFORM_DRIVER,
+		.owner	= THIS_MODULE,
 	}
 };
 

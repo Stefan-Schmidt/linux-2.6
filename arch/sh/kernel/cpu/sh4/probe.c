@@ -151,8 +151,17 @@ void __cpuinit cpu_probe(void)
 			boot_cpu_data.flags |= CPU_HAS_L2_CACHE;
 			break;
 		case 0x10:
+		case 0x11:
 			boot_cpu_data.type = CPU_SH7757;
 			break;
+		case 0xd0:
+		case 0x40: /* yon-ten-go */
+			boot_cpu_data.type = CPU_SH7372;
+			break;
+		case 0xE0: /* 0x4E0 */
+			boot_cpu_data.type = CPU_SH7734; /* SH7733/SH7734 */
+			break;
+
 		}
 		break;
 	case 0x4000:	/* 1st cut */

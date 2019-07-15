@@ -473,7 +473,7 @@ static void free_epdmem(struct imx21 *imx21, struct usb_host_endpoint *ep)
 /* End handling 				*/
 /* ===========================================	*/
 
-/* Endpoint now idle - release it's ETD(s) or asssign to queued request */
+/* Endpoint now idle - release its ETD(s) or assign to queued request */
 static void ep_idle(struct imx21 *imx21, struct ep_priv *ep_priv)
 {
 	int i;
@@ -927,7 +927,8 @@ static void schedule_nonisoc_etd(struct imx21 *imx21, struct urb *urb)
 		if (state == US_CTRL_SETUP) {
 			dir = TD_DIR_SETUP;
 			if (unsuitable_for_dma(urb->setup_dma))
-				unmap_urb_setup_for_dma(imx21->hcd, urb);
+				usb_hcd_unmap_urb_setup_for_dma(imx21->hcd,
+					urb);
 			etd->dma_handle = urb->setup_dma;
 			etd->cpu_buffer = urb->setup_packet;
 			bufround = 0;
@@ -943,7 +944,7 @@ static void schedule_nonisoc_etd(struct imx21 *imx21, struct urb *urb)
 		dir = usb_pipeout(pipe) ? TD_DIR_OUT : TD_DIR_IN;
 		bufround = (dir == TD_DIR_IN) ? 1 : 0;
 		if (unsuitable_for_dma(urb->transfer_dma))
-			unmap_urb_for_dma(imx21->hcd, urb);
+			usb_hcd_unmap_urb_for_dma(imx21->hcd, urb);
 
 		etd->dma_handle = urb->transfer_dma;
 		etd->cpu_buffer = urb->transfer_buffer;
@@ -1322,7 +1323,7 @@ static void process_etds(struct usb_hcd *hcd, struct imx21 *imx21, int sof)
  * (and hence no interrupt occurs).
  * This causes the transfer in question to hang.
  * The kludge below checks for this condition at each SOF and processes any
- * blocked ETDs (after an arbitary 10 frame wait)
+ * blocked ETDs (after an arbitrary 10 frame wait)
  *
  * With a single active transfer the usbtest test suite will run for days
  * without the kludge.
@@ -1471,8 +1472,8 @@ static int get_hub_descriptor(struct usb_hcd *hcd,
 		0x0010 |	/* No over current protection */
 		0);
 
-	desc->bitmap[0] = 1 << 1;
-	desc->bitmap[1] = ~0;
+	desc->u.hs.DeviceRemovable[0] = 1 << 1;
+	desc->u.hs.DeviceRemovable[1] = ~0;
 	return 0;
 }
 
@@ -1658,7 +1659,7 @@ static int imx21_hc_reset(struct usb_hcd *hcd)
 
 	spin_lock_irqsave(&imx21->lock, flags);
 
-	/* Reset the Host controler modules */
+	/* Reset the Host controller modules */
 	writel(USBOTG_RST_RSTCTRL | USBOTG_RST_RSTRH |
 		USBOTG_RST_RSTHSIE | USBOTG_RST_RSTHC,
 		imx21->regs + USBOTG_RST_CTRL);
@@ -1810,7 +1811,7 @@ static int imx21_remove(struct platform_device *pdev)
 	usb_remove_hcd(hcd);
 
 	if (res != NULL) {
-		clk_disable(imx21->clk);
+		clk_disable_unprepare(imx21->clk);
 		clk_put(imx21->clk);
 		iounmap(imx21->regs);
 		release_mem_region(res->start, resource_size(res));
@@ -1883,14 +1884,14 @@ static int imx21_probe(struct platform_device *pdev)
 	ret = clk_set_rate(imx21->clk, clk_round_rate(imx21->clk, 48000000));
 	if (ret)
 		goto failed_clock_set;
-	ret = clk_enable(imx21->clk);
+	ret = clk_prepare_enable(imx21->clk);
 	if (ret)
 		goto failed_clock_enable;
 
 	dev_info(imx21->dev, "Hardware HC revision: 0x%02X\n",
 		(readl(imx21->regs + USBOTG_HWMODE) >> 16) & 0xFF);
 
-	ret = usb_add_hcd(hcd, irq, IRQF_DISABLED);
+	ret = usb_add_hcd(hcd, irq, 0);
 	if (ret != 0) {
 		dev_err(imx21->dev, "usb_add_hcd() returned %d\n", ret);
 		goto failed_add_hcd;
@@ -1899,7 +1900,7 @@ static int imx21_probe(struct platform_device *pdev)
 	return 0;
 
 failed_add_hcd:
-	clk_disable(imx21->clk);
+	clk_disable_unprepare(imx21->clk);
 failed_clock_enable:
 failed_clock_set:
 	clk_put(imx21->clk);
@@ -1923,18 +1924,7 @@ static struct platform_driver imx21_hcd_driver = {
 	.resume = NULL,
 };
 
-static int __init imx21_hcd_init(void)
-{
-	return platform_driver_register(&imx21_hcd_driver);
-}
-
-static void __exit imx21_hcd_cleanup(void)
-{
-	platform_driver_unregister(&imx21_hcd_driver);
-}
-
-module_init(imx21_hcd_init);
-module_exit(imx21_hcd_cleanup);
+module_platform_driver(imx21_hcd_driver);
 
 MODULE_DESCRIPTION("i.MX21 USB Host controller");
 MODULE_AUTHOR("Martin Fuzzey");

@@ -18,6 +18,8 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #define MODULE_NAME "spca508"
 
 #include "gspca.h"
@@ -30,8 +32,6 @@ MODULE_LICENSE("GPL");
 struct sd {
 	struct gspca_dev gspca_dev;		/* !! must be the first item */
 
-	u8 brightness;
-
 	u8 subtype;
 #define CreativeVista 0
 #define HamaUSBSightcam 1
@@ -39,27 +39,6 @@ struct sd {
 #define IntelEasyPCCamera 3
 #define MicroInnovationIC200 4
 #define ViewQuestVQ110 5
-};
-
-/* V4L2 controls supported by the driver */
-static int sd_setbrightness(struct gspca_dev *gspca_dev, __s32 val);
-static int sd_getbrightness(struct gspca_dev *gspca_dev, __s32 *val);
-
-static const struct ctrl sd_ctrls[] = {
-	{
-	    {
-		.id      = V4L2_CID_BRIGHTNESS,
-		.type    = V4L2_CTRL_TYPE_INTEGER,
-		.name    = "Brightness",
-		.minimum = 0,
-		.maximum = 255,
-		.step    = 1,
-#define BRIGHTNESS_DEF 128
-		.default_value = BRIGHTNESS_DEF,
-	    },
-	    .set = sd_setbrightness,
-	    .get = sd_getbrightness,
-	},
 };
 
 static const struct v4l2_pix_format sif_mode[] = {
@@ -592,7 +571,7 @@ static const u16 spca508_sightcam_init_data[][2] = {
 /* This line seems to setup the frame/canvas */
 	{0x000f, 0x8402},
 
-/* Theese 6 lines are needed to startup the webcam */
+/* These 6 lines are needed to startup the webcam */
 	{0x0090, 0x8110},
 	{0x0001, 0x8114},
 	{0x0001, 0x8114},
@@ -1275,7 +1254,7 @@ static int reg_write(struct usb_device *dev,
 	PDEBUG(D_USBO, "reg write i:0x%04x = 0x%02x",
 		index, value);
 	if (ret < 0)
-		err("reg write: error %d", ret);
+		pr_err("reg write: error %d\n", ret);
 	return ret;
 }
 
@@ -1297,7 +1276,7 @@ static int reg_read(struct gspca_dev *gspca_dev,
 	PDEBUG(D_USBI, "reg read i:%04x --> %02x",
 		index, gspca_dev->usb_buf[0]);
 	if (ret < 0) {
-		err("reg_read err %d", ret);
+		pr_err("reg_read err %d\n", ret);
 		return ret;
 	}
 	return gspca_dev->usb_buf[0];
@@ -1375,7 +1354,6 @@ static int sd_config(struct gspca_dev *gspca_dev,
 {
 	struct sd *sd = (struct sd *) gspca_dev;
 	struct cam *cam;
-	int data1, data2;
 	const u16 (*init_data)[2];
 	static const u16 (*(init_data_tb[]))[2] = {
 		spca508_vista_init_data,	/* CreativeVista 0 */
@@ -1385,6 +1363,9 @@ static int sd_config(struct gspca_dev *gspca_dev,
 		spca508cs110_init_data,		/* MicroInnovationIC200 4 */
 		spca508_init_data,		/* ViewQuestVQ110 5 */
 	};
+
+#ifdef GSPCA_DEBUG
+	int data1, data2;
 
 	/* Read from global register the USB product and vendor IDs, just to
 	 * prove that we can communicate with the device.  This works, which
@@ -1400,13 +1381,13 @@ static int sd_config(struct gspca_dev *gspca_dev,
 
 	data1 = reg_read(gspca_dev, 0x8621);
 	PDEBUG(D_PROBE, "Window 1 average luminance: %d", data1);
+#endif
 
 	cam = &gspca_dev->cam;
 	cam->cam_mode = sif_mode;
 	cam->nmodes = ARRAY_SIZE(sif_mode);
 
 	sd->subtype = id->driver_info;
-	sd->brightness = BRIGHTNESS_DEF;
 
 	init_data = init_data_tb[sd->subtype];
 	return write_vector(gspca_dev, init_data);
@@ -1466,11 +1447,8 @@ static void sd_pkt_scan(struct gspca_dev *gspca_dev,
 	}
 }
 
-static void setbrightness(struct gspca_dev *gspca_dev)
+static void setbrightness(struct gspca_dev *gspca_dev, s32 brightness)
 {
-	struct sd *sd = (struct sd *) gspca_dev;
-	u8 brightness = sd->brightness;
-
 	/* MX seem contrast */
 	reg_write(gspca_dev->dev, 0x8651, brightness);
 	reg_write(gspca_dev->dev, 0x8652, brightness);
@@ -1478,38 +1456,57 @@ static void setbrightness(struct gspca_dev *gspca_dev)
 	reg_write(gspca_dev->dev, 0x8654, brightness);
 }
 
-static int sd_setbrightness(struct gspca_dev *gspca_dev, __s32 val)
+static int sd_s_ctrl(struct v4l2_ctrl *ctrl)
 {
-	struct sd *sd = (struct sd *) gspca_dev;
+	struct gspca_dev *gspca_dev =
+		container_of(ctrl->handler, struct gspca_dev, ctrl_handler);
 
-	sd->brightness = val;
-	if (gspca_dev->streaming)
-		setbrightness(gspca_dev);
-	return 0;
+	gspca_dev->usb_err = 0;
+
+	if (!gspca_dev->streaming)
+		return 0;
+
+	switch (ctrl->id) {
+	case V4L2_CID_BRIGHTNESS:
+		setbrightness(gspca_dev, ctrl->val);
+		break;
+	}
+	return gspca_dev->usb_err;
 }
 
-static int sd_getbrightness(struct gspca_dev *gspca_dev, __s32 *val)
-{
-	struct sd *sd = (struct sd *) gspca_dev;
+static const struct v4l2_ctrl_ops sd_ctrl_ops = {
+	.s_ctrl = sd_s_ctrl,
+};
 
-	*val = sd->brightness;
+static int sd_init_controls(struct gspca_dev *gspca_dev)
+{
+	struct v4l2_ctrl_handler *hdl = &gspca_dev->ctrl_handler;
+
+	gspca_dev->vdev.ctrl_handler = hdl;
+	v4l2_ctrl_handler_init(hdl, 5);
+	v4l2_ctrl_new_std(hdl, &sd_ctrl_ops,
+			V4L2_CID_BRIGHTNESS, 0, 255, 1, 128);
+
+	if (hdl->error) {
+		pr_err("Could not initialize controls\n");
+		return hdl->error;
+	}
 	return 0;
 }
 
 /* sub-driver description */
 static const struct sd_desc sd_desc = {
 	.name = MODULE_NAME,
-	.ctrls = sd_ctrls,
-	.nctrls = ARRAY_SIZE(sd_ctrls),
 	.config = sd_config,
 	.init = sd_init,
+	.init_controls = sd_init_controls,
 	.start = sd_start,
 	.stopN = sd_stopN,
 	.pkt_scan = sd_pkt_scan,
 };
 
 /* -- module initialisation -- */
-static const __devinitdata struct usb_device_id device_table[] = {
+static const struct usb_device_id device_table[] = {
 	{USB_DEVICE(0x0130, 0x0130), .driver_info = HamaUSBSightcam},
 	{USB_DEVICE(0x041e, 0x4018), .driver_info = CreativeVista},
 	{USB_DEVICE(0x0733, 0x0110), .driver_info = ViewQuestVQ110},
@@ -1536,18 +1533,8 @@ static struct usb_driver sd_driver = {
 #ifdef CONFIG_PM
 	.suspend = gspca_suspend,
 	.resume = gspca_resume,
+	.reset_resume = gspca_resume,
 #endif
 };
 
-/* -- module insert / remove -- */
-static int __init sd_mod_init(void)
-{
-	return usb_register(&sd_driver);
-}
-static void __exit sd_mod_exit(void)
-{
-	usb_deregister(&sd_driver);
-}
-
-module_init(sd_mod_init);
-module_exit(sd_mod_exit);
+module_usb_driver(sd_driver);

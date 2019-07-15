@@ -31,9 +31,12 @@ NL_PACKET(disk_conf, 3,
 	NL_INTEGER(	56,	T_MAY_IGNORE,	max_bio_bvecs)
 	NL_BIT(		57,	T_MAY_IGNORE,	no_disk_barrier)
 	NL_BIT(		58,	T_MAY_IGNORE,	no_disk_drain)
+	NL_INTEGER(	89,	T_MAY_IGNORE,	disk_timeout)
 )
 
-NL_PACKET(detach, 4, )
+NL_PACKET(detach, 4,
+	NL_BIT(		88,	T_MANDATORY,	detach_force)
+)
 
 NL_PACKET(net_conf, 5,
 	NL_STRING(	8,	T_MANDATORY,	my_addr,	128)
@@ -56,6 +59,9 @@ NL_PACKET(net_conf, 5,
 	NL_INTEGER(	39,	T_MAY_IGNORE,	rr_conflict)
 	NL_INTEGER(	40,	T_MAY_IGNORE,	ping_timeo)
 	NL_INTEGER(	67,	T_MAY_IGNORE,	rcvbuf_size)
+	NL_INTEGER(	81,	T_MAY_IGNORE,	on_congestion)
+	NL_INTEGER(	82,	T_MAY_IGNORE,	cong_fill)
+	NL_INTEGER(	83,	T_MAY_IGNORE,	cong_extents)
 	  /* 59 addr_family was available in GIT, never released */
 	NL_BIT(		60,	T_MANDATORY,	mind_af)
 	NL_BIT(		27,	T_MAY_IGNORE,	want_lose)
@@ -66,7 +72,9 @@ NL_PACKET(net_conf, 5,
 	NL_BIT(		70,	T_MANDATORY,	dry_run)
 )
 
-NL_PACKET(disconnect, 6, )
+NL_PACKET(disconnect, 6,
+	NL_BIT(		84,	T_MAY_IGNORE,	force)
+)
 
 NL_PACKET(resize, 7,
 	NL_INT64(		29,	T_MAY_IGNORE,	resize_size)
@@ -143,9 +151,13 @@ NL_PACKET(new_c_uuid, 26,
        NL_BIT(		63,	T_MANDATORY,	clear_bm)
 )
 
+#ifdef NL_RESPONSE
+NL_RESPONSE(return_code_only, 27)
+#endif
+
 #undef NL_PACKET
 #undef NL_INTEGER
 #undef NL_INT64
 #undef NL_BIT
 #undef NL_STRING
-
+#undef NL_RESPONSE

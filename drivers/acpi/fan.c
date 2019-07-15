@@ -46,14 +46,18 @@ MODULE_LICENSE("GPL");
 
 static int acpi_fan_add(struct acpi_device *device);
 static int acpi_fan_remove(struct acpi_device *device, int type);
-static int acpi_fan_suspend(struct acpi_device *device, pm_message_t state);
-static int acpi_fan_resume(struct acpi_device *device);
 
 static const struct acpi_device_id fan_device_ids[] = {
 	{"PNP0C0B", 0},
 	{"", 0},
 };
 MODULE_DEVICE_TABLE(acpi, fan_device_ids);
+
+#ifdef CONFIG_PM_SLEEP
+static int acpi_fan_suspend(struct device *dev);
+static int acpi_fan_resume(struct device *dev);
+#endif
+static SIMPLE_DEV_PM_OPS(acpi_fan_pm, acpi_fan_suspend, acpi_fan_resume);
 
 static struct acpi_driver acpi_fan_driver = {
 	.name = "fan",
@@ -62,9 +66,8 @@ static struct acpi_driver acpi_fan_driver = {
 	.ops = {
 		.add = acpi_fan_add,
 		.remove = acpi_fan_remove,
-		.suspend = acpi_fan_suspend,
-		.resume = acpi_fan_resume,
 		},
+	.drv.pm = &acpi_fan_pm,
 };
 
 /* thermal cooling device callbacks */
@@ -86,7 +89,7 @@ static int fan_get_cur_state(struct thermal_cooling_device *cdev, unsigned long
 	if (!device)
 		return -EINVAL;
 
-	result = acpi_bus_get_power(device->handle, &acpi_state);
+	result = acpi_bus_update_power(device->handle, &acpi_state);
 	if (result)
 		return result;
 
@@ -110,7 +113,7 @@ fan_set_cur_state(struct thermal_cooling_device *cdev, unsigned long state)
 	return result;
 }
 
-static struct thermal_cooling_device_ops fan_cooling_ops = {
+static const struct thermal_cooling_device_ops fan_cooling_ops = {
 	.get_max_state = fan_get_max_state,
 	.get_cur_state = fan_get_cur_state,
 	.set_cur_state = fan_set_cur_state,
@@ -123,7 +126,6 @@ static struct thermal_cooling_device_ops fan_cooling_ops = {
 static int acpi_fan_add(struct acpi_device *device)
 {
 	int result = 0;
-	int state = 0;
 	struct thermal_cooling_device *cdev;
 
 	if (!device)
@@ -132,15 +134,11 @@ static int acpi_fan_add(struct acpi_device *device)
 	strcpy(acpi_device_name(device), "Fan");
 	strcpy(acpi_device_class(device), ACPI_FAN_CLASS);
 
-	result = acpi_bus_get_power(device->handle, &state);
+	result = acpi_bus_update_power(device->handle, NULL);
 	if (result) {
-		printk(KERN_ERR PREFIX "Reading power state\n");
+		printk(KERN_ERR PREFIX "Setting initial power state\n");
 		goto end;
 	}
-
-	device->flags.force_power_state = 1;
-	acpi_bus_set_power(device->handle, state);
-	device->flags.force_power_state = 0;
 
 	cdev = thermal_cooling_device_register("Fan", device,
 						&fan_cooling_ops);
@@ -188,37 +186,31 @@ static int acpi_fan_remove(struct acpi_device *device, int type)
 	return 0;
 }
 
-static int acpi_fan_suspend(struct acpi_device *device, pm_message_t state)
+#ifdef CONFIG_PM_SLEEP
+static int acpi_fan_suspend(struct device *dev)
 {
-	if (!device)
+	if (!dev)
 		return -EINVAL;
 
-	acpi_bus_set_power(device->handle, ACPI_STATE_D0);
+	acpi_bus_set_power(to_acpi_device(dev)->handle, ACPI_STATE_D0);
 
 	return AE_OK;
 }
 
-static int acpi_fan_resume(struct acpi_device *device)
+static int acpi_fan_resume(struct device *dev)
 {
-	int result = 0;
-	int power_state = 0;
+	int result;
 
-	if (!device)
+	if (!dev)
 		return -EINVAL;
 
-	result = acpi_bus_get_power(device->handle, &power_state);
-	if (result) {
-		printk(KERN_ERR PREFIX
-				  "Error reading fan power state\n");
-		return result;
-	}
-
-	device->flags.force_power_state = 1;
-	acpi_bus_set_power(device->handle, power_state);
-	device->flags.force_power_state = 0;
+	result = acpi_bus_update_power(to_acpi_device(dev)->handle, NULL);
+	if (result)
+		printk(KERN_ERR PREFIX "Error updating fan power state\n");
 
 	return result;
 }
+#endif
 
 static int __init acpi_fan_init(void)
 {

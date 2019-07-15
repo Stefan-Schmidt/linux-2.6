@@ -57,7 +57,7 @@
 #define HWC_x3(level) \
 	"External Memory Addressing Error\n"
 #define EXC_0x04(level) \
-	"Unimplmented exception occured\n" \
+	"Unimplmented exception occurred\n" \
 	level " - Maybe you forgot to install a custom exception handler?\n"
 #define HWC_x12(level) \
 	"Performance Monitor Overflow\n"
@@ -124,6 +124,8 @@
 	level "   Supervisor resources are registers and instructions that are reserved\n" \
 	level "   for Supervisor use: Supervisor only registers, all MMRs, and Supervisor\n" \
 	level "   only instructions.\n"
+
+extern void double_fault_c(struct pt_regs *fp);
 
 #endif				/* __ASSEMBLY__ */
 #endif				/* _BFIN_TRAPS_H */

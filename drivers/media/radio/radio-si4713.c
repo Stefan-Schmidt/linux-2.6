@@ -53,7 +53,8 @@ struct radio_si4713_device {
 /* radio_si4713_fops - file operations interface */
 static const struct v4l2_file_operations radio_si4713_fops = {
 	.owner		= THIS_MODULE,
-	.ioctl		= video_ioctl2,
+	/* Note: locking is done at the subdev level in the i2c driver. */
+	.unlocked_ioctl	= video_ioctl2,
 };
 
 /* Video4Linux Interface */
@@ -91,10 +92,6 @@ static int radio_si4713_s_audout(struct file *file, void *priv,
 static int radio_si4713_querycap(struct file *file, void *priv,
 					struct v4l2_capability *capability)
 {
-	struct radio_si4713_device *rsdev;
-
-	rsdev = video_get_drvdata(video_devdata(file));
-
 	strlcpy(capability->driver, "radio-si4713", sizeof(capability->driver));
 	strlcpy(capability->card, "Silicon Labs Si4713 Modulator",
 				sizeof(capability->card));
@@ -223,7 +220,8 @@ static int radio_si4713_s_frequency(struct file *file, void *p,
 							s_frequency, vf);
 }
 
-static long radio_si4713_default(struct file *file, void *p, int cmd, void *arg)
+static long radio_si4713_default(struct file *file, void *p,
+				bool valid_prio, int cmd, void *arg)
 {
 	return v4l2_device_call_until_err(get_v4l2_dev(file), 0, core,
 							ioctl, cmd, arg);
@@ -291,7 +289,7 @@ static int radio_si4713_pdriver_probe(struct platform_device *pdev)
 		goto unregister_v4l2_dev;
 	}
 
-	sd = v4l2_i2c_new_subdev_board(&rsdev->v4l2_dev, adapter, NULL,
+	sd = v4l2_i2c_new_subdev_board(&rsdev->v4l2_dev, adapter,
 					pdata->subdev_board_info, NULL);
 	if (!sd) {
 		dev_err(&pdev->dev, "Cannot get v4l2 subdevice\n");
@@ -357,17 +355,4 @@ static struct platform_driver radio_si4713_pdriver = {
 	.remove         = __exit_p(radio_si4713_pdriver_remove),
 };
 
-/* Module Interface */
-static int __init radio_si4713_module_init(void)
-{
-	return platform_driver_register(&radio_si4713_pdriver);
-}
-
-static void __exit radio_si4713_module_exit(void)
-{
-	platform_driver_unregister(&radio_si4713_pdriver);
-}
-
-module_init(radio_si4713_module_init);
-module_exit(radio_si4713_module_exit);
-
+module_platform_driver(radio_si4713_pdriver);

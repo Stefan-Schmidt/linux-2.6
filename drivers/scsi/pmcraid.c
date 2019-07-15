@@ -39,7 +39,6 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/hdreg.h>
-#include <linux/version.h>
 #include <linux/io.h>
 #include <linux/slab.h>
 #include <asm/irq.h>
@@ -62,6 +61,7 @@
 static unsigned int pmcraid_debug_log;
 static unsigned int pmcraid_disable_aen;
 static unsigned int pmcraid_log_level = IOASC_LOG_LEVEL_MUST;
+static unsigned int pmcraid_enable_msix;
 
 /*
  * Data structures to support multiple adapters by the LLD.
@@ -212,7 +212,7 @@ static int pmcraid_slave_alloc(struct scsi_device *scsi_dev)
  * pmcraid_slave_configure - Configures a SCSI device
  * @scsi_dev: scsi device struct
  *
- * This fucntion is executed by SCSI mid layer just after a device is first
+ * This function is executed by SCSI mid layer just after a device is first
  * scanned (i.e. it has responded to an INQUIRY). For VSET resources, the
  * timeout value (default 30s) will be over-written to a higher value (60s)
  * and max_sectors value will be over-written to 512. It also sets queue depth
@@ -2121,7 +2121,7 @@ static void pmcraid_fail_outstanding_cmds(struct pmcraid_instance *pinstance)
  *
  * This function executes most of the steps required for IOA reset. This gets
  * called by user threads (modprobe/insmod/rmmod) timer, tasklet and midlayer's
- * 'eh_' thread. Access to variables used for controling the reset sequence is
+ * 'eh_' thread. Access to variables used for controlling the reset sequence is
  * synchronized using host lock. Various functions called during reset process
  * would make use of a single command block, pointer to which is also stored in
  * adapter instance structure.
@@ -2227,12 +2227,7 @@ static void pmcraid_ioa_reset(struct pmcraid_cmd *cmd)
 		/* Once either bist or pci reset is done, restore PCI config
 		 * space. If this fails, proceed with hard reset again
 		 */
-		if (pci_restore_state(pinstance->pdev)) {
-			pmcraid_info("config-space error resetting again\n");
-			pinstance->ioa_state = IOA_STATE_IN_RESET_ALERT;
-			pmcraid_reset_alert(cmd);
-			break;
-		}
+		pci_restore_state(pinstance->pdev);
 
 		/* fail all pending commands */
 		pmcraid_fail_outstanding_cmds(pinstance);
@@ -2998,7 +2993,7 @@ static int pmcraid_abort_complete(struct pmcraid_cmd *cancel_cmd)
 
 	/* If the abort task is not timed out we will get a Good completion
 	 * as sense_key, otherwise we may get one the following responses
-	 * due to subsquent bus reset or device reset. In case IOASC is
+	 * due to subsequent bus reset or device reset. In case IOASC is
 	 * NR_SYNC_REQUIRED, set sync_reqd flag for the corresponding resource
 	 */
 	if (ioasc == PMCRAID_IOASC_UA_BUS_WAS_RESET ||
@@ -3478,7 +3473,7 @@ static int pmcraid_copy_sglist(
  *	  SCSI_MLQUEUE_DEVICE_BUSY if device is busy
  *	  SCSI_MLQUEUE_HOST_BUSY if host is busy
  */
-static int pmcraid_queuecommand(
+static int pmcraid_queuecommand_lck(
 	struct scsi_cmnd *scsi_cmd,
 	void (*done) (struct scsi_cmnd *)
 )
@@ -3583,6 +3578,8 @@ static int pmcraid_queuecommand(
 
 	return rc;
 }
+
+static DEF_SCSI_QCMD(pmcraid_queuecommand)
 
 /**
  * pmcraid_open -char node "open" entry, allowed only users with admin access
@@ -3816,6 +3813,9 @@ static long pmcraid_ioctl_passthrough(
 			rc = -EFAULT;
 			goto out_free_buffer;
 		}
+	} else if (request_size < 0) {
+		rc = -EINVAL;
+		goto out_free_buffer;
 	}
 
 	/* check if we have any additional command parameters */
@@ -3870,6 +3870,9 @@ static long pmcraid_ioctl_passthrough(
 			pmcraid_err("couldn't build passthrough ioadls\n");
 			goto out_free_buffer;
 		}
+	} else if (request_size < 0) {
+		rc = -EINVAL;
+		goto out_free_buffer;
 	}
 
 	/* If data is being written into the device, copy the data from user
@@ -3935,7 +3938,7 @@ static long pmcraid_ioctl_passthrough(
 
 			/* if abort task couldn't find the command i.e it got
 			 * completed prior to aborting, return good completion.
-			 * if command got aborted succesfully or there was IOA
+			 * if command got aborted successfully or there was IOA
 			 * reset due to abort task itself getting timedout then
 			 * return -ETIMEDOUT
 			 */
@@ -4099,10 +4102,10 @@ static long pmcraid_chr_ioctl(
 	struct pmcraid_ioctl_header *hdr = NULL;
 	int retval = -ENOTTY;
 
-	hdr = kmalloc(GFP_KERNEL, sizeof(struct pmcraid_ioctl_header));
+	hdr = kmalloc(sizeof(struct pmcraid_ioctl_header), GFP_KERNEL);
 
 	if (!hdr) {
-		pmcraid_err("faile to allocate memory for ioctl header\n");
+		pmcraid_err("failed to allocate memory for ioctl header\n");
 		return -ENOMEM;
 	}
 
@@ -4251,8 +4254,8 @@ static ssize_t pmcraid_show_drv_version(
 	char *buf
 )
 {
-	return snprintf(buf, PAGE_SIZE, "version: %s, build date: %s\n",
-			PMCRAID_DRIVER_VERSION, PMCRAID_DRIVER_DATE);
+	return snprintf(buf, PAGE_SIZE, "version: %s\n",
+			PMCRAID_DRIVER_VERSION);
 }
 
 static struct device_attribute pmcraid_driver_version_attr = {
@@ -4689,7 +4692,8 @@ pmcraid_register_interrupt_handler(struct pmcraid_instance *pinstance)
 	int rc;
 	struct pci_dev *pdev = pinstance->pdev;
 
-	if (pci_find_capability(pdev, PCI_CAP_ID_MSIX)) {
+	if ((pmcraid_enable_msix) &&
+		(pci_find_capability(pdev, PCI_CAP_ID_MSIX))) {
 		int num_hrrq = PMCRAID_NUM_MSIX_VECTORS;
 		struct msix_entry entries[PMCRAID_NUM_MSIX_VECTORS];
 		int i;
@@ -5455,7 +5459,7 @@ static void __devexit pmcraid_remove(struct pci_dev *pdev)
 	pmcraid_shutdown(pdev);
 
 	pmcraid_disable_interrupts(pinstance, ~0);
-	flush_scheduled_work();
+	flush_work_sync(&pinstance->worker_q);
 
 	pmcraid_kill_tasklets(pinstance);
 	pmcraid_unregister_interrupt_handler(pinstance);
@@ -5933,7 +5937,7 @@ static int __devinit pmcraid_probe(
 	 * However, firmware supports 64-bit streaming DMA buffers, whereas
 	 * coherent buffers are to be 32-bit. Since pci_alloc_consistent always
 	 * returns memory within 4GB (if not, change this logic), coherent
-	 * buffers are within firmware acceptible address ranges.
+	 * buffers are within firmware acceptable address ranges.
 	 */
 	if ((sizeof(dma_addr_t) == 4) ||
 	    pci_set_dma_mask(pdev, DMA_BIT_MASK(64)))
@@ -6094,9 +6098,8 @@ static int __init pmcraid_init(void)
 	dev_t dev;
 	int error;
 
-	pmcraid_info("%s Device Driver version: %s %s\n",
-			 PMCRAID_DRIVER_NAME,
-			 PMCRAID_DRIVER_VERSION, PMCRAID_DRIVER_DATE);
+	pmcraid_info("%s Device Driver version: %s\n",
+			 PMCRAID_DRIVER_NAME, PMCRAID_DRIVER_VERSION);
 
 	error = alloc_chrdev_region(&dev, 0,
 				    PMCRAID_MAX_ADAPTERS,

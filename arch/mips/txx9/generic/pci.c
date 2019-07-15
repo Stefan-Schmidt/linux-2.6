@@ -107,7 +107,7 @@ int txx9_pci_mem_high __initdata;
 
 /*
  * allocate pci_controller and resources.
- * mem_base, io_base: physical addresss.  0 for auto assignment.
+ * mem_base, io_base: physical address.  0 for auto assignment.
  * mem_size and io_size means max size on auto assignment.
  * pcic must be &txx9_primary_pcic or NULL.
  */
@@ -213,11 +213,8 @@ txx9_alloc_pci_controller(struct pci_controller *pcic,
 
 	pcic->mem_offset = 0;	/* busaddr == physaddr */
 
-	printk(KERN_INFO "PCI: IO 0x%08llx-0x%08llx MEM 0x%08llx-0x%08llx\n",
-	       (unsigned long long)pcic->mem_resource[1].start,
-	       (unsigned long long)pcic->mem_resource[1].end,
-	       (unsigned long long)pcic->mem_resource[0].start,
-	       (unsigned long long)pcic->mem_resource[0].end);
+	printk(KERN_INFO "PCI: IO %pR MEM %pR\n",
+	       &pcic->mem_resource[1], &pcic->mem_resource[0]);
 
 	/* register_pci_controller() will request MEM resource */
 	release_resource(&pcic->mem_resource[0]);
@@ -259,20 +256,20 @@ static irqreturn_t i8259_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static int __init
+static int __devinit
 txx9_i8259_irq_setup(int irq)
 {
 	int err;
 
 	init_i8259_irqs();
-	err = request_irq(irq, &i8259_interrupt, IRQF_DISABLED|IRQF_SHARED,
+	err = request_irq(irq, &i8259_interrupt, IRQF_SHARED,
 			  "cascade(i8259)", (void *)(long)irq);
 	if (!err)
 		printk(KERN_INFO "PCI-ISA bridge PIC (irq %d)\n", irq);
 	return err;
 }
 
-static void __init quirk_slc90e66_bridge(struct pci_dev *dev)
+static void __devinit quirk_slc90e66_bridge(struct pci_dev *dev)
 {
 	int irq;	/* PCI/ISA Bridge interrupt */
 	u8 reg_64;
@@ -307,7 +304,7 @@ static void __init quirk_slc90e66_bridge(struct pci_dev *dev)
 	smsc_fdc37m81x_config_end();
 }
 
-static void quirk_slc90e66_ide(struct pci_dev *dev)
+static void __devinit quirk_slc90e66_ide(struct pci_dev *dev)
 {
 	unsigned char dat;
 	int regs[2] = {0x41, 0x43};
@@ -342,7 +339,7 @@ static void quirk_slc90e66_ide(struct pci_dev *dev)
 }
 #endif /* CONFIG_TOSHIBA_FPCIB0 */
 
-static void tc35815_fixup(struct pci_dev *dev)
+static void __devinit tc35815_fixup(struct pci_dev *dev)
 {
 	/* This device may have PM registers but not they are not suported. */
 	if (dev->pm_cap) {
@@ -351,7 +348,7 @@ static void tc35815_fixup(struct pci_dev *dev)
 	}
 }
 
-static void final_fixup(struct pci_dev *dev)
+static void __devinit final_fixup(struct pci_dev *dev)
 {
 	unsigned char bist;
 
@@ -401,9 +398,9 @@ int __init pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 	return txx9_board_vec->pci_map_irq(dev, slot, pin);
 }
 
-char * (*txx9_board_pcibios_setup)(char *str) __devinitdata;
+char * (*txx9_board_pcibios_setup)(char *str) __initdata;
 
-char *__devinit txx9_pcibios_setup(char *str)
+char *__init txx9_pcibios_setup(char *str)
 {
 	if (txx9_board_pcibios_setup && !txx9_board_pcibios_setup(str))
 		return NULL;

@@ -78,12 +78,14 @@ int __init oprofile_arch_init(struct oprofile_operations *ops)
 
 	switch (current_cpu_type()) {
 	case CPU_5KC:
+	case CPU_M14KC:
 	case CPU_20KC:
 	case CPU_24K:
 	case CPU_25KF:
 	case CPU_34K:
 	case CPU_1004K:
 	case CPU_74K:
+	case CPU_LOONGSON1:
 	case CPU_SB1:
 	case CPU_SB1A:
 	case CPU_R10000:
@@ -115,6 +117,7 @@ int __init oprofile_arch_init(struct oprofile_operations *ops)
 	ops->start		= op_mips_start;
 	ops->stop		= op_mips_stop;
 	ops->cpu_type		= lmodel->cpu_type;
+	ops->backtrace		= op_mips_backtrace;
 
 	printk(KERN_INFO "oprofile: using %s performance monitoring.\n",
 	       lmodel->cpu_type);

@@ -15,9 +15,6 @@
 #include <linux/crypto.h>
 #include <linux/scatterlist.h>
 #include <net/xfrm.h>
-#if defined(CONFIG_INET_AH) || defined(CONFIG_INET_AH_MODULE) || defined(CONFIG_INET6_AH) || defined(CONFIG_INET6_AH_MODULE)
-#include <net/ah.h>
-#endif
 #if defined(CONFIG_INET_ESP) || defined(CONFIG_INET_ESP_MODULE) || defined(CONFIG_INET6_ESP) || defined(CONFIG_INET6_ESP_MODULE)
 #include <net/esp.h>
 #endif
@@ -462,8 +459,8 @@ static struct xfrm_algo_desc ealg_list[] = {
 	.desc = {
 		.sadb_alg_id = SADB_X_EALG_AESCTR,
 		.sadb_alg_ivlen	= 8,
-		.sadb_alg_minbits = 128,
-		.sadb_alg_maxbits = 256
+		.sadb_alg_minbits = 160,
+		.sadb_alg_maxbits = 288
 	}
 },
 };
@@ -618,21 +615,21 @@ static int xfrm_alg_name_match(const struct xfrm_algo_desc *entry,
 			(entry->compat && !strcmp(name, entry->compat)));
 }
 
-struct xfrm_algo_desc *xfrm_aalg_get_byname(char *name, int probe)
+struct xfrm_algo_desc *xfrm_aalg_get_byname(const char *name, int probe)
 {
 	return xfrm_find_algo(&xfrm_aalg_list, xfrm_alg_name_match, name,
 			      probe);
 }
 EXPORT_SYMBOL_GPL(xfrm_aalg_get_byname);
 
-struct xfrm_algo_desc *xfrm_ealg_get_byname(char *name, int probe)
+struct xfrm_algo_desc *xfrm_ealg_get_byname(const char *name, int probe)
 {
 	return xfrm_find_algo(&xfrm_ealg_list, xfrm_alg_name_match, name,
 			      probe);
 }
 EXPORT_SYMBOL_GPL(xfrm_ealg_get_byname);
 
-struct xfrm_algo_desc *xfrm_calg_get_byname(char *name, int probe)
+struct xfrm_algo_desc *xfrm_calg_get_byname(const char *name, int probe)
 {
 	return xfrm_find_algo(&xfrm_calg_list, xfrm_alg_name_match, name,
 			      probe);
@@ -654,7 +651,7 @@ static int xfrm_aead_name_match(const struct xfrm_algo_desc *entry,
 	       !strcmp(name, entry->name);
 }
 
-struct xfrm_algo_desc *xfrm_aead_get_byname(char *name, int icv_len, int probe)
+struct xfrm_algo_desc *xfrm_aead_get_byname(const char *name, int icv_len, int probe)
 {
 	struct xfrm_aead_name data = {
 		.name = name,
@@ -752,3 +749,5 @@ void *pskb_put(struct sk_buff *skb, struct sk_buff *tail, int len)
 }
 EXPORT_SYMBOL_GPL(pskb_put);
 #endif
+
+MODULE_LICENSE("GPL");

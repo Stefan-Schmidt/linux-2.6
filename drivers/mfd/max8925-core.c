@@ -75,9 +75,9 @@ static struct mfd_cell power_devs[] = {
 static struct resource rtc_resources[] = {
 	{
 		.name	= "max8925-rtc",
-		.start	= MAX8925_RTC_IRQ,
-		.end	= MAX8925_RTC_IRQ_MASK,
-		.flags	= IORESOURCE_IO,
+		.start	= MAX8925_IRQ_RTC_ALARM0,
+		.end	= MAX8925_IRQ_RTC_ALARM0,
+		.flags	= IORESOURCE_IRQ,
 	},
 };
 
@@ -209,21 +209,6 @@ static struct max8925_irq_data max8925_irqs[] = {
 		.reg		= MAX8925_CHG_IRQ1,
 		.mask_reg	= MAX8925_CHG_IRQ1_MASK,
 		.offs		= 1 << 2,
-	},
-	[MAX8925_IRQ_VCHG_USB_OVP] = {
-		.reg		= MAX8925_CHG_IRQ1,
-		.mask_reg	= MAX8925_CHG_IRQ1_MASK,
-		.offs		= 1 << 3,
-	},
-	[MAX8925_IRQ_VCHG_USB_F] =  {
-		.reg		= MAX8925_CHG_IRQ1,
-		.mask_reg	= MAX8925_CHG_IRQ1_MASK,
-		.offs		= 1 << 4,
-	},
-	[MAX8925_IRQ_VCHG_USB_R] = {
-		.reg		= MAX8925_CHG_IRQ1,
-		.mask_reg	= MAX8925_CHG_IRQ1_MASK,
-		.offs		= 1 << 5,
 	},
 	[MAX8925_IRQ_VCHG_THM_OK_R] = {
 		.reg		= MAX8925_CHG_IRQ2,
@@ -407,16 +392,16 @@ static irqreturn_t max8925_tsc_irq(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static void max8925_irq_lock(unsigned int irq)
+static void max8925_irq_lock(struct irq_data *data)
 {
-	struct max8925_chip *chip = get_irq_chip_data(irq);
+	struct max8925_chip *chip = irq_data_get_irq_chip_data(data);
 
 	mutex_lock(&chip->irq_lock);
 }
 
-static void max8925_irq_sync_unlock(unsigned int irq)
+static void max8925_irq_sync_unlock(struct irq_data *data)
 {
-	struct max8925_chip *chip = get_irq_chip_data(irq);
+	struct max8925_chip *chip = irq_data_get_irq_chip_data(data);
 	struct max8925_irq_data *irq_data;
 	static unsigned char cache_chg[2] = {0xff, 0xff};
 	static unsigned char cache_on[2] = {0xff, 0xff};
@@ -492,32 +477,31 @@ static void max8925_irq_sync_unlock(unsigned int irq)
 	mutex_unlock(&chip->irq_lock);
 }
 
-static void max8925_irq_enable(unsigned int irq)
+static void max8925_irq_enable(struct irq_data *data)
 {
-	struct max8925_chip *chip = get_irq_chip_data(irq);
-	max8925_irqs[irq - chip->irq_base].enable
-		= max8925_irqs[irq - chip->irq_base].offs;
+	struct max8925_chip *chip = irq_data_get_irq_chip_data(data);
+	max8925_irqs[data->irq - chip->irq_base].enable
+		= max8925_irqs[data->irq - chip->irq_base].offs;
 }
 
-static void max8925_irq_disable(unsigned int irq)
+static void max8925_irq_disable(struct irq_data *data)
 {
-	struct max8925_chip *chip = get_irq_chip_data(irq);
-	max8925_irqs[irq - chip->irq_base].enable = 0;
+	struct max8925_chip *chip = irq_data_get_irq_chip_data(data);
+	max8925_irqs[data->irq - chip->irq_base].enable = 0;
 }
 
 static struct irq_chip max8925_irq_chip = {
 	.name		= "max8925",
-	.bus_lock	= max8925_irq_lock,
-	.bus_sync_unlock = max8925_irq_sync_unlock,
-	.enable		= max8925_irq_enable,
-	.disable	= max8925_irq_disable,
+	.irq_bus_lock	= max8925_irq_lock,
+	.irq_bus_sync_unlock = max8925_irq_sync_unlock,
+	.irq_enable	= max8925_irq_enable,
+	.irq_disable	= max8925_irq_disable,
 };
 
 static int max8925_irq_init(struct max8925_chip *chip, int irq,
 			    struct max8925_platform_data *pdata)
 {
 	unsigned long flags = IRQF_TRIGGER_FALLING | IRQF_ONESHOT;
-	struct irq_desc *desc;
 	int i, ret;
 	int __irq;
 
@@ -544,19 +528,18 @@ static int max8925_irq_init(struct max8925_chip *chip, int irq,
 	mutex_init(&chip->irq_lock);
 	chip->core_irq = irq;
 	chip->irq_base = pdata->irq_base;
-	desc = irq_to_desc(chip->core_irq);
 
 	/* register with genirq */
 	for (i = 0; i < ARRAY_SIZE(max8925_irqs); i++) {
 		__irq = i + chip->irq_base;
-		set_irq_chip_data(__irq, chip);
-		set_irq_chip_and_handler(__irq, &max8925_irq_chip,
+		irq_set_chip_data(__irq, chip);
+		irq_set_chip_and_handler(__irq, &max8925_irq_chip,
 					 handle_edge_irq);
-		set_irq_nested_thread(__irq, 1);
+		irq_set_nested_thread(__irq, 1);
 #ifdef CONFIG_ARM
 		set_irq_flags(__irq, IRQF_VALID);
 #else
-		set_irq_noprobe(__irq);
+		irq_set_noprobe(__irq);
 #endif
 	}
 	if (!irq) {
@@ -615,7 +598,7 @@ int __devinit max8925_device_init(struct max8925_chip *chip,
 
 	ret = mfd_add_devices(chip->dev, 0, &rtc_devs[0],
 			      ARRAY_SIZE(rtc_devs),
-			      &rtc_resources[0], 0);
+			      &rtc_resources[0], chip->irq_base, NULL);
 	if (ret < 0) {
 		dev_err(chip->dev, "Failed to add rtc subdev\n");
 		goto out;
@@ -623,16 +606,16 @@ int __devinit max8925_device_init(struct max8925_chip *chip,
 
 	ret = mfd_add_devices(chip->dev, 0, &onkey_devs[0],
 			      ARRAY_SIZE(onkey_devs),
-			      &onkey_resources[0], 0);
+			      &onkey_resources[0], 0, NULL);
 	if (ret < 0) {
 		dev_err(chip->dev, "Failed to add onkey subdev\n");
 		goto out_dev;
 	}
 
-	if (pdata && pdata->regulator[0]) {
+	if (pdata) {
 		ret = mfd_add_devices(chip->dev, 0, &regulator_devs[0],
 				      ARRAY_SIZE(regulator_devs),
-				      &regulator_resources[0], 0);
+				      &regulator_resources[0], 0, NULL);
 		if (ret < 0) {
 			dev_err(chip->dev, "Failed to add regulator subdev\n");
 			goto out_dev;
@@ -642,7 +625,7 @@ int __devinit max8925_device_init(struct max8925_chip *chip,
 	if (pdata && pdata->backlight) {
 		ret = mfd_add_devices(chip->dev, 0, &backlight_devs[0],
 				      ARRAY_SIZE(backlight_devs),
-				      &backlight_resources[0], 0);
+				      &backlight_resources[0], 0, NULL);
 		if (ret < 0) {
 			dev_err(chip->dev, "Failed to add backlight subdev\n");
 			goto out_dev;
@@ -652,7 +635,7 @@ int __devinit max8925_device_init(struct max8925_chip *chip,
 	if (pdata && pdata->power) {
 		ret = mfd_add_devices(chip->dev, 0, &power_devs[0],
 					ARRAY_SIZE(power_devs),
-					&power_supply_resources[0], 0);
+				      &power_supply_resources[0], 0, NULL);
 		if (ret < 0) {
 			dev_err(chip->dev, "Failed to add power supply "
 				"subdev\n");
@@ -663,7 +646,7 @@ int __devinit max8925_device_init(struct max8925_chip *chip,
 	if (pdata && pdata->touch) {
 		ret = mfd_add_devices(chip->dev, 0, &touch_devs[0],
 				      ARRAY_SIZE(touch_devs),
-				      &touch_resources[0], 0);
+				      &touch_resources[0], 0, NULL);
 		if (ret < 0) {
 			dev_err(chip->dev, "Failed to add touch subdev\n");
 			goto out_dev;

@@ -396,6 +396,15 @@
 #define __NR_fanotify_init		(__NR_SYSCALL_BASE+367)
 #define __NR_fanotify_mark		(__NR_SYSCALL_BASE+368)
 #define __NR_prlimit64			(__NR_SYSCALL_BASE+369)
+#define __NR_name_to_handle_at		(__NR_SYSCALL_BASE+370)
+#define __NR_open_by_handle_at		(__NR_SYSCALL_BASE+371)
+#define __NR_clock_adjtime		(__NR_SYSCALL_BASE+372)
+#define __NR_syncfs			(__NR_SYSCALL_BASE+373)
+#define __NR_sendmmsg			(__NR_SYSCALL_BASE+374)
+#define __NR_setns			(__NR_SYSCALL_BASE+375)
+#define __NR_process_vm_readv		(__NR_SYSCALL_BASE+376)
+#define __NR_process_vm_writev		(__NR_SYSCALL_BASE+377)
+					/* 378 for kcmp */
 
 /*
  * The following SWIs are ARM private.
@@ -419,7 +428,8 @@
 /*
  * The following syscalls are obsolete and no longer available for EABI.
  */
-#if defined(__ARM_EABI__) && !defined(__KERNEL__)
+#if !defined(__KERNEL__)
+#if defined(__ARM_EABI__)
 #undef __NR_time
 #undef __NR_umount
 #undef __NR_stime
@@ -433,10 +443,10 @@
 #undef __NR_syscall
 #undef __NR_ipc
 #endif
+#endif
 
 #ifdef __KERNEL__
 
-#define __ARCH_WANT_IPC_PARSE_VERSION
 #define __ARCH_WANT_STAT64
 #define __ARCH_WANT_SYS_GETHOSTNAME
 #define __ARCH_WANT_SYS_PAUSE
@@ -472,8 +482,9 @@
 /*
  * Unimplemented (or alternatively implemented) syscalls
  */
-#define __IGNORE_fadvise64_64		1
-#define __IGNORE_migrate_pages		1
+#define __IGNORE_fadvise64_64
+#define __IGNORE_migrate_pages
+#define __IGNORE_kcmp
 
 #endif /* __KERNEL__ */
 #endif /* __ASM_ARM_UNISTD_H */

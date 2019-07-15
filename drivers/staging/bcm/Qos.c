@@ -4,15 +4,14 @@ This file contains the routines related to Quality of Service.
 */
 #include "headers.h"
 
-BOOLEAN MatchSrcIpAddress(S_CLASSIFIER_RULE *pstClassifierRule,ULONG ulSrcIP);
-BOOLEAN MatchTos(S_CLASSIFIER_RULE *pstClassifierRule,UCHAR ucTypeOfService);
-BOOLEAN MatchSrcPort(S_CLASSIFIER_RULE *pstClassifierRule,USHORT ushSrcPort);
-BOOLEAN MatchDestPort(S_CLASSIFIER_RULE *pstClassifierRule,USHORT ushDestPort);
-BOOLEAN MatchProtocol(S_CLASSIFIER_RULE *pstClassifierRule,UCHAR ucProtocol);
-BOOLEAN MatchDestIpAddress(S_CLASSIFIER_RULE *pstClassifierRule,ULONG ulDestIP);
-USHORT ClassifyPacket(PMINI_ADAPTER Adapter,struct sk_buff* skb);
-void EThCSGetPktInfo(PMINI_ADAPTER Adapter,PVOID pvEthPayload,PS_ETHCS_PKT_INFO pstEthCsPktInfo);
-BOOLEAN EThCSClassifyPkt(PMINI_ADAPTER Adapter,struct sk_buff* skb,PS_ETHCS_PKT_INFO pstEthCsPktInfo,S_CLASSIFIER_RULE *pstClassifierRule, B_UINT8 EthCSCupport);
+static void EThCSGetPktInfo(struct bcm_mini_adapter *Adapter,PVOID pvEthPayload,PS_ETHCS_PKT_INFO pstEthCsPktInfo);
+static BOOLEAN EThCSClassifyPkt(struct bcm_mini_adapter *Adapter,struct sk_buff* skb,PS_ETHCS_PKT_INFO pstEthCsPktInfo,struct bcm_classifier_rule *pstClassifierRule, B_UINT8 EthCSCupport);
+
+static USHORT	IpVersion4(struct bcm_mini_adapter *Adapter, struct iphdr *iphd,
+			   struct bcm_classifier_rule *pstClassifierRule );
+
+static VOID PruneQueue(struct bcm_mini_adapter *Adapter, INT iIndex);
+
 
 /*******************************************************************
 * Function    - MatchSrcIpAddress()
@@ -25,11 +24,11 @@ BOOLEAN EThCSClassifyPkt(PMINI_ADAPTER Adapter,struct sk_buff* skb,PS_ETHCS_PKT_
 *
 * Returns     - TRUE(If address matches) else FAIL .
 *********************************************************************/
-BOOLEAN MatchSrcIpAddress(S_CLASSIFIER_RULE *pstClassifierRule,ULONG ulSrcIP)
+BOOLEAN MatchSrcIpAddress(struct bcm_classifier_rule *pstClassifierRule,ULONG ulSrcIP)
 {
     UCHAR 	ucLoopIndex=0;
 
-    PMINI_ADAPTER Adapter = GET_BCM_ADAPTER(gblpnetdev);
+    struct bcm_mini_adapter *Adapter = GET_BCM_ADAPTER(gblpnetdev);
 
     ulSrcIP=ntohl(ulSrcIP);
     if(0 == pstClassifierRule->ucIPSourceAddressLength)
@@ -59,10 +58,10 @@ BOOLEAN MatchSrcIpAddress(S_CLASSIFIER_RULE *pstClassifierRule,ULONG ulSrcIP)
 *
 * Returns     - TRUE(If address matches) else FAIL .
 *********************************************************************/
-BOOLEAN MatchDestIpAddress(S_CLASSIFIER_RULE *pstClassifierRule,ULONG ulDestIP)
+BOOLEAN MatchDestIpAddress(struct bcm_classifier_rule *pstClassifierRule,ULONG ulDestIP)
 {
 	UCHAR 	ucLoopIndex=0;
-    PMINI_ADAPTER	Adapter = GET_BCM_ADAPTER(gblpnetdev);
+	struct bcm_mini_adapter *Adapter = GET_BCM_ADAPTER(gblpnetdev);
 
 	ulDestIP=ntohl(ulDestIP);
     if(0 == pstClassifierRule->ucIPDestinationAddressLength)
@@ -92,10 +91,10 @@ BOOLEAN MatchDestIpAddress(S_CLASSIFIER_RULE *pstClassifierRule,ULONG ulDestIP)
 *
 * Returns     - TRUE(If address matches) else FAIL.
 **************************************************************************/
-BOOLEAN MatchTos(S_CLASSIFIER_RULE *pstClassifierRule,UCHAR ucTypeOfService)
+BOOLEAN MatchTos(struct bcm_classifier_rule *pstClassifierRule,UCHAR ucTypeOfService)
 {
 
-	PMINI_ADAPTER Adapter = GET_BCM_ADAPTER(gblpnetdev);
+	struct bcm_mini_adapter *Adapter = GET_BCM_ADAPTER(gblpnetdev);
     if( 3 != pstClassifierRule->ucIPTypeOfServiceLength )
        	return TRUE;
 
@@ -118,10 +117,10 @@ BOOLEAN MatchTos(S_CLASSIFIER_RULE *pstClassifierRule,UCHAR ucTypeOfService)
 *
 * Returns     - TRUE(If address matches) else FAIL.
 ****************************************************************************/
-BOOLEAN MatchProtocol(S_CLASSIFIER_RULE *pstClassifierRule,UCHAR ucProtocol)
+BOOLEAN MatchProtocol(struct bcm_classifier_rule *pstClassifierRule,UCHAR ucProtocol)
 {
    	UCHAR 	ucLoopIndex=0;
-	PMINI_ADAPTER Adapter = GET_BCM_ADAPTER(gblpnetdev);
+	struct bcm_mini_adapter *Adapter = GET_BCM_ADAPTER(gblpnetdev);
 	if(0 == pstClassifierRule->ucProtocolLength)
       	return TRUE;
 	for(ucLoopIndex=0;ucLoopIndex<pstClassifierRule->ucProtocolLength;ucLoopIndex++)
@@ -147,11 +146,11 @@ BOOLEAN MatchProtocol(S_CLASSIFIER_RULE *pstClassifierRule,UCHAR ucProtocol)
 *
 * Returns     - TRUE(If address matches) else FAIL.
 ***************************************************************************/
-BOOLEAN MatchSrcPort(S_CLASSIFIER_RULE *pstClassifierRule,USHORT ushSrcPort)
+BOOLEAN MatchSrcPort(struct bcm_classifier_rule *pstClassifierRule,USHORT ushSrcPort)
 {
     	UCHAR 	ucLoopIndex=0;
 
-		PMINI_ADAPTER Adapter = GET_BCM_ADAPTER(gblpnetdev);
+	struct bcm_mini_adapter *Adapter = GET_BCM_ADAPTER(gblpnetdev);
 
 
     	if(0 == pstClassifierRule->ucSrcPortRangeLength)
@@ -179,10 +178,10 @@ BOOLEAN MatchSrcPort(S_CLASSIFIER_RULE *pstClassifierRule,USHORT ushSrcPort)
 *
 * Returns     - TRUE(If address matches) else FAIL.
 ***************************************************************************/
-BOOLEAN MatchDestPort(S_CLASSIFIER_RULE *pstClassifierRule,USHORT ushDestPort)
+BOOLEAN MatchDestPort(struct bcm_classifier_rule *pstClassifierRule,USHORT ushDestPort)
 {
     	UCHAR 	ucLoopIndex=0;
-		PMINI_ADAPTER Adapter = GET_BCM_ADAPTER(gblpnetdev);
+	struct bcm_mini_adapter *Adapter = GET_BCM_ADAPTER(gblpnetdev);
 
     	if(0 == pstClassifierRule->ucDestPortRangeLength)
         	return TRUE;
@@ -205,11 +204,10 @@ BOOLEAN MatchDestPort(S_CLASSIFIER_RULE *pstClassifierRule,USHORT ushDestPort)
 Compares IPV4 Ip address and port number
 @return Queue Index.
 */
-USHORT	IpVersion4(PMINI_ADAPTER Adapter, /**< Pointer to the driver control structure */
-					struct iphdr *iphd, /**<Pointer to the IP Hdr of the packet*/
-					S_CLASSIFIER_RULE *pstClassifierRule )
+static USHORT	IpVersion4(struct bcm_mini_adapter *Adapter,
+			   struct iphdr *iphd,
+			   struct bcm_classifier_rule *pstClassifierRule)
 {
-	//IPHeaderFormat 		*pIpHeader=NULL;
 	xporthdr     		*xprt_hdr=NULL;
 	BOOLEAN	bClassificationSucceed=FALSE;
 
@@ -261,15 +259,6 @@ USHORT	IpVersion4(PMINI_ADAPTER Adapter, /**< Pointer to the driver control stru
 		//if protocol is not TCP or UDP then no need of comparing source port and destination port
 		if(iphd->protocol!=TCP && iphd->protocol!=UDP)
 			break;
-#if 0
-		//check if memory is available of src and Dest port
-		if(ETH_AND_IP_HEADER_LEN + L4_SRC_PORT_LEN + L4_DEST_PORT_LEN > Packet->len)
-		{
-			//This is not an erroneous condition and pkt will be checked for next classification.
-			bClassificationSucceed = FALSE;
-			break;
-		}
-#endif
 		//******************Checking Transport Layer Header field if present *****************//
 		BCM_DEBUG_PRINT(Adapter,DBG_TYPE_TX, IPV4_DBG, DBG_LVL_ALL, "Source Port %04x",
 			(iphd->protocol==UDP)?xprt_hdr->uhdr.source:xprt_hdr->thdr.source);
@@ -312,31 +301,8 @@ USHORT	IpVersion4(PMINI_ADAPTER Adapter, /**< Pointer to the driver control stru
 
 	return bClassificationSucceed;
 }
-/**
-@ingroup tx_functions
-@return  Queue Index based on priority.
-*/
-USHORT GetPacketQueueIndex(PMINI_ADAPTER Adapter, /**<Pointer to the driver control structure */
-								struct sk_buff* Packet /**< Pointer to the Packet to be sent*/
-								)
-{
-	USHORT			usIndex=-1;
-	BCM_DEBUG_PRINT(Adapter,DBG_TYPE_TX, QUEUE_INDEX, DBG_LVL_ALL, "=====>");
 
-	if(NULL==Adapter || NULL==Packet)
-	{
-		BCM_DEBUG_PRINT(Adapter,DBG_TYPE_TX, QUEUE_INDEX, DBG_LVL_ALL, "Got NULL Values<======");
-		return -1;
-	}
-
-	usIndex = ClassifyPacket(Adapter,Packet);
-
-	BCM_DEBUG_PRINT(Adapter,DBG_TYPE_TX, QUEUE_INDEX, DBG_LVL_ALL, "Got Queue Index %x",usIndex);
-	BCM_DEBUG_PRINT(Adapter,DBG_TYPE_TX, QUEUE_INDEX, DBG_LVL_ALL, "GetPacketQueueIndex <==============");
-	return usIndex;
-}
-
-VOID PruneQueueAllSF(PMINI_ADAPTER Adapter)
+VOID PruneQueueAllSF(struct bcm_mini_adapter *Adapter)
 {
 	UINT iIndex = 0;
 
@@ -357,23 +323,21 @@ is less than number of bytes in the queue. If so -
 drops packets from the Head till the number of bytes is
 less than or equal to max queue size for the queue.
 */
-VOID PruneQueue(PMINI_ADAPTER Adapter,/**<Pointer to the driver control structure*/
-					INT iIndex/**<Queue Index*/
-					)
+static VOID PruneQueue(struct bcm_mini_adapter *Adapter, INT iIndex)
 {
 	struct sk_buff* PacketToDrop=NULL;
-	struct net_device_stats*  netstats=NULL;
+	struct net_device_stats *netstats;
 
 	BCM_DEBUG_PRINT(Adapter,DBG_TYPE_TX, PRUNE_QUEUE, DBG_LVL_ALL, "=====> Index %d",iIndex);
 
    	if(iIndex == HiPriority)
-       	return;
+		return;
 
 	if(!Adapter || (iIndex < 0) || (iIndex > HiPriority))
 		return;
 
 	/* To Store the netdevice statistic */
-	netstats = &((PLINUX_DEP_DATA)Adapter->pvOsDepData)->netstats;
+	netstats = &Adapter->dev->stats;
 
 	spin_lock_bh(&Adapter->PackInfo[iIndex].SFQueueLock);
 
@@ -395,9 +359,12 @@ VOID PruneQueue(PMINI_ADAPTER Adapter,/**<Pointer to the driver control structur
 
 		if(PacketToDrop)
 		{
-			if(netstats)
-				netstats->tx_dropped++;
-			atomic_inc(&Adapter->TxDroppedPacketCount);
+			if (netif_msg_tx_err(Adapter))
+				pr_info(PFX "%s: tx queue %d overlimit\n", 
+					Adapter->dev->name, iIndex);
+
+			netstats->tx_dropped++;
+
 			DEQUEUEPACKET(Adapter->PackInfo[iIndex].FirstTxQueue,
 						Adapter->PackInfo[iIndex].LastTxQueue);
 			/// update current bytes and packets count
@@ -407,7 +374,7 @@ VOID PruneQueue(PMINI_ADAPTER Adapter,/**<Pointer to the driver control structur
 			/// update dropped bytes and packets counts
 			Adapter->PackInfo[iIndex].uiDroppedCountBytes += PacketToDrop->len;
 			Adapter->PackInfo[iIndex].uiDroppedCountPackets++;
-			bcm_kfree_skb(PacketToDrop);
+			dev_kfree_skb(PacketToDrop);
 
 		}
 
@@ -416,7 +383,6 @@ VOID PruneQueue(PMINI_ADAPTER Adapter,/**<Pointer to the driver control structur
 			Adapter->PackInfo[iIndex].uiDroppedCountPackets);
 
 		atomic_dec(&Adapter->TotalPacketCount);
-		Adapter->bcm_jiffies = jiffies;
 	}
 
 	spin_unlock_bh(&Adapter->PackInfo[iIndex].SFQueueLock);
@@ -426,20 +392,19 @@ VOID PruneQueue(PMINI_ADAPTER Adapter,/**<Pointer to the driver control structur
 	BCM_DEBUG_PRINT(Adapter,DBG_TYPE_TX, PRUNE_QUEUE, DBG_LVL_ALL, "<=====");
 }
 
-VOID flush_all_queues(PMINI_ADAPTER Adapter)
+VOID flush_all_queues(struct bcm_mini_adapter *Adapter)
 {
 	INT		iQIndex;
 	UINT	uiTotalPacketLength;
-	struct sk_buff*				PacketToDrop=NULL;
-	struct net_device_stats*  	netstats=NULL;
+	struct sk_buff*			PacketToDrop=NULL;
 
 	BCM_DEBUG_PRINT(Adapter,DBG_TYPE_OTHERS, DUMP_INFO, DBG_LVL_ALL, "=====>");
-	/* To Store the netdevice statistic */
-	netstats = &((PLINUX_DEP_DATA)Adapter->pvOsDepData)->netstats;
 
 //	down(&Adapter->data_packet_queue_lock);
 	for(iQIndex=LowPriority; iQIndex<HiPriority; iQIndex++)
 	{
+		struct net_device_stats *netstats = &Adapter->dev->stats;
+
 		spin_lock_bh(&Adapter->PackInfo[iQIndex].SFQueueLock);
 		while(Adapter->PackInfo[iQIndex].FirstTxQueue)
 		{
@@ -448,7 +413,6 @@ VOID flush_all_queues(PMINI_ADAPTER Adapter)
 			{
 				uiTotalPacketLength = PacketToDrop->len;
 				netstats->tx_dropped++;
-				atomic_inc(&Adapter->TxDroppedPacketCount);
 			}
 			else
 				uiTotalPacketLength = 0;
@@ -457,7 +421,7 @@ VOID flush_all_queues(PMINI_ADAPTER Adapter)
 						Adapter->PackInfo[iQIndex].LastTxQueue);
 
 			/* Free the skb */
-			bcm_kfree_skb(PacketToDrop);
+			dev_kfree_skb(PacketToDrop);
 
 			/// update current bytes and packets count
 			Adapter->PackInfo[iQIndex].uiCurrentBytesOnHost -= uiTotalPacketLength;
@@ -478,10 +442,10 @@ VOID flush_all_queues(PMINI_ADAPTER Adapter)
 	BCM_DEBUG_PRINT(Adapter,DBG_TYPE_OTHERS, DUMP_INFO, DBG_LVL_ALL, "<=====");
 }
 
-USHORT ClassifyPacket(PMINI_ADAPTER Adapter,struct sk_buff* skb)
+USHORT ClassifyPacket(struct bcm_mini_adapter *Adapter,struct sk_buff* skb)
 {
 	INT			uiLoopIndex=0;
-	S_CLASSIFIER_RULE *pstClassifierRule = NULL;
+	struct bcm_classifier_rule *pstClassifierRule = NULL;
 	S_ETHCS_PKT_INFO stEthCsPktInfo;
 	PVOID pvEThPayload = NULL;
 	struct iphdr 		*pIpHeader = NULL;
@@ -559,12 +523,6 @@ USHORT ClassifyPacket(PMINI_ADAPTER Adapter,struct sk_buff* skb)
 
 	for(uiLoopIndex = MAX_CLASSIFIERS - 1; uiLoopIndex >= 0; uiLoopIndex--)
 	{
-		if (Adapter->device_removed)
-		{
-			bClassificationSucceed = FALSE;
-			break;
-		}
-
 		if(bClassificationSucceed)
 			break;
 		//Iterate through all classifiers which are already in order of priority
@@ -673,7 +631,7 @@ USHORT ClassifyPacket(PMINI_ADAPTER Adapter,struct sk_buff* skb)
 		if(bFragmentedPkt && (usCurrFragment == 0))
 		{
 			//First Fragment of Fragmented Packet. Create Frag CLS Entry
-			S_FRAGMENTED_PACKET_INFO stFragPktInfo;
+			struct bcm_fragmented_packet_info stFragPktInfo;
 			stFragPktInfo.bUsed = TRUE;
 			stFragPktInfo.ulSrcIpAddress = pIpHeader->saddr;
 			stFragPktInfo.usIpIdentification = pIpHeader->id;
@@ -691,10 +649,10 @@ USHORT ClassifyPacket(PMINI_ADAPTER Adapter,struct sk_buff* skb)
 		return INVALID_QUEUE_INDEX;
 }
 
-static BOOLEAN EthCSMatchSrcMACAddress(S_CLASSIFIER_RULE *pstClassifierRule,PUCHAR Mac)
+static BOOLEAN EthCSMatchSrcMACAddress(struct bcm_classifier_rule *pstClassifierRule,PUCHAR Mac)
 {
 	UINT i=0;
-    PMINI_ADAPTER Adapter = GET_BCM_ADAPTER(gblpnetdev);
+	struct bcm_mini_adapter *Adapter = GET_BCM_ADAPTER(gblpnetdev);
 	if(pstClassifierRule->ucEthCSSrcMACLen==0)
 		return TRUE;
 	BCM_DEBUG_PRINT(Adapter, DBG_TYPE_TX, IPV4_DBG, DBG_LVL_ALL,  "%s \n",__FUNCTION__);
@@ -708,10 +666,10 @@ static BOOLEAN EthCSMatchSrcMACAddress(S_CLASSIFIER_RULE *pstClassifierRule,PUCH
 	return TRUE;
 }
 
-static BOOLEAN EthCSMatchDestMACAddress(S_CLASSIFIER_RULE *pstClassifierRule,PUCHAR Mac)
+static BOOLEAN EthCSMatchDestMACAddress(struct bcm_classifier_rule *pstClassifierRule,PUCHAR Mac)
 {
 	UINT i=0;
-    PMINI_ADAPTER Adapter = GET_BCM_ADAPTER(gblpnetdev);
+	struct bcm_mini_adapter *Adapter = GET_BCM_ADAPTER(gblpnetdev);
 	if(pstClassifierRule->ucEthCSDestMACLen==0)
 		return TRUE;
 	BCM_DEBUG_PRINT(Adapter, DBG_TYPE_TX, IPV4_DBG, DBG_LVL_ALL,  "%s \n",__FUNCTION__);
@@ -725,9 +683,9 @@ static BOOLEAN EthCSMatchDestMACAddress(S_CLASSIFIER_RULE *pstClassifierRule,PUC
 	return TRUE;
 }
 
-static BOOLEAN EthCSMatchEThTypeSAP(S_CLASSIFIER_RULE *pstClassifierRule,struct sk_buff* skb,PS_ETHCS_PKT_INFO pstEthCsPktInfo)
+static BOOLEAN EthCSMatchEThTypeSAP(struct bcm_classifier_rule *pstClassifierRule,struct sk_buff* skb,PS_ETHCS_PKT_INFO pstEthCsPktInfo)
 {
-    PMINI_ADAPTER Adapter = GET_BCM_ADAPTER(gblpnetdev);
+	struct bcm_mini_adapter *Adapter = GET_BCM_ADAPTER(gblpnetdev);
 	if((pstClassifierRule->ucEtherTypeLen==0)||
 		(pstClassifierRule->au8EthCSEtherType[0] == 0))
 		return TRUE;
@@ -760,22 +718,22 @@ static BOOLEAN EthCSMatchEThTypeSAP(S_CLASSIFIER_RULE *pstClassifierRule,struct 
 
 }
 
-static BOOLEAN EthCSMatchVLANRules(S_CLASSIFIER_RULE *pstClassifierRule,struct sk_buff* skb,PS_ETHCS_PKT_INFO pstEthCsPktInfo)
+static BOOLEAN EthCSMatchVLANRules(struct bcm_classifier_rule *pstClassifierRule,struct sk_buff* skb,PS_ETHCS_PKT_INFO pstEthCsPktInfo)
 {
 	BOOLEAN bClassificationSucceed = FALSE;
 	USHORT usVLANID;
 	B_UINT8 uPriority = 0;
-    PMINI_ADAPTER Adapter = GET_BCM_ADAPTER(gblpnetdev);
+	struct bcm_mini_adapter *Adapter = GET_BCM_ADAPTER(gblpnetdev);
 
 	BCM_DEBUG_PRINT(Adapter, DBG_TYPE_TX, IPV4_DBG, DBG_LVL_ALL,  "%s  CLS UserPrio:%x CLS VLANID:%x\n",__FUNCTION__,ntohs(*((USHORT *)pstClassifierRule->usUserPriority)),pstClassifierRule->usVLANID);
 
-	/* In case FW didn't recieve the TLV, the priority field should be ignored */
+	/* In case FW didn't receive the TLV, the priority field should be ignored */
 	if(pstClassifierRule->usValidityBitMap & (1<<PKT_CLASSIFICATION_USER_PRIORITY_VALID))
 	{
 		if(pstEthCsPktInfo->eNwpktEthFrameType!=eEth802QVLANFrame)
 				return FALSE;
 
-		uPriority = (ntohs(*(USHORT *)(skb->data + sizeof(ETH_HEADER_STRUC))) & 0xF000) >> 13;
+		uPriority = (ntohs(*(USHORT *)(skb->data + sizeof(struct bcm_eth_header))) & 0xF000) >> 13;
 
 		if((uPriority >= pstClassifierRule->usUserPriority[0]) && (uPriority <= pstClassifierRule->usUserPriority[1]))
 				bClassificationSucceed = TRUE;
@@ -793,7 +751,7 @@ static BOOLEAN EthCSMatchVLANRules(S_CLASSIFIER_RULE *pstClassifierRule,struct s
 		if(pstEthCsPktInfo->eNwpktEthFrameType!=eEth802QVLANFrame)
 				return FALSE;
 
-		usVLANID = ntohs(*(USHORT *)(skb->data + sizeof(ETH_HEADER_STRUC))) & 0xFFF;
+		usVLANID = ntohs(*(USHORT *)(skb->data + sizeof(struct bcm_eth_header))) & 0xFFF;
 
 		BCM_DEBUG_PRINT(Adapter, DBG_TYPE_TX, IPV4_DBG, DBG_LVL_ALL,  "%s  Pkt VLANID %x Priority: %d\n",__FUNCTION__,usVLANID, uPriority);
 
@@ -810,15 +768,18 @@ static BOOLEAN EthCSMatchVLANRules(S_CLASSIFIER_RULE *pstClassifierRule,struct s
 }
 
 
-BOOLEAN EThCSClassifyPkt(PMINI_ADAPTER Adapter,struct sk_buff* skb,PS_ETHCS_PKT_INFO pstEthCsPktInfo,S_CLASSIFIER_RULE *pstClassifierRule, B_UINT8 EthCSCupport)
+static BOOLEAN EThCSClassifyPkt(struct bcm_mini_adapter *Adapter,struct sk_buff* skb,
+				PS_ETHCS_PKT_INFO pstEthCsPktInfo,
+				struct bcm_classifier_rule *pstClassifierRule,
+				B_UINT8 EthCSCupport)
 {
 	BOOLEAN bClassificationSucceed = FALSE;
-	bClassificationSucceed = EthCSMatchSrcMACAddress(pstClassifierRule,((ETH_HEADER_STRUC *)(skb->data))->au8SourceAddress);
+	bClassificationSucceed = EthCSMatchSrcMACAddress(pstClassifierRule,((struct bcm_eth_header *)(skb->data))->au8SourceAddress);
 	if(!bClassificationSucceed)
 		return FALSE;
 	BCM_DEBUG_PRINT(Adapter, DBG_TYPE_TX, IPV4_DBG, DBG_LVL_ALL,  "ETH CS SrcMAC Matched\n");
 
-	bClassificationSucceed = EthCSMatchDestMACAddress(pstClassifierRule,((ETH_HEADER_STRUC*)(skb->data))->au8DestinationAddress);
+	bClassificationSucceed = EthCSMatchDestMACAddress(pstClassifierRule,((struct bcm_eth_header *)(skb->data))->au8DestinationAddress);
 	if(!bClassificationSucceed)
 		return FALSE;
 	BCM_DEBUG_PRINT(Adapter, DBG_TYPE_TX, IPV4_DBG, DBG_LVL_ALL,  "ETH CS DestMAC Matched\n");
@@ -840,9 +801,11 @@ BOOLEAN EThCSClassifyPkt(PMINI_ADAPTER Adapter,struct sk_buff* skb,PS_ETHCS_PKT_
 	return bClassificationSucceed;
 }
 
-void EThCSGetPktInfo(PMINI_ADAPTER Adapter,PVOID pvEthPayload,PS_ETHCS_PKT_INFO pstEthCsPktInfo)
+static void EThCSGetPktInfo(struct bcm_mini_adapter *Adapter,PVOID pvEthPayload,
+			    PS_ETHCS_PKT_INFO pstEthCsPktInfo)
 {
-	USHORT u16Etype = ntohs(((ETH_HEADER_STRUC*)pvEthPayload)->u16Etype);
+	USHORT u16Etype = ntohs(((struct bcm_eth_header *)pvEthPayload)->u16Etype);
+
 	BCM_DEBUG_PRINT(Adapter, DBG_TYPE_TX, IPV4_DBG, DBG_LVL_ALL,  "EthCSGetPktInfo : Eth Hdr Type : %X\n",u16Etype);
 	if(u16Etype > 0x5dc)
 	{
@@ -882,7 +845,7 @@ void EThCSGetPktInfo(PMINI_ADAPTER Adapter,PVOID pvEthPayload,PS_ETHCS_PKT_INFO 
 	else
 		pstEthCsPktInfo->eNwpktIPFrameType = eNonIPPacket;
 
-	pstEthCsPktInfo->usEtherType = ((ETH_HEADER_STRUC*)pvEthPayload)->u16Etype;
+	pstEthCsPktInfo->usEtherType = ((struct bcm_eth_header *)pvEthPayload)->u16Etype;
 	BCM_DEBUG_PRINT(Adapter, DBG_TYPE_TX, IPV4_DBG, DBG_LVL_ALL,  "EthCsPktInfo->eNwpktIPFrameType : %x\n",pstEthCsPktInfo->eNwpktIPFrameType);
 	BCM_DEBUG_PRINT(Adapter, DBG_TYPE_TX, IPV4_DBG, DBG_LVL_ALL,  "EthCsPktInfo->eNwpktEthFrameType : %x\n",pstEthCsPktInfo->eNwpktEthFrameType);
 	BCM_DEBUG_PRINT(Adapter, DBG_TYPE_TX, IPV4_DBG, DBG_LVL_ALL,  "EthCsPktInfo->usEtherType : %x\n",pstEthCsPktInfo->usEtherType);

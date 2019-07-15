@@ -16,14 +16,18 @@
 #include <linux/uaccess.h>
 
 #include <asm/cacheflush.h>
+#include <asm/opcodes.h>
 #include <asm/ftrace.h>
 
+#include "insn.h"
+
 #ifdef CONFIG_THUMB2_KERNEL
-#define	NOP		0xeb04f85d	/* pop.w {lr} */
+#define	NOP		0xf85deb04	/* pop.w {lr} */
 #else
 #define	NOP		0xe8bd4000	/* pop {lr} */
 #endif
 
+#ifdef CONFIG_DYNAMIC_FTRACE
 #ifdef CONFIG_OLD_MCOUNT
 #define OLD_MCOUNT_ADDR	((unsigned long) mcount)
 #define OLD_FTRACE_ADDR ((unsigned long) ftrace_caller_old)
@@ -59,64 +63,31 @@ static unsigned long adjust_address(struct dyn_ftrace *rec, unsigned long addr)
 }
 #endif
 
-/* construct a branch (BL) instruction to addr */
-#ifdef CONFIG_THUMB2_KERNEL
 static unsigned long ftrace_call_replace(unsigned long pc, unsigned long addr)
 {
-	unsigned long s, j1, j2, i1, i2, imm10, imm11;
-	unsigned long first, second;
-	long offset;
-
-	offset = (long)addr - (long)(pc + 4);
-	if (offset < -16777216 || offset > 16777214) {
-		WARN_ON_ONCE(1);
-		return 0;
-	}
-
-	s	= (offset >> 24) & 0x1;
-	i1	= (offset >> 23) & 0x1;
-	i2	= (offset >> 22) & 0x1;
-	imm10	= (offset >> 12) & 0x3ff;
-	imm11	= (offset >>  1) & 0x7ff;
-
-	j1 = (!i1) ^ s;
-	j2 = (!i2) ^ s;
-
-	first = 0xf000 | (s << 10) | imm10;
-	second = 0xd000 | (j1 << 13) | (j2 << 11) | imm11;
-
-	return (second << 16) | first;
+	return arm_gen_branch_link(pc, addr);
 }
-#else
-static unsigned long ftrace_call_replace(unsigned long pc, unsigned long addr)
-{
-	long offset;
-
-	offset = (long)addr - (long)(pc + 8);
-	if (unlikely(offset < -33554432 || offset > 33554428)) {
-		/* Can't generate branches that far (from ARM ARM). Ftrace
-		 * doesn't generate branches outside of kernel text.
-		 */
-		WARN_ON_ONCE(1);
-		return 0;
-	}
-
-	offset = (offset >> 2) & 0x00ffffff;
-
-	return 0xeb000000 | offset;
-}
-#endif
 
 static int ftrace_modify_code(unsigned long pc, unsigned long old,
-			      unsigned long new)
+			      unsigned long new, bool validate)
 {
 	unsigned long replaced;
 
-	if (probe_kernel_read(&replaced, (void *)pc, MCOUNT_INSN_SIZE))
-		return -EFAULT;
+	if (IS_ENABLED(CONFIG_THUMB2_KERNEL)) {
+		old = __opcode_to_mem_thumb32(old);
+		new = __opcode_to_mem_thumb32(new);
+	} else {
+		old = __opcode_to_mem_arm(old);
+		new = __opcode_to_mem_arm(new);
+	}
 
-	if (replaced != old)
-		return -EINVAL;
+	if (validate) {
+		if (probe_kernel_read(&replaced, (void *)pc, MCOUNT_INSN_SIZE))
+			return -EFAULT;
+
+		if (replaced != old)
+			return -EINVAL;
+	}
 
 	if (probe_kernel_write((void *)pc, &new, MCOUNT_INSN_SIZE))
 		return -EPERM;
@@ -128,23 +99,21 @@ static int ftrace_modify_code(unsigned long pc, unsigned long old,
 
 int ftrace_update_ftrace_func(ftrace_func_t func)
 {
-	unsigned long pc, old;
+	unsigned long pc;
 	unsigned long new;
 	int ret;
 
 	pc = (unsigned long)&ftrace_call;
-	memcpy(&old, &ftrace_call, MCOUNT_INSN_SIZE);
 	new = ftrace_call_replace(pc, (unsigned long)func);
 
-	ret = ftrace_modify_code(pc, old, new);
+	ret = ftrace_modify_code(pc, 0, new, false);
 
 #ifdef CONFIG_OLD_MCOUNT
 	if (!ret) {
 		pc = (unsigned long)&ftrace_call_old;
-		memcpy(&old, &ftrace_call_old, MCOUNT_INSN_SIZE);
 		new = ftrace_call_replace(pc, (unsigned long)func);
 
-		ret = ftrace_modify_code(pc, old, new);
+		ret = ftrace_modify_code(pc, 0, new, false);
 	}
 #endif
 
@@ -159,7 +128,7 @@ int ftrace_make_call(struct dyn_ftrace *rec, unsigned long addr)
 	old = ftrace_nop_replace(rec);
 	new = ftrace_call_replace(ip, adjust_address(rec, addr));
 
-	return ftrace_modify_code(rec->ip, old, new);
+	return ftrace_modify_code(rec->ip, old, new, true);
 }
 
 int ftrace_make_nop(struct module *mod,
@@ -172,7 +141,7 @@ int ftrace_make_nop(struct module *mod,
 
 	old = ftrace_call_replace(ip, adjust_address(rec, addr));
 	new = ftrace_nop_replace(rec);
-	ret = ftrace_modify_code(ip, old, new);
+	ret = ftrace_modify_code(ip, old, new, true);
 
 #ifdef CONFIG_OLD_MCOUNT
 	if (ret == -EINVAL && addr == MCOUNT_ADDR) {
@@ -180,7 +149,7 @@ int ftrace_make_nop(struct module *mod,
 
 		old = ftrace_call_replace(ip, adjust_address(rec, addr));
 		new = ftrace_nop_replace(rec);
-		ret = ftrace_modify_code(ip, old, new);
+		ret = ftrace_modify_code(ip, old, new, true);
 	}
 #endif
 
@@ -193,3 +162,84 @@ int __init ftrace_dyn_arch_init(void *data)
 
 	return 0;
 }
+#endif /* CONFIG_DYNAMIC_FTRACE */
+
+#ifdef CONFIG_FUNCTION_GRAPH_TRACER
+void prepare_ftrace_return(unsigned long *parent, unsigned long self_addr,
+			   unsigned long frame_pointer)
+{
+	unsigned long return_hooker = (unsigned long) &return_to_handler;
+	struct ftrace_graph_ent trace;
+	unsigned long old;
+	int err;
+
+	if (unlikely(atomic_read(&current->tracing_graph_pause)))
+		return;
+
+	old = *parent;
+	*parent = return_hooker;
+
+	trace.func = self_addr;
+	trace.depth = current->curr_ret_stack + 1;
+
+	/* Only trace if the calling function expects to */
+	if (!ftrace_graph_entry(&trace)) {
+		*parent = old;
+		return;
+	}
+
+	err = ftrace_push_return_trace(old, self_addr, &trace.depth,
+				       frame_pointer);
+	if (err == -EBUSY) {
+		*parent = old;
+		return;
+	}
+}
+
+#ifdef CONFIG_DYNAMIC_FTRACE
+extern unsigned long ftrace_graph_call;
+extern unsigned long ftrace_graph_call_old;
+extern void ftrace_graph_caller_old(void);
+
+static int __ftrace_modify_caller(unsigned long *callsite,
+				  void (*func) (void), bool enable)
+{
+	unsigned long caller_fn = (unsigned long) func;
+	unsigned long pc = (unsigned long) callsite;
+	unsigned long branch = arm_gen_branch(pc, caller_fn);
+	unsigned long nop = 0xe1a00000;	/* mov r0, r0 */
+	unsigned long old = enable ? nop : branch;
+	unsigned long new = enable ? branch : nop;
+
+	return ftrace_modify_code(pc, old, new, true);
+}
+
+static int ftrace_modify_graph_caller(bool enable)
+{
+	int ret;
+
+	ret = __ftrace_modify_caller(&ftrace_graph_call,
+				     ftrace_graph_caller,
+				     enable);
+
+#ifdef CONFIG_OLD_MCOUNT
+	if (!ret)
+		ret = __ftrace_modify_caller(&ftrace_graph_call_old,
+					     ftrace_graph_caller_old,
+					     enable);
+#endif
+
+	return ret;
+}
+
+int ftrace_enable_ftrace_graph_caller(void)
+{
+	return ftrace_modify_graph_caller(true);
+}
+
+int ftrace_disable_ftrace_graph_caller(void)
+{
+	return ftrace_modify_graph_caller(false);
+}
+#endif /* CONFIG_DYNAMIC_FTRACE */
+#endif /* CONFIG_FUNCTION_GRAPH_TRACER */

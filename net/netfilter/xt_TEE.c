@@ -25,12 +25,9 @@
 #include <linux/netfilter/x_tables.h>
 #include <linux/netfilter/xt_TEE.h>
 
-#if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)
+#if IS_ENABLED(CONFIG_NF_CONNTRACK)
 #	define WITH_CONNTRACK 1
 #	include <net/netfilter/nf_conntrack.h>
-#endif
-#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
-#	define WITH_IPV6 1
 #endif
 
 struct xt_tee_priv {
@@ -62,18 +59,19 @@ tee_tg_route4(struct sk_buff *skb, const struct xt_tee_tginfo *info)
 	const struct iphdr *iph = ip_hdr(skb);
 	struct net *net = pick_net(skb);
 	struct rtable *rt;
-	struct flowi fl;
+	struct flowi4 fl4;
 
-	memset(&fl, 0, sizeof(fl));
+	memset(&fl4, 0, sizeof(fl4));
 	if (info->priv) {
 		if (info->priv->oif == -1)
 			return false;
-		fl.oif = info->priv->oif;
+		fl4.flowi4_oif = info->priv->oif;
 	}
-	fl.nl_u.ip4_u.daddr = info->gw.ip;
-	fl.nl_u.ip4_u.tos   = RT_TOS(iph->tos);
-	fl.nl_u.ip4_u.scope = RT_SCOPE_UNIVERSE;
-	if (ip_route_output_key(net, &rt, &fl) != 0)
+	fl4.daddr = info->gw.ip;
+	fl4.flowi4_tos = RT_TOS(iph->tos);
+	fl4.flowi4_scope = RT_SCOPE_UNIVERSE;
+	rt = ip_route_output_key(net, &fl4);
+	if (IS_ERR(rt))
 		return false;
 
 	skb_dst_drop(skb);
@@ -89,7 +87,7 @@ tee_tg4(struct sk_buff *skb, const struct xt_action_param *par)
 	const struct xt_tee_tginfo *info = par->targinfo;
 	struct iphdr *iph;
 
-	if (percpu_read(tee_active))
+	if (__this_cpu_read(tee_active))
 		return XT_CONTINUE;
 	/*
 	 * Copy the skb, and route the copy. Will later return %XT_CONTINUE for
@@ -126,37 +124,38 @@ tee_tg4(struct sk_buff *skb, const struct xt_action_param *par)
 	ip_send_check(iph);
 
 	if (tee_tg_route4(skb, info)) {
-		percpu_write(tee_active, true);
+		__this_cpu_write(tee_active, true);
 		ip_local_out(skb);
-		percpu_write(tee_active, false);
+		__this_cpu_write(tee_active, false);
 	} else {
 		kfree_skb(skb);
 	}
 	return XT_CONTINUE;
 }
 
-#ifdef WITH_IPV6
+#if IS_ENABLED(CONFIG_IPV6)
 static bool
 tee_tg_route6(struct sk_buff *skb, const struct xt_tee_tginfo *info)
 {
 	const struct ipv6hdr *iph = ipv6_hdr(skb);
 	struct net *net = pick_net(skb);
 	struct dst_entry *dst;
-	struct flowi fl;
+	struct flowi6 fl6;
 
-	memset(&fl, 0, sizeof(fl));
+	memset(&fl6, 0, sizeof(fl6));
 	if (info->priv) {
 		if (info->priv->oif == -1)
 			return false;
-		fl.oif = info->priv->oif;
+		fl6.flowi6_oif = info->priv->oif;
 	}
-	fl.nl_u.ip6_u.daddr = info->gw.in6;
-	fl.nl_u.ip6_u.flowlabel = ((iph->flow_lbl[0] & 0xF) << 16) |
-				  (iph->flow_lbl[1] << 8) | iph->flow_lbl[2];
-	dst = ip6_route_output(net, NULL, &fl);
-	if (dst == NULL)
+	fl6.daddr = info->gw.in6;
+	fl6.flowlabel = ((iph->flow_lbl[0] & 0xF) << 16) |
+			   (iph->flow_lbl[1] << 8) | iph->flow_lbl[2];
+	dst = ip6_route_output(net, NULL, &fl6);
+	if (dst->error) {
+		dst_release(dst);
 		return false;
-
+	}
 	skb_dst_drop(skb);
 	skb_dst_set(skb, dst);
 	skb->dev      = dst->dev;
@@ -169,7 +168,7 @@ tee_tg6(struct sk_buff *skb, const struct xt_action_param *par)
 {
 	const struct xt_tee_tginfo *info = par->targinfo;
 
-	if (percpu_read(tee_active))
+	if (__this_cpu_read(tee_active))
 		return XT_CONTINUE;
 	skb = pskb_copy(skb, GFP_ATOMIC);
 	if (skb == NULL)
@@ -187,15 +186,15 @@ tee_tg6(struct sk_buff *skb, const struct xt_action_param *par)
 		--iph->hop_limit;
 	}
 	if (tee_tg_route6(skb, info)) {
-		percpu_write(tee_active, true);
+		__this_cpu_write(tee_active, true);
 		ip6_local_out(skb);
-		percpu_write(tee_active, false);
+		__this_cpu_write(tee_active, false);
 	} else {
 		kfree_skb(skb);
 	}
 	return XT_CONTINUE;
 }
-#endif /* WITH_IPV6 */
+#endif
 
 static int tee_netdev_event(struct notifier_block *this, unsigned long event,
 			    void *ptr)
@@ -275,7 +274,7 @@ static struct xt_target tee_tg_reg[] __read_mostly = {
 		.destroy    = tee_tg_destroy,
 		.me         = THIS_MODULE,
 	},
-#ifdef WITH_IPV6
+#if IS_ENABLED(CONFIG_IPV6)
 	{
 		.name       = "TEE",
 		.revision   = 1,

@@ -1,9 +1,7 @@
 /*
- *  linux/drivers/s390/crypto/zcrypt_api.h
- *
  *  zcrypt 2.1.0
  *
- *  Copyright (C)  2001, 2006 IBM Corporation
+ *  Copyright IBM Corp. 2001, 2006
  *  Author(s): Robert Burroughs
  *	       Eric Rossman (edrossma@us.ibm.com)
  *	       Cornelia Huck <cornelia.huck@de.ibm.com>
@@ -76,7 +74,7 @@ struct ica_z90_status {
 
 /**
  * Large random numbers are pulled in 4096 byte chunks from the crypto cards
- * and stored in a page. Be carefull when increasing this buffer due to size
+ * and stored in a page. Be careful when increasing this buffer due to size
  * limitations for AP requests.
  */
 #define ZCRYPT_RNG_BUFFER_SIZE	4096
@@ -109,6 +107,7 @@ struct zcrypt_device {
 	int request_count;		/* # current requests. */
 
 	struct ap_message reply;	/* Per-device reply structure. */
+	int max_exp_bit_length;
 };
 
 struct zcrypt_device *zcrypt_device_alloc(size_t);

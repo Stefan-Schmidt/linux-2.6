@@ -17,49 +17,56 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/smp.h>
-#include <linux/completion.h>
+#include <linux/io.h>
 
 #include <asm/cacheflush.h>
-#include <mach/omap4-common.h>
+#include <mach/omap-wakeupgen.h>
 
-static DECLARE_COMPLETION(cpu_killed);
+#include "common.h"
+
+#include "powerdomain.h"
 
 int platform_cpu_kill(unsigned int cpu)
 {
-	return wait_for_completion_timeout(&cpu_killed, 5000);
+	return 1;
 }
 
 /*
  * platform-specific code to shutdown a CPU
  * Called with IRQs disabled
  */
-void platform_cpu_die(unsigned int cpu)
+void __ref platform_cpu_die(unsigned int cpu)
 {
-	unsigned int this_cpu = hard_smp_processor_id();
+	unsigned int boot_cpu = 0;
+	void __iomem *base = omap_get_wakeupgen_base();
 
-	if (cpu != this_cpu) {
-		pr_crit("platform_cpu_die running on %u, should be %u\n",
-			   this_cpu, cpu);
-		BUG();
-	}
-	pr_notice("CPU%u: shutdown\n", cpu);
-	complete(&cpu_killed);
 	flush_cache_all();
 	dsb();
 
 	/*
 	 * we're ready for shutdown now, so do it
 	 */
-	if (omap_modify_auxcoreboot0(0x0, 0x200) != 0x0)
-		printk(KERN_CRIT "Secure clear status failed\n");
+	if (omap_secure_apis_support()) {
+		if (omap_modify_auxcoreboot0(0x0, 0x200) != 0x0)
+			pr_err("Secure clear status failed\n");
+	} else {
+		__raw_writel(0, base + OMAP_AUX_CORE_BOOT_0);
+	}
+
 
 	for (;;) {
 		/*
-		 * Execute WFI
+		 * Enter into low power state
 		 */
-		do_wfi();
+		omap4_hotplug_cpu(cpu, PWRDM_POWER_OFF);
 
-		if (omap_read_auxcoreboot0() == cpu) {
+		if (omap_secure_apis_support())
+			boot_cpu = omap_read_auxcoreboot0();
+		else
+			boot_cpu =
+				__raw_readl(base + OMAP_AUX_CORE_BOOT_0) >> 5;
+
+		if (boot_cpu == smp_processor_id()) {
 			/*
 			 * OK, proper wakeup, we're done
 			 */

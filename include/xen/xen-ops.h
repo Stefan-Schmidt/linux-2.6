@@ -5,9 +5,9 @@
 
 DECLARE_PER_CPU(struct vcpu_info *, xen_vcpu);
 
-void xen_pre_suspend(void);
-void xen_post_suspend(int suspend_cancelled);
-void xen_hvm_post_suspend(int suspend_cancelled);
+void xen_arch_pre_suspend(void);
+void xen_arch_post_suspend(int suspend_cancelled);
+void xen_arch_hvm_post_suspend(int suspend_cancelled);
 
 void xen_mm_pin_all(void);
 void xen_mm_unpin_all(void);
@@ -23,6 +23,7 @@ int xen_create_contiguous_region(unsigned long vstart, unsigned int order,
 
 void xen_destroy_contiguous_region(unsigned long vstart, unsigned int order);
 
+struct vm_area_struct;
 int xen_remap_domain_mfn_range(struct vm_area_struct *vma,
 			       unsigned long addr,
 			       unsigned long mfn, int nr,

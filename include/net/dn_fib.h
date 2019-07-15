@@ -31,7 +31,7 @@ struct dn_fib_res {
 
 struct dn_fib_nh {
 	struct net_device	*nh_dev;
-	unsigned		nh_flags;
+	unsigned int		nh_flags;
 	unsigned char		nh_scope;
 	int			nh_weight;
 	int			nh_power;
@@ -45,7 +45,7 @@ struct dn_fib_info {
 	int 			fib_treeref;
 	atomic_t		fib_clntref;
 	int			fib_dead;
-	unsigned		fib_flags;
+	unsigned int		fib_flags;
 	int			fib_protocol;
 	__le16			fib_prefsrc;
 	__u32			fib_priority;
@@ -98,7 +98,7 @@ struct dn_fib_table {
 	int (*delete)(struct dn_fib_table *t, struct rtmsg *r,
 			struct dn_kern_rta *rta, struct nlmsghdr *n,
 			struct netlink_skb_parms *req);
-	int (*lookup)(struct dn_fib_table *t, const struct flowi *fl,
+	int (*lookup)(struct dn_fib_table *t, const struct flowidn *fld,
 			struct dn_fib_res *res);
 	int (*flush)(struct dn_fib_table *t);
 	int (*dump)(struct dn_fib_table *t, struct sk_buff *skb, struct netlink_callback *cb);
@@ -119,12 +119,12 @@ extern struct dn_fib_info *dn_fib_create_info(const struct rtmsg *r,
 				struct dn_kern_rta *rta, 
 				const struct nlmsghdr *nlh, int *errp);
 extern int dn_fib_semantic_match(int type, struct dn_fib_info *fi, 
-			const struct flowi *fl,
+			const struct flowidn *fld,
 			struct dn_fib_res *res);
 extern void dn_fib_release_info(struct dn_fib_info *fi);
 extern __le16 dn_fib_get_attr16(struct rtattr *attr, int attrlen, int type);
 extern void dn_fib_flush(void);
-extern void dn_fib_select_multipath(const struct flowi *fl,
+extern void dn_fib_select_multipath(const struct flowidn *fld,
 					struct dn_fib_res *res);
 
 /*
@@ -140,8 +140,8 @@ extern void dn_fib_table_cleanup(void);
  */
 extern void dn_fib_rules_init(void);
 extern void dn_fib_rules_cleanup(void);
-extern unsigned dnet_addr_type(__le16 addr);
-extern int dn_fib_lookup(struct flowi *fl, struct dn_fib_res *res);
+extern unsigned int dnet_addr_type(__le16 addr);
+extern int dn_fib_lookup(struct flowidn *fld, struct dn_fib_res *res);
 
 extern int dn_fib_dump(struct sk_buff *skb, struct netlink_callback *cb);
 

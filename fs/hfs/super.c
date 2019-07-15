@@ -29,43 +29,9 @@ static struct kmem_cache *hfs_inode_cachep;
 
 MODULE_LICENSE("GPL");
 
-/*
- * hfs_write_super()
- *
- * Description:
- *   This function is called by the VFS only. When the filesystem
- *   is mounted r/w it updates the MDB on disk.
- * Input Variable(s):
- *   struct super_block *sb: Pointer to the hfs superblock
- * Output Variable(s):
- *   NONE
- * Returns:
- *   void
- * Preconditions:
- *   'sb' points to a "valid" (struct super_block).
- * Postconditions:
- *   The MDB is marked 'unsuccessfully unmounted' by clearing bit 8 of drAtrb
- *   (hfs_put_super() must set this flag!). Some MDB fields are updated
- *   and the MDB buffer is written to disk by calling hfs_mdb_commit().
- */
-static void hfs_write_super(struct super_block *sb)
-{
-	lock_super(sb);
-	sb->s_dirt = 0;
-
-	/* sync everything to the buffers */
-	if (!(sb->s_flags & MS_RDONLY))
-		hfs_mdb_commit(sb);
-	unlock_super(sb);
-}
-
 static int hfs_sync_fs(struct super_block *sb, int wait)
 {
-	lock_super(sb);
 	hfs_mdb_commit(sb);
-	sb->s_dirt = 0;
-	unlock_super(sb);
-
 	return 0;
 }
 
@@ -78,11 +44,42 @@ static int hfs_sync_fs(struct super_block *sb, int wait)
  */
 static void hfs_put_super(struct super_block *sb)
 {
-	if (sb->s_dirt)
-		hfs_write_super(sb);
+	cancel_delayed_work_sync(&HFS_SB(sb)->mdb_work);
 	hfs_mdb_close(sb);
 	/* release the MDB's resources */
 	hfs_mdb_put(sb);
+}
+
+static void flush_mdb(struct work_struct *work)
+{
+	struct hfs_sb_info *sbi;
+	struct super_block *sb;
+
+	sbi = container_of(work, struct hfs_sb_info, mdb_work.work);
+	sb = sbi->sb;
+
+	spin_lock(&sbi->work_lock);
+	sbi->work_queued = 0;
+	spin_unlock(&sbi->work_lock);
+
+	hfs_mdb_commit(sb);
+}
+
+void hfs_mark_mdb_dirty(struct super_block *sb)
+{
+	struct hfs_sb_info *sbi = HFS_SB(sb);
+	unsigned long delay;
+
+	if (sb->s_flags & MS_RDONLY)
+		return;
+
+	spin_lock(&sbi->work_lock);
+	if (!sbi->work_queued) {
+		delay = msecs_to_jiffies(dirty_writeback_interval * 10);
+		queue_delayed_work(system_long_wq, &sbi->mdb_work, delay);
+		sbi->work_queued = 1;
+	}
+	spin_unlock(&sbi->work_lock);
 }
 
 /*
@@ -133,9 +130,9 @@ static int hfs_remount(struct super_block *sb, int *flags, char *data)
 	return 0;
 }
 
-static int hfs_show_options(struct seq_file *seq, struct vfsmount *mnt)
+static int hfs_show_options(struct seq_file *seq, struct dentry *root)
 {
-	struct hfs_sb_info *sbi = HFS_SB(mnt->mnt_sb);
+	struct hfs_sb_info *sbi = HFS_SB(root->d_sb);
 
 	if (sbi->s_creator != cpu_to_be32(0x3f3f3f3f))
 		seq_printf(seq, ",creator=%.4s", (char *)&sbi->s_creator);
@@ -167,9 +164,15 @@ static struct inode *hfs_alloc_inode(struct super_block *sb)
 	return i ? &i->vfs_inode : NULL;
 }
 
+static void hfs_i_callback(struct rcu_head *head)
+{
+	struct inode *inode = container_of(head, struct inode, i_rcu);
+	kmem_cache_free(hfs_inode_cachep, HFS_I(inode));
+}
+
 static void hfs_destroy_inode(struct inode *inode)
 {
-	kmem_cache_free(hfs_inode_cachep, HFS_I(inode));
+	call_rcu(&inode->i_rcu, hfs_i_callback);
 }
 
 static const struct super_operations hfs_super_operations = {
@@ -178,7 +181,6 @@ static const struct super_operations hfs_super_operations = {
 	.write_inode	= hfs_write_inode,
 	.evict_inode	= hfs_evict_inode,
 	.put_super	= hfs_put_super,
-	.write_super	= hfs_write_super,
 	.sync_fs	= hfs_sync_fs,
 	.statfs		= hfs_statfs,
 	.remount_fs     = hfs_remount,
@@ -381,7 +383,10 @@ static int hfs_fill_super(struct super_block *sb, void *data, int silent)
 	if (!sbi)
 		return -ENOMEM;
 
+	sbi->sb = sb;
 	sb->s_fs_info = sbi;
+	spin_lock_init(&sbi->work_lock);
+	INIT_DELAYED_WORK(&sbi->mdb_work, flush_mdb);
 
 	res = -EINVAL;
 	if (!parse_options((char *)data, sbi)) {
@@ -422,18 +427,15 @@ static int hfs_fill_super(struct super_block *sb, void *data, int silent)
 	if (!root_inode)
 		goto bail_no_root;
 
+	sb->s_d_op = &hfs_dentry_operations;
 	res = -ENOMEM;
-	sb->s_root = d_alloc_root(root_inode);
+	sb->s_root = d_make_root(root_inode);
 	if (!sb->s_root)
-		goto bail_iput;
-
-	sb->s_root->d_op = &hfs_dentry_operations;
+		goto bail_no_root;
 
 	/* everything's okay */
 	return 0;
 
-bail_iput:
-	iput(root_inode);
 bail_no_root:
 	printk(KERN_ERR "hfs: get root inode failed.\n");
 bail:

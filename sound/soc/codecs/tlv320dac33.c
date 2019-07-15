@@ -1,7 +1,7 @@
 /*
  * ALSA SoC Texas Instruments TLV320DAC33 codec driver
  *
- * Author:	Peter Ujfalusi <peter.ujfalusi@nokia.com>
+ * Author: Peter Ujfalusi <peter.ujfalusi@ti.com>
  *
  * Copyright:   (C) 2009 Nokia Corporation
  *
@@ -27,7 +27,6 @@
 #include <linux/delay.h>
 #include <linux/pm.h>
 #include <linux/i2c.h>
-#include <linux/platform_device.h>
 #include <linux/interrupt.h>
 #include <linux/gpio.h>
 #include <linux/regulator/consumer.h>
@@ -36,35 +35,37 @@
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
-#include <sound/soc-dapm.h>
 #include <sound/initval.h>
 #include <sound/tlv.h>
 
 #include <sound/tlv320dac33-plat.h>
 #include "tlv320dac33.h"
 
-#define DAC33_BUFFER_SIZE_BYTES		24576	/* bytes, 12288 16 bit words,
-						 * 6144 stereo */
-#define DAC33_BUFFER_SIZE_SAMPLES	6144
-
-#define NSAMPLE_MAX		5700
-
-#define MODE7_LTHR		10
-#define MODE7_UTHR		(DAC33_BUFFER_SIZE_SAMPLES - 10)
+/*
+ * The internal FIFO is 24576 bytes long
+ * It can be configured to hold 16bit or 24bit samples
+ * In 16bit configuration the FIFO can hold 6144 stereo samples
+ * In 24bit configuration the FIFO can hold 4096 stereo samples
+ */
+#define DAC33_FIFO_SIZE_16BIT	6144
+#define DAC33_FIFO_SIZE_24BIT	4096
+#define DAC33_MODE7_MARGIN	10	/* Safety margin for FIFO in Mode7 */
 
 #define BURST_BASEFREQ_HZ	49152000
 
 #define SAMPLES_TO_US(rate, samples) \
-	(1000000000 / ((rate * 1000) / samples))
+	(1000000000 / (((rate) * 1000) / (samples)))
 
 #define US_TO_SAMPLES(rate, us) \
-	(rate / (1000000 / us))
+	((rate) / (1000000 / ((us) < 1000000 ? (us) : 1000000)))
 
 #define UTHR_FROM_PERIOD_SIZE(samples, playrate, burstrate) \
-	((samples * 5000) / ((burstrate * 5000) / (burstrate - playrate)))
+	(((samples)*5000) / (((burstrate)*5000) / ((burstrate) - (playrate))))
 
-static void dac33_calculate_times(struct snd_pcm_substream *substream);
-static int dac33_prepare_chip(struct snd_pcm_substream *substream);
+static void dac33_calculate_times(struct snd_pcm_substream *substream,
+				  struct snd_soc_codec *codec);
+static int dac33_prepare_chip(struct snd_pcm_substream *substream,
+			      struct snd_soc_codec *codec);
 
 enum dac33_state {
 	DAC33_IDLE = 0,
@@ -100,16 +101,11 @@ struct tlv320dac33_priv {
 	unsigned int refclk;
 
 	unsigned int alarm_threshold;	/* set to be half of LATENCY_TIME_MS */
-	unsigned int nsample_min;	/* nsample should not be lower than
-					 * this */
-	unsigned int nsample_max;	/* nsample should not be higher than
-					 * this */
 	enum dac33_fifo_modes fifo_mode;/* FIFO mode selection */
+	unsigned int fifo_size;		/* Size of the FIFO in samples */
 	unsigned int nsample;		/* burst read amount from host */
 	int mode1_latency;		/* latency caused by the i2c writes in
 					 * us */
-	int auto_fifo_config; 		/* Configure the FIFO based on the
-					 * period size */
 	u8 burst_bclkdiv;		/* BCLK divider value in burst mode */
 	unsigned int burst_rate;	/* Interface speed in Burst modes */
 
@@ -200,7 +196,7 @@ static int dac33_read(struct snd_soc_codec *codec, unsigned int reg,
 		      u8 *value)
 {
 	struct tlv320dac33_priv *dac33 = snd_soc_codec_get_drvdata(codec);
-	int val;
+	int val, ret = 0;
 
 	*value = reg & 0xff;
 
@@ -210,6 +206,7 @@ static int dac33_read(struct snd_soc_codec *codec, unsigned int reg,
 		if (val < 0) {
 			dev_err(codec->dev, "Read failed (%d)\n", val);
 			value[0] = dac33_read_reg_cache(codec, reg);
+			ret = val;
 		} else {
 			value[0] = val;
 			dac33_write_reg_cache(codec, reg, val);
@@ -218,7 +215,7 @@ static int dac33_read(struct snd_soc_codec *codec, unsigned int reg,
 		value[0] = dac33_read_reg_cache(codec, reg);
 	}
 
-	return 0;
+	return ret;
 }
 
 static int dac33_write(struct snd_soc_codec *codec, unsigned int reg,
@@ -302,7 +299,6 @@ static void dac33_init_chip(struct snd_soc_codec *codec)
 	if (unlikely(!dac33->chip_power))
 		return;
 
-	/* 44-46: DAC Control Registers */
 	/* A : DAC sample rate Fsref/1.5 */
 	dac33_write(codec, DAC33_DAC_CTRL_A, DAC33_DACRATE(0));
 	/* B : DAC src=normal, not muted */
@@ -315,8 +311,6 @@ static void dac33_init_chip(struct snd_soc_codec *codec)
 	 clock source = internal osc (?) */
 	dac33_write(codec, DAC33_ANA_VOL_SOFT_STEP_CTRL, DAC33_VOLCLKEN);
 
-	dac33_write(codec, DAC33_PWR_CTRL, DAC33_PDNALLB);
-
 	/* Restore only selected registers (gains mostly) */
 	dac33_write(codec, DAC33_LDAC_DIG_VOL_CTRL,
 		    dac33_read_reg_cache(codec, DAC33_LDAC_DIG_VOL_CTRL));
@@ -327,15 +321,28 @@ static void dac33_init_chip(struct snd_soc_codec *codec)
 		    dac33_read_reg_cache(codec, DAC33_LINEL_TO_LLO_VOL));
 	dac33_write(codec, DAC33_LINER_TO_RLO_VOL,
 		    dac33_read_reg_cache(codec, DAC33_LINER_TO_RLO_VOL));
+
+	dac33_write(codec, DAC33_OUT_AMP_CTRL,
+		    dac33_read_reg_cache(codec, DAC33_OUT_AMP_CTRL));
+
+	dac33_write(codec, DAC33_LDAC_PWR_CTRL,
+		    dac33_read_reg_cache(codec, DAC33_LDAC_PWR_CTRL));
+	dac33_write(codec, DAC33_RDAC_PWR_CTRL,
+		    dac33_read_reg_cache(codec, DAC33_RDAC_PWR_CTRL));
 }
 
-static inline void dac33_read_id(struct snd_soc_codec *codec)
+static inline int dac33_read_id(struct snd_soc_codec *codec)
 {
+	int i, ret = 0;
 	u8 reg;
 
-	dac33_read(codec, DAC33_DEVICE_ID_MSB, &reg);
-	dac33_read(codec, DAC33_DEVICE_ID_LSB, &reg);
-	dac33_read(codec, DAC33_DEVICE_REV_ID, &reg);
+	for (i = 0; i < 3; i++) {
+		ret = dac33_read(codec, DAC33_DEVICE_ID_MSB + i, &reg);
+		if (ret < 0)
+			break;
+	}
+
+	return ret;
 }
 
 static inline void dac33_soft_power(struct snd_soc_codec *codec, int power)
@@ -348,6 +355,21 @@ static inline void dac33_soft_power(struct snd_soc_codec *codec, int power)
 	else
 		reg &= ~(DAC33_PDNALLB | DAC33_OSCPDNB |
 			 DAC33_DACRPDNB | DAC33_DACLPDNB);
+	dac33_write(codec, DAC33_PWR_CTRL, reg);
+}
+
+static inline void dac33_disable_digital(struct snd_soc_codec *codec)
+{
+	u8 reg;
+
+	/* Stop the DAI clock */
+	reg = dac33_read_reg_cache(codec, DAC33_SER_AUDIOIF_CTRL_B);
+	reg &= ~DAC33_BCLKON;
+	dac33_write(codec, DAC33_SER_AUDIOIF_CTRL_B, reg);
+
+	/* Power down the Oscillator, and DACs */
+	reg = dac33_read_reg_cache(codec, DAC33_PWR_CTRL);
+	reg &= ~(DAC33_OSCPDNB | DAC33_DACRPDNB | DAC33_DACLPDNB);
 	dac33_write(codec, DAC33_PWR_CTRL, reg);
 }
 
@@ -399,7 +421,7 @@ exit:
 	return ret;
 }
 
-static int playback_event(struct snd_soc_dapm_widget *w,
+static int dac33_playback_event(struct snd_soc_dapm_widget *w,
 		struct snd_kcontrol *kcontrol, int event)
 {
 	struct tlv320dac33_priv *dac33 = snd_soc_codec_get_drvdata(w->codec);
@@ -407,79 +429,15 @@ static int playback_event(struct snd_soc_dapm_widget *w,
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
 		if (likely(dac33->substream)) {
-			dac33_calculate_times(dac33->substream);
-			dac33_prepare_chip(dac33->substream);
+			dac33_calculate_times(dac33->substream, w->codec);
+			dac33_prepare_chip(dac33->substream, w->codec);
 		}
+		break;
+	case SND_SOC_DAPM_POST_PMD:
+		dac33_disable_digital(w->codec);
 		break;
 	}
 	return 0;
-}
-
-static int dac33_get_nsample(struct snd_kcontrol *kcontrol,
-			 struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
-	struct tlv320dac33_priv *dac33 = snd_soc_codec_get_drvdata(codec);
-
-	ucontrol->value.integer.value[0] = dac33->nsample;
-
-	return 0;
-}
-
-static int dac33_set_nsample(struct snd_kcontrol *kcontrol,
-			 struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
-	struct tlv320dac33_priv *dac33 = snd_soc_codec_get_drvdata(codec);
-	int ret = 0;
-
-	if (dac33->nsample == ucontrol->value.integer.value[0])
-		return 0;
-
-	if (ucontrol->value.integer.value[0] < dac33->nsample_min ||
-	    ucontrol->value.integer.value[0] > dac33->nsample_max) {
-		ret = -EINVAL;
-	} else {
-		dac33->nsample = ucontrol->value.integer.value[0];
-		/* Re calculate the burst time */
-		dac33->mode1_us_burst = SAMPLES_TO_US(dac33->burst_rate,
-						      dac33->nsample);
-	}
-
-	return ret;
-}
-
-static int dac33_get_uthr(struct snd_kcontrol *kcontrol,
-			 struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
-	struct tlv320dac33_priv *dac33 = snd_soc_codec_get_drvdata(codec);
-
-	ucontrol->value.integer.value[0] = dac33->uthr;
-
-	return 0;
-}
-
-static int dac33_set_uthr(struct snd_kcontrol *kcontrol,
-			 struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
-	struct tlv320dac33_priv *dac33 = snd_soc_codec_get_drvdata(codec);
-	int ret = 0;
-
-	if (dac33->substream)
-		return -EBUSY;
-
-	if (dac33->uthr == ucontrol->value.integer.value[0])
-		return 0;
-
-	if (ucontrol->value.integer.value[0] < (MODE7_LTHR + 10) ||
-	    ucontrol->value.integer.value[0] > MODE7_UTHR)
-		ret = -EINVAL;
-	else
-		dac33->uthr = ucontrol->value.integer.value[0];
-
-	return ret;
 }
 
 static int dac33_get_fifo_mode(struct snd_kcontrol *kcontrol,
@@ -566,19 +524,31 @@ static const struct snd_kcontrol_new dac33_mode_snd_controls[] = {
 		 dac33_get_fifo_mode, dac33_set_fifo_mode),
 };
 
-static const struct snd_kcontrol_new dac33_fifo_snd_controls[] = {
-	SOC_SINGLE_EXT("nSample", 0, 0, 5900, 0,
-		dac33_get_nsample, dac33_set_nsample),
-	SOC_SINGLE_EXT("UTHR", 0, 0, MODE7_UTHR, 0,
-		 dac33_get_uthr, dac33_set_uthr),
-};
-
 /* Analog bypass */
 static const struct snd_kcontrol_new dac33_dapm_abypassl_control =
 	SOC_DAPM_SINGLE("Switch", DAC33_LINEL_TO_LLO_VOL, 7, 1, 1);
 
 static const struct snd_kcontrol_new dac33_dapm_abypassr_control =
 	SOC_DAPM_SINGLE("Switch", DAC33_LINER_TO_RLO_VOL, 7, 1, 1);
+
+/* LOP L/R invert selection */
+static const char *dac33_lr_lom_texts[] = {"DAC", "LOP"};
+
+static const struct soc_enum dac33_left_lom_enum =
+	SOC_ENUM_SINGLE(DAC33_OUT_AMP_CTRL, 3,
+			ARRAY_SIZE(dac33_lr_lom_texts),
+			dac33_lr_lom_texts);
+
+static const struct snd_kcontrol_new dac33_dapm_left_lom_control =
+SOC_DAPM_ENUM("Route", dac33_left_lom_enum);
+
+static const struct soc_enum dac33_right_lom_enum =
+	SOC_ENUM_SINGLE(DAC33_OUT_AMP_CTRL, 2,
+			ARRAY_SIZE(dac33_lr_lom_texts),
+			dac33_lr_lom_texts);
+
+static const struct snd_kcontrol_new dac33_dapm_right_lom_control =
+SOC_DAPM_ENUM("Route", dac33_right_lom_enum);
 
 static const struct snd_soc_dapm_widget dac33_dapm_widgets[] = {
 	SND_SOC_DAPM_OUTPUT("LEFT_LO"),
@@ -587,8 +557,8 @@ static const struct snd_soc_dapm_widget dac33_dapm_widgets[] = {
 	SND_SOC_DAPM_INPUT("LINEL"),
 	SND_SOC_DAPM_INPUT("LINER"),
 
-	SND_SOC_DAPM_DAC("DACL", "Left Playback", DAC33_LDAC_PWR_CTRL, 2, 0),
-	SND_SOC_DAPM_DAC("DACR", "Right Playback", DAC33_RDAC_PWR_CTRL, 2, 0),
+	SND_SOC_DAPM_DAC("DACL", "Left Playback", SND_SOC_NOPM, 0, 0),
+	SND_SOC_DAPM_DAC("DACR", "Right Playback", SND_SOC_NOPM, 0, 0),
 
 	/* Analog bypass */
 	SND_SOC_DAPM_SWITCH("Analog Left Bypass", SND_SOC_NOPM, 0, 0,
@@ -596,12 +566,33 @@ static const struct snd_soc_dapm_widget dac33_dapm_widgets[] = {
 	SND_SOC_DAPM_SWITCH("Analog Right Bypass", SND_SOC_NOPM, 0, 0,
 				&dac33_dapm_abypassr_control),
 
-	SND_SOC_DAPM_REG(snd_soc_dapm_mixer, "Output Left Amp Power",
+	SND_SOC_DAPM_MUX("Left LOM Inverted From", SND_SOC_NOPM, 0, 0,
+		&dac33_dapm_left_lom_control),
+	SND_SOC_DAPM_MUX("Right LOM Inverted From", SND_SOC_NOPM, 0, 0,
+		&dac33_dapm_right_lom_control),
+	/*
+	 * For DAPM path, when only the anlog bypass path is enabled, and the
+	 * LOP inverted from the corresponding DAC side.
+	 * This is needed, so we can attach the DAC power supply in this case.
+	 */
+	SND_SOC_DAPM_PGA("Left Bypass PGA", SND_SOC_NOPM, 0, 0, NULL, 0),
+	SND_SOC_DAPM_PGA("Right Bypass PGA", SND_SOC_NOPM, 0, 0, NULL, 0),
+
+	SND_SOC_DAPM_REG(snd_soc_dapm_mixer, "Output Left Amplifier",
 			 DAC33_OUT_AMP_PWR_CTRL, 6, 3, 3, 0),
-	SND_SOC_DAPM_REG(snd_soc_dapm_mixer, "Output Right Amp Power",
+	SND_SOC_DAPM_REG(snd_soc_dapm_mixer, "Output Right Amplifier",
 			 DAC33_OUT_AMP_PWR_CTRL, 4, 3, 3, 0),
 
-	SND_SOC_DAPM_PRE("Prepare Playback", playback_event),
+	SND_SOC_DAPM_SUPPLY("Left DAC Power",
+			    DAC33_LDAC_PWR_CTRL, 2, 0, NULL, 0),
+	SND_SOC_DAPM_SUPPLY("Right DAC Power",
+			    DAC33_RDAC_PWR_CTRL, 2, 0, NULL, 0),
+
+	SND_SOC_DAPM_SUPPLY("Codec Power",
+			    DAC33_PWR_CTRL, 4, 0, NULL, 0),
+
+	SND_SOC_DAPM_PRE("Pre Playback", dac33_playback_event),
+	SND_SOC_DAPM_POST("Post Playback", dac33_playback_event),
 };
 
 static const struct snd_soc_dapm_route audio_map[] = {
@@ -609,27 +600,33 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"Analog Left Bypass", "Switch", "LINEL"},
 	{"Analog Right Bypass", "Switch", "LINER"},
 
-	{"Output Left Amp Power", NULL, "DACL"},
-	{"Output Right Amp Power", NULL, "DACR"},
+	{"Output Left Amplifier", NULL, "DACL"},
+	{"Output Right Amplifier", NULL, "DACR"},
 
-	{"Output Left Amp Power", NULL, "Analog Left Bypass"},
-	{"Output Right Amp Power", NULL, "Analog Right Bypass"},
+	{"Left Bypass PGA", NULL, "Analog Left Bypass"},
+	{"Right Bypass PGA", NULL, "Analog Right Bypass"},
+
+	{"Left LOM Inverted From", "DAC", "Left Bypass PGA"},
+	{"Right LOM Inverted From", "DAC", "Right Bypass PGA"},
+	{"Left LOM Inverted From", "LOP", "Analog Left Bypass"},
+	{"Right LOM Inverted From", "LOP", "Analog Right Bypass"},
+
+	{"Output Left Amplifier", NULL, "Left LOM Inverted From"},
+	{"Output Right Amplifier", NULL, "Right LOM Inverted From"},
+
+	{"DACL", NULL, "Left DAC Power"},
+	{"DACR", NULL, "Right DAC Power"},
+
+	{"Left Bypass PGA", NULL, "Left DAC Power"},
+	{"Right Bypass PGA", NULL, "Right DAC Power"},
 
 	/* output */
-	{"LEFT_LO", NULL, "Output Left Amp Power"},
-	{"RIGHT_LO", NULL, "Output Right Amp Power"},
+	{"LEFT_LO", NULL, "Output Left Amplifier"},
+	{"RIGHT_LO", NULL, "Output Right Amplifier"},
+
+	{"LEFT_LO", NULL, "Codec Power"},
+	{"RIGHT_LO", NULL, "Codec Power"},
 };
-
-static int dac33_add_widgets(struct snd_soc_codec *codec)
-{
-	snd_soc_dapm_new_controls(codec, dac33_dapm_widgets,
-				  ARRAY_SIZE(dac33_dapm_widgets));
-
-	/* set up audio path interconnects */
-	snd_soc_dapm_add_routes(codec, audio_map, ARRAY_SIZE(audio_map));
-
-	return 0;
-}
 
 static int dac33_set_bias_level(struct snd_soc_codec *codec,
 				enum snd_soc_bias_level level)
@@ -638,12 +635,11 @@ static int dac33_set_bias_level(struct snd_soc_codec *codec,
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
-		dac33_soft_power(codec, 1);
 		break;
 	case SND_SOC_BIAS_PREPARE:
 		break;
 	case SND_SOC_BIAS_STANDBY:
-		if (codec->bias_level == SND_SOC_BIAS_OFF) {
+		if (codec->dapm.bias_level == SND_SOC_BIAS_OFF) {
 			/* Coming from OFF, switch on the codec */
 			ret = dac33_hard_power(codec, 1);
 			if (ret != 0)
@@ -654,14 +650,14 @@ static int dac33_set_bias_level(struct snd_soc_codec *codec,
 		break;
 	case SND_SOC_BIAS_OFF:
 		/* Do not power off, when the codec is already off */
-		if (codec->bias_level == SND_SOC_BIAS_OFF)
+		if (codec->dapm.bias_level == SND_SOC_BIAS_OFF)
 			return 0;
 		ret = dac33_hard_power(codec, 0);
 		if (ret != 0)
 			return ret;
 		break;
 	}
-	codec->bias_level = level;
+	codec->dapm.bias_level = level;
 
 	return 0;
 }
@@ -670,6 +666,7 @@ static inline void dac33_prefill_handler(struct tlv320dac33_priv *dac33)
 {
 	struct snd_soc_codec *codec = dac33->codec;
 	unsigned int delay;
+	unsigned long flags;
 
 	switch (dac33->fifo_mode) {
 	case DAC33_FIFO_MODE1:
@@ -677,10 +674,10 @@ static inline void dac33_prefill_handler(struct tlv320dac33_priv *dac33)
 			DAC33_THRREG(dac33->nsample));
 
 		/* Take the timestamps */
-		spin_lock_irq(&dac33->lock);
+		spin_lock_irqsave(&dac33->lock, flags);
 		dac33->t_stamp2 = ktime_to_us(ktime_get());
 		dac33->t_stamp1 = dac33->t_stamp2;
-		spin_unlock_irq(&dac33->lock);
+		spin_unlock_irqrestore(&dac33->lock, flags);
 
 		dac33_write16(codec, DAC33_PREFILL_MSB,
 				DAC33_THRREG(dac33->alarm_threshold));
@@ -692,14 +689,14 @@ static inline void dac33_prefill_handler(struct tlv320dac33_priv *dac33)
 		break;
 	case DAC33_FIFO_MODE7:
 		/* Take the timestamp */
-		spin_lock_irq(&dac33->lock);
+		spin_lock_irqsave(&dac33->lock, flags);
 		dac33->t_stamp1 = ktime_to_us(ktime_get());
 		/* Move back the timestamp with drain time */
 		dac33->t_stamp1 -= dac33->mode7_us_to_lthr;
-		spin_unlock_irq(&dac33->lock);
+		spin_unlock_irqrestore(&dac33->lock, flags);
 
 		dac33_write16(codec, DAC33_PREFILL_MSB,
-				DAC33_THRREG(MODE7_LTHR));
+				DAC33_THRREG(DAC33_MODE7_MARGIN));
 
 		/* Enable Upper Threshold IRQ */
 		dac33_write(codec, DAC33_FIFO_IRQ_MASK, DAC33_MUT);
@@ -714,13 +711,14 @@ static inline void dac33_prefill_handler(struct tlv320dac33_priv *dac33)
 static inline void dac33_playback_handler(struct tlv320dac33_priv *dac33)
 {
 	struct snd_soc_codec *codec = dac33->codec;
+	unsigned long flags;
 
 	switch (dac33->fifo_mode) {
 	case DAC33_FIFO_MODE1:
 		/* Take the timestamp */
-		spin_lock_irq(&dac33->lock);
+		spin_lock_irqsave(&dac33->lock, flags);
 		dac33->t_stamp2 = ktime_to_us(ktime_get());
-		spin_unlock_irq(&dac33->lock);
+		spin_unlock_irqrestore(&dac33->lock, flags);
 
 		dac33_write16(codec, DAC33_NSAMPLE_MSB,
 				DAC33_THRREG(dac33->nsample));
@@ -773,10 +771,11 @@ static irqreturn_t dac33_interrupt_handler(int irq, void *dev)
 {
 	struct snd_soc_codec *codec = dev;
 	struct tlv320dac33_priv *dac33 = snd_soc_codec_get_drvdata(codec);
+	unsigned long flags;
 
-	spin_lock(&dac33->lock);
+	spin_lock_irqsave(&dac33->lock, flags);
 	dac33->t_stamp1 = ktime_to_us(ktime_get());
-	spin_unlock(&dac33->lock);
+	spin_unlock_irqrestore(&dac33->lock, flags);
 
 	/* Do not schedule the workqueue in Mode7 */
 	if (dac33->fifo_mode != DAC33_FIFO_MODE7)
@@ -802,8 +801,7 @@ static void dac33_oscwait(struct snd_soc_codec *codec)
 static int dac33_startup(struct snd_pcm_substream *substream,
 			   struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_codec *codec = dai->codec;
 	struct tlv320dac33_priv *dac33 = snd_soc_codec_get_drvdata(codec);
 
 	/* Stream started, save the substream pointer */
@@ -815,23 +813,20 @@ static int dac33_startup(struct snd_pcm_substream *substream,
 static void dac33_shutdown(struct snd_pcm_substream *substream,
 			     struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_codec *codec = dai->codec;
 	struct tlv320dac33_priv *dac33 = snd_soc_codec_get_drvdata(codec);
 
 	dac33->substream = NULL;
-
-	/* Reset the nSample restrictions */
-	dac33->nsample_min = 0;
-	dac33->nsample_max = NSAMPLE_MAX;
 }
 
+#define CALC_BURST_RATE(bclkdiv, bclk_per_sample) \
+	(BURST_BASEFREQ_HZ / bclkdiv / bclk_per_sample)
 static int dac33_hw_params(struct snd_pcm_substream *substream,
 			   struct snd_pcm_hw_params *params,
 			   struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_codec *codec = dai->codec;
+	struct tlv320dac33_priv *dac33 = snd_soc_codec_get_drvdata(codec);
 
 	/* Check parameters for validity */
 	switch (params_rate(params)) {
@@ -846,6 +841,12 @@ static int dac33_hw_params(struct snd_pcm_substream *substream,
 
 	switch (params_format(params)) {
 	case SNDRV_PCM_FORMAT_S16_LE:
+		dac33->fifo_size = DAC33_FIFO_SIZE_16BIT;
+		dac33->burst_rate = CALC_BURST_RATE(dac33->burst_bclkdiv, 32);
+		break;
+	case SNDRV_PCM_FORMAT_S32_LE:
+		dac33->fifo_size = DAC33_FIFO_SIZE_24BIT;
+		dac33->burst_rate = CALC_BURST_RATE(dac33->burst_bclkdiv, 64);
 		break;
 	default:
 		dev_err(codec->dev, "unsupported format %d\n",
@@ -866,10 +867,9 @@ static int dac33_hw_params(struct snd_pcm_substream *substream,
  * writes happens in different order, than dac33 might end up in unknown state.
  * Use the known, working sequence of register writes to initialize the dac33.
  */
-static int dac33_prepare_chip(struct snd_pcm_substream *substream)
+static int dac33_prepare_chip(struct snd_pcm_substream *substream,
+			      struct snd_soc_codec *codec)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec;
 	struct tlv320dac33_priv *dac33 = snd_soc_codec_get_drvdata(codec);
 	unsigned int oscset, ratioset, pwr_ctrl, reg_tmp;
 	u8 aictrl_a, aictrl_b, fifoctrl_a;
@@ -900,6 +900,9 @@ static int dac33_prepare_chip(struct snd_pcm_substream *substream)
 		aictrl_a |= (DAC33_NCYCL_16 | DAC33_WLEN_16);
 		fifoctrl_a |= DAC33_WIDTH;
 		break;
+	case SNDRV_PCM_FORMAT_S32_LE:
+		aictrl_a |= (DAC33_NCYCL_32 | DAC33_WLEN_24);
+		break;
 	default:
 		dev_err(codec->dev, "unsupported format %d\n",
 			substream->runtime->format);
@@ -926,8 +929,8 @@ static int dac33_prepare_chip(struct snd_pcm_substream *substream)
 	/* Write registers 0x08 and 0x09 (MSB, LSB) */
 	dac33_write16(codec, DAC33_INT_OSC_FREQ_RAT_A, oscset);
 
-	/* calib time: 128 is a nice number ;) */
-	dac33_write(codec, DAC33_CALIB_TIME, 128);
+	/* OSC calibration time */
+	dac33_write(codec, DAC33_CALIB_TIME, 96);
 
 	/* adjustment treshold & step */
 	dac33_write(codec, DAC33_INT_OSC_CTRL_B, DAC33_ADJTHRSHLD(2) |
@@ -1010,7 +1013,7 @@ static int dac33_prepare_chip(struct snd_pcm_substream *substream)
 		/*
 		 * For FIFO bypass mode:
 		 * Enable the FIFO bypass (Disable the FIFO use)
-		 * Set the BCLK as continous
+		 * Set the BCLK as continuous
 		 */
 		fifoctrl_a |= DAC33_FBYPAS;
 		aictrl_b |= DAC33_BCLKON;
@@ -1034,7 +1037,10 @@ static int dac33_prepare_chip(struct snd_pcm_substream *substream)
 		dac33_write(codec, DAC33_SER_AUDIOIF_CTRL_C,
 							dac33->burst_bclkdiv);
 	else
-		dac33_write(codec, DAC33_SER_AUDIOIF_CTRL_C, 32);
+		if (substream->runtime->format == SNDRV_PCM_FORMAT_S16_LE)
+			dac33_write(codec, DAC33_SER_AUDIOIF_CTRL_C, 32);
+		else
+			dac33_write(codec, DAC33_SER_AUDIOIF_CTRL_C, 16);
 
 	switch (dac33->fifo_mode) {
 	case DAC33_FIFO_MODE1:
@@ -1047,7 +1053,8 @@ static int dac33_prepare_chip(struct snd_pcm_substream *substream)
 		 * at the bottom, and also at the top of the FIFO
 		 */
 		dac33_write16(codec, DAC33_UTHR_MSB, DAC33_THRREG(dac33->uthr));
-		dac33_write16(codec, DAC33_LTHR_MSB, DAC33_THRREG(MODE7_LTHR));
+		dac33_write16(codec, DAC33_LTHR_MSB,
+			      DAC33_THRREG(DAC33_MODE7_MARGIN));
 		break;
 	default:
 		break;
@@ -1058,10 +1065,9 @@ static int dac33_prepare_chip(struct snd_pcm_substream *substream)
 	return 0;
 }
 
-static void dac33_calculate_times(struct snd_pcm_substream *substream)
+static void dac33_calculate_times(struct snd_pcm_substream *substream,
+				  struct snd_soc_codec *codec)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec;
 	struct tlv320dac33_priv *dac33 = snd_soc_codec_get_drvdata(codec);
 	unsigned int period_size = substream->runtime->period_size;
 	unsigned int rate = substream->runtime->rate;
@@ -1076,38 +1082,21 @@ static void dac33_calculate_times(struct snd_pcm_substream *substream)
 		/* Number of samples under i2c latency */
 		dac33->alarm_threshold = US_TO_SAMPLES(rate,
 						dac33->mode1_latency);
-		if (dac33->auto_fifo_config) {
-			if (period_size <= dac33->alarm_threshold)
-				/*
-				 * Configure nSamaple to number of periods,
-				 * which covers the latency requironment.
-				 */
-				dac33->nsample = period_size *
-				       ((dac33->alarm_threshold / period_size) +
-				       (dac33->alarm_threshold % period_size ?
-				       1 : 0));
-			else
-				dac33->nsample = period_size;
-		} else {
-			/* nSample time shall not be shorter than i2c latency */
-			dac33->nsample_min = dac33->alarm_threshold;
-			/*
-			 * nSample should not be bigger than alsa buffer minus
-			 * size of one period to avoid overruns
-			 */
-			dac33->nsample_max = substream->runtime->buffer_size -
-						period_size;
-			nsample_limit = DAC33_BUFFER_SIZE_SAMPLES -
-					dac33->alarm_threshold;
-			if (dac33->nsample_max > nsample_limit)
-				dac33->nsample_max = nsample_limit;
+		nsample_limit = dac33->fifo_size - dac33->alarm_threshold;
 
-			/* Correct the nSample if it is outside of the ranges */
-			if (dac33->nsample < dac33->nsample_min)
-				dac33->nsample = dac33->nsample_min;
-			if (dac33->nsample > dac33->nsample_max)
-				dac33->nsample = dac33->nsample_max;
-		}
+		if (period_size <= dac33->alarm_threshold)
+			/*
+			 * Configure nSamaple to number of periods,
+			 * which covers the latency requironment.
+			 */
+			dac33->nsample = period_size *
+				((dac33->alarm_threshold / period_size) +
+				(dac33->alarm_threshold % period_size ?
+				1 : 0));
+		else if (period_size > nsample_limit)
+			dac33->nsample = nsample_limit;
+		else
+			dac33->nsample = period_size;
 
 		dac33->mode1_us_burst = SAMPLES_TO_US(dac33->burst_rate,
 						      dac33->nsample);
@@ -1115,19 +1104,16 @@ static void dac33_calculate_times(struct snd_pcm_substream *substream)
 		dac33->t_stamp2 = 0;
 		break;
 	case DAC33_FIFO_MODE7:
-		if (dac33->auto_fifo_config) {
-			dac33->uthr = UTHR_FROM_PERIOD_SIZE(
-					period_size,
-					rate,
-					dac33->burst_rate) + 9;
-			if (dac33->uthr > MODE7_UTHR)
-				dac33->uthr = MODE7_UTHR;
-			if (dac33->uthr < (MODE7_LTHR + 10))
-				dac33->uthr = (MODE7_LTHR + 10);
-		}
+		dac33->uthr = UTHR_FROM_PERIOD_SIZE(period_size, rate,
+						    dac33->burst_rate) + 9;
+		if (dac33->uthr > (dac33->fifo_size - DAC33_MODE7_MARGIN))
+			dac33->uthr = dac33->fifo_size - DAC33_MODE7_MARGIN;
+		if (dac33->uthr < (DAC33_MODE7_MARGIN + 10))
+			dac33->uthr = (DAC33_MODE7_MARGIN + 10);
+
 		dac33->mode7_us_to_lthr =
 				SAMPLES_TO_US(substream->runtime->rate,
-					dac33->uthr - MODE7_LTHR + 1);
+					dac33->uthr - DAC33_MODE7_MARGIN + 1);
 		dac33->t_stamp1 = 0;
 		break;
 	default:
@@ -1139,8 +1125,7 @@ static void dac33_calculate_times(struct snd_pcm_substream *substream)
 static int dac33_pcm_trigger(struct snd_pcm_substream *substream, int cmd,
 			     struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_codec *codec = dai->codec;
 	struct tlv320dac33_priv *dac33 = snd_soc_codec_get_drvdata(codec);
 	int ret = 0;
 
@@ -1172,22 +1157,22 @@ static snd_pcm_sframes_t dac33_dai_delay(
 			struct snd_pcm_substream *substream,
 			struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_codec *codec = dai->codec;
 	struct tlv320dac33_priv *dac33 = snd_soc_codec_get_drvdata(codec);
 	unsigned long long t0, t1, t_now;
 	unsigned int time_delta, uthr;
 	int samples_out, samples_in, samples;
 	snd_pcm_sframes_t delay = 0;
+	unsigned long flags;
 
 	switch (dac33->fifo_mode) {
 	case DAC33_FIFO_BYPASS:
 		break;
 	case DAC33_FIFO_MODE1:
-		spin_lock(&dac33->lock);
+		spin_lock_irqsave(&dac33->lock, flags);
 		t0 = dac33->t_stamp1;
 		t1 = dac33->t_stamp2;
-		spin_unlock(&dac33->lock);
+		spin_unlock_irqrestore(&dac33->lock, flags);
 		t_now = ktime_to_us(ktime_get());
 
 		/* We have not started to fill the FIFO yet, delay is 0 */
@@ -1245,17 +1230,17 @@ static snd_pcm_sframes_t dac33_dai_delay(
 			samples += (samples_in - samples_out);
 
 			if (likely(samples > 0))
-				delay = samples > DAC33_BUFFER_SIZE_SAMPLES ?
-					DAC33_BUFFER_SIZE_SAMPLES : samples;
+				delay = samples > dac33->fifo_size ?
+					dac33->fifo_size : samples;
 			else
 				delay = 0;
 		}
 		break;
 	case DAC33_FIFO_MODE7:
-		spin_lock(&dac33->lock);
+		spin_lock_irqsave(&dac33->lock, flags);
 		t0 = dac33->t_stamp1;
 		uthr = dac33->uthr;
-		spin_unlock(&dac33->lock);
+		spin_unlock_irqrestore(&dac33->lock, flags);
 		t_now = ktime_to_us(ktime_get());
 
 		/* We have not started to fill the FIFO yet, delay is 0 */
@@ -1298,7 +1283,7 @@ static snd_pcm_sframes_t dac33_dai_delay(
 			samples_in = US_TO_SAMPLES(
 					dac33->burst_rate,
 					time_delta);
-			delay = MODE7_LTHR + samples_in - samples_out;
+			delay = DAC33_MODE7_MARGIN + samples_in - samples_out;
 
 			if (unlikely(delay > uthr))
 				delay = uthr;
@@ -1405,7 +1390,6 @@ static int dac33_soc_probe(struct snd_soc_codec *codec)
 
 	codec->control_data = dac33->control_data;
 	codec->hw_write = (hw_write_t) i2c_master_send;
-	codec->idle_bias_off = 1;
 	dac33->codec = codec;
 
 	/* Read the tlv320dac33 ID registers */
@@ -1414,13 +1398,19 @@ static int dac33_soc_probe(struct snd_soc_codec *codec)
 		dev_err(codec->dev, "Failed to power up codec: %d\n", ret);
 		goto err_power;
 	}
-	dac33_read_id(codec);
+	ret = dac33_read_id(codec);
 	dac33_hard_power(codec, 0);
+
+	if (ret < 0) {
+		dev_err(codec->dev, "Failed to read chip ID: %d\n", ret);
+		ret = -ENODEV;
+		goto err_power;
+	}
 
 	/* Check if the IRQ number is valid and request it */
 	if (dac33->irq >= 0) {
 		ret = request_irq(dac33->irq, dac33_interrupt_handler,
-				  IRQF_TRIGGER_RISING | IRQF_DISABLED,
+				  IRQF_TRIGGER_RISING,
 				  codec->name, codec);
 		if (ret < 0) {
 			dev_err(codec->dev, "Could not request IRQ%d (%d)\n",
@@ -1440,18 +1430,10 @@ static int dac33_soc_probe(struct snd_soc_codec *codec)
 		}
 	}
 
-	snd_soc_add_controls(codec, dac33_snd_controls,
-			     ARRAY_SIZE(dac33_snd_controls));
 	/* Only add the FIFO controls, if we have valid IRQ number */
-	if (dac33->irq >= 0) {
-		snd_soc_add_controls(codec, dac33_mode_snd_controls,
+	if (dac33->irq >= 0)
+		snd_soc_add_codec_controls(codec, dac33_mode_snd_controls,
 				     ARRAY_SIZE(dac33_mode_snd_controls));
-		/* FIFO usage controls only, if autoio config is not selected */
-		if (!dac33->auto_fifo_config)
-			snd_soc_add_controls(codec, dac33_fifo_snd_controls,
-					ARRAY_SIZE(dac33_fifo_snd_controls));
-	}
-	dac33_add_widgets(codec);
 
 err_power:
 	return ret;
@@ -1470,7 +1452,7 @@ static int dac33_soc_remove(struct snd_soc_codec *codec)
 	return 0;
 }
 
-static int dac33_soc_suspend(struct snd_soc_codec *codec, pm_message_t state)
+static int dac33_soc_suspend(struct snd_soc_codec *codec)
 {
 	dac33_set_bias_level(codec, SND_SOC_BIAS_OFF);
 
@@ -1488,6 +1470,7 @@ static struct snd_soc_codec_driver soc_codec_dev_tlv320dac33 = {
 	.read = dac33_read_reg_cache,
 	.write = dac33_write_locked,
 	.set_bias_level = dac33_set_bias_level,
+	.idle_bias_off = true,
 	.reg_cache_size = ARRAY_SIZE(dac33_reg),
 	.reg_word_size = sizeof(u8),
 	.reg_cache_default = dac33_reg,
@@ -1495,13 +1478,20 @@ static struct snd_soc_codec_driver soc_codec_dev_tlv320dac33 = {
 	.remove = dac33_soc_remove,
 	.suspend = dac33_soc_suspend,
 	.resume = dac33_soc_resume,
+
+	.controls = dac33_snd_controls,
+	.num_controls = ARRAY_SIZE(dac33_snd_controls),
+	.dapm_widgets = dac33_dapm_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(dac33_dapm_widgets),
+	.dapm_routes = audio_map,
+	.num_dapm_routes = ARRAY_SIZE(audio_map),
 };
 
 #define DAC33_RATES	(SNDRV_PCM_RATE_44100 | \
 			 SNDRV_PCM_RATE_48000)
-#define DAC33_FORMATS	SNDRV_PCM_FMTBIT_S16_LE
+#define DAC33_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S32_LE)
 
-static struct snd_soc_dai_ops dac33_dai_ops = {
+static const struct snd_soc_dai_ops dac33_dai_ops = {
 	.startup	= dac33_startup,
 	.shutdown	= dac33_shutdown,
 	.hw_params	= dac33_hw_params,
@@ -1518,7 +1508,9 @@ static struct snd_soc_dai_driver dac33_dai = {
 		.channels_min = 2,
 		.channels_max = 2,
 		.rates = DAC33_RATES,
-		.formats = DAC33_FORMATS,},
+		.formats = DAC33_FORMATS,
+		.sig_bits = 24,
+	},
 	.ops = &dac33_dai_ops,
 };
 
@@ -1535,7 +1527,8 @@ static int __devinit dac33_i2c_probe(struct i2c_client *client,
 	}
 	pdata = client->dev.platform_data;
 
-	dac33 = kzalloc(sizeof(struct tlv320dac33_priv), GFP_KERNEL);
+	dac33 = devm_kzalloc(&client->dev, sizeof(struct tlv320dac33_priv),
+			     GFP_KERNEL);
 	if (dac33 == NULL)
 		return -ENOMEM;
 
@@ -1547,17 +1540,11 @@ static int __devinit dac33_i2c_probe(struct i2c_client *client,
 
 	dac33->power_gpio = pdata->power_gpio;
 	dac33->burst_bclkdiv = pdata->burst_bclkdiv;
-	/* Pre calculate the burst rate */
-	dac33->burst_rate = BURST_BASEFREQ_HZ / dac33->burst_bclkdiv / 32;
 	dac33->keep_bclk = pdata->keep_bclk;
-	dac33->auto_fifo_config = pdata->auto_fifo_config;
 	dac33->mode1_latency = pdata->mode1_latency;
 	if (!dac33->mode1_latency)
 		dac33->mode1_latency = 10000; /* 10ms */
 	dac33->irq = client->irq;
-	dac33->nsample = NSAMPLE_MAX;
-	dac33->nsample_max = NSAMPLE_MAX;
-	dac33->uthr = MODE7_UTHR;
 	/* Disable FIFO use by default */
 	dac33->fifo_mode = DAC33_FIFO_BYPASS;
 
@@ -1596,7 +1583,6 @@ err_get:
 	if (dac33->power_gpio >= 0)
 		gpio_free(dac33->power_gpio);
 err_gpio:
-	kfree(dac33);
 	return ret;
 }
 
@@ -1613,8 +1599,6 @@ static int __devexit dac33_i2c_remove(struct i2c_client *client)
 	regulator_bulk_free(ARRAY_SIZE(dac33->supplies), dac33->supplies);
 
 	snd_soc_unregister_codec(&client->dev);
-	kfree(dac33);
-
 	return 0;
 }
 
@@ -1625,6 +1609,7 @@ static const struct i2c_device_id tlv320dac33_i2c_id[] = {
 	},
 	{ },
 };
+MODULE_DEVICE_TABLE(i2c, tlv320dac33_i2c_id);
 
 static struct i2c_driver tlv320dac33_i2c_driver = {
 	.driver = {
@@ -1656,5 +1641,5 @@ module_exit(dac33_module_exit);
 
 
 MODULE_DESCRIPTION("ASoC TLV320DAC33 codec driver");
-MODULE_AUTHOR("Peter Ujfalusi <peter.ujfalusi@nokia.com>");
+MODULE_AUTHOR("Peter Ujfalusi <peter.ujfalusi@ti.com>");
 MODULE_LICENSE("GPL");

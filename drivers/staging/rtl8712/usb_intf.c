@@ -28,6 +28,10 @@
 
 #define _HCI_INTF_C_
 
+#include <linux/usb.h>
+#include <linux/module.h>
+#include <linux/firmware.h>
+
 #include "osdep_service.h"
 #include "drv_types.h"
 #include "recv_osdep.h"
@@ -37,8 +41,6 @@
 #include "usb_ops.h"
 #include "usb_osintf.h"
 
-#define DRVER  "v7_0.20100831"
-
 static struct usb_interface *pintf;
 
 static int r871xu_drv_init(struct usb_interface *pusb_intf,
@@ -47,54 +49,126 @@ static int r871xu_drv_init(struct usb_interface *pusb_intf,
 static void r871xu_dev_remove(struct usb_interface *pusb_intf);
 
 static struct usb_device_id rtl871x_usb_id_tbl[] = {
-	/*92SU
-	 * Realtek */
-	{USB_DEVICE(0x0bda, 0x8171)},
-	{USB_DEVICE(0x0bda, 0x8172)},
+
+/* RTL8188SU */
+	/* Realtek */
+	{USB_DEVICE(0x0BDA, 0x8171)},
 	{USB_DEVICE(0x0bda, 0x8173)},
-	{USB_DEVICE(0x0bda, 0x8174)},
 	{USB_DEVICE(0x0bda, 0x8712)},
 	{USB_DEVICE(0x0bda, 0x8713)},
 	{USB_DEVICE(0x0bda, 0xC512)},
-	/* Abocom  */
+	/* Abocom */
 	{USB_DEVICE(0x07B8, 0x8188)},
-	/* Corega */
-	{USB_DEVICE(0x07aa, 0x0047)},
-	/* Dlink */
-	{USB_DEVICE(0x07d1, 0x3303)},
-	{USB_DEVICE(0x07d1, 0x3302)},
-	{USB_DEVICE(0x07d1, 0x3300)},
-	/* Dlink for Skyworth */
-	{USB_DEVICE(0x14b2, 0x3300)},
-	{USB_DEVICE(0x14b2, 0x3301)},
-	{USB_DEVICE(0x14b2, 0x3302)},
-	/* EnGenius */
-	{USB_DEVICE(0x1740, 0x9603)},
-	{USB_DEVICE(0x1740, 0x9605)},
+	/* ASUS */
+	{USB_DEVICE(0x0B05, 0x1786)},
+	{USB_DEVICE(0x0B05, 0x1791)}, /* 11n mode disable */
 	/* Belkin */
-	{USB_DEVICE(0x050d, 0x815F)},
-	{USB_DEVICE(0x050d, 0x945A)},
-	{USB_DEVICE(0x050d, 0x845A)},
-	/* Guillemot */
-	{USB_DEVICE(0x06f8, 0xe031)},
+	{USB_DEVICE(0x050D, 0x945A)},
+	/* Corega */
+	{USB_DEVICE(0x07AA, 0x0047)},
+	/* D-Link */
+	{USB_DEVICE(0x2001, 0x3306)},
+	{USB_DEVICE(0x07D1, 0x3306)}, /* 11n mode disable */
 	/* Edimax */
 	{USB_DEVICE(0x7392, 0x7611)},
-	{USB_DEVICE(0x7392, 0x7612)},
-	{USB_DEVICE(0x7392, 0x7622)},
+	/* EnGenius */
+	{USB_DEVICE(0x1740, 0x9603)},
+	/* Hawking */
+	{USB_DEVICE(0x0E66, 0x0016)},
+	/* Hercules */
+	{USB_DEVICE(0x06F8, 0xE034)},
+	{USB_DEVICE(0x06F8, 0xE032)},
+	/* Logitec */
+	{USB_DEVICE(0x0789, 0x0167)},
+	/* PCI */
+	{USB_DEVICE(0x2019, 0xAB28)},
+	{USB_DEVICE(0x2019, 0xED16)},
 	/* Sitecom */
+	{USB_DEVICE(0x0DF6, 0x0057)},
 	{USB_DEVICE(0x0DF6, 0x0045)},
+	{USB_DEVICE(0x0DF6, 0x0059)}, /* 11n mode disable */
+	{USB_DEVICE(0x0DF6, 0x004B)},
+	{USB_DEVICE(0x0DF6, 0x005B)},
+	{USB_DEVICE(0x0DF6, 0x005D)},
+	{USB_DEVICE(0x0DF6, 0x0063)},
+	/* Sweex */
+	{USB_DEVICE(0x177F, 0x0154)},
+	/* Thinkware */
+	{USB_DEVICE(0x0BDA, 0x5077)},
+	/* Toshiba */
+	{USB_DEVICE(0x1690, 0x0752)},
+	/* - */
+	{USB_DEVICE(0x20F4, 0x646B)},
+	{USB_DEVICE(0x083A, 0xC512)},
+	{USB_DEVICE(0x25D4, 0x4CA1)},
+	{USB_DEVICE(0x25D4, 0x4CAB)},
+
+/* RTL8191SU */
+	/* Realtek */
+	{USB_DEVICE(0x0BDA, 0x8172)},
+	{USB_DEVICE(0x0BDA, 0x8192)},
+	/* Amigo */
+	{USB_DEVICE(0x0EB0, 0x9061)},
+	/* ASUS/EKB */
+	{USB_DEVICE(0x13D3, 0x3323)},
+	{USB_DEVICE(0x13D3, 0x3311)}, /* 11n mode disable */
+	{USB_DEVICE(0x13D3, 0x3342)},
+	/* ASUS/EKBLenovo */
+	{USB_DEVICE(0x13D3, 0x3333)},
+	{USB_DEVICE(0x13D3, 0x3334)},
+	{USB_DEVICE(0x13D3, 0x3335)}, /* 11n mode disable */
+	{USB_DEVICE(0x13D3, 0x3336)}, /* 11n mode disable */
+	/* ASUS/Media BOX */
+	{USB_DEVICE(0x13D3, 0x3309)},
+	/* Belkin */
+	{USB_DEVICE(0x050D, 0x815F)},
+	/* D-Link */
+	{USB_DEVICE(0x07D1, 0x3302)},
+	{USB_DEVICE(0x07D1, 0x3300)},
+	{USB_DEVICE(0x07D1, 0x3303)},
+	/* Edimax */
+	{USB_DEVICE(0x7392, 0x7612)},
+	/* EnGenius */
+	{USB_DEVICE(0x1740, 0x9605)},
+	/* Guillemot */
+	{USB_DEVICE(0x06F8, 0xE031)},
 	/* Hawking */
 	{USB_DEVICE(0x0E66, 0x0015)},
-	{USB_DEVICE(0x0E66, 0x0016)},
-	{USB_DEVICE(0x0b05, 0x1786)},
-	{USB_DEVICE(0x0b05, 0x1791)},    /* 11n mode disable */
-
+	/* Mediao */
 	{USB_DEVICE(0x13D3, 0x3306)},
-	{USB_DEVICE(0x13D3, 0x3309)},
+	/* PCI */
+	{USB_DEVICE(0x2019, 0xED18)},
+	{USB_DEVICE(0x2019, 0x4901)},
+	/* Sitecom */
+	{USB_DEVICE(0x0DF6, 0x0058)},
+	{USB_DEVICE(0x0DF6, 0x0049)},
+	{USB_DEVICE(0x0DF6, 0x004C)},
+	{USB_DEVICE(0x0DF6, 0x0064)},
+	/* Skyworth */
+	{USB_DEVICE(0x14b2, 0x3300)},
+	{USB_DEVICE(0x14b2, 0x3301)},
+	{USB_DEVICE(0x14B2, 0x3302)},
+	/* - */
+	{USB_DEVICE(0x04F2, 0xAFF2)},
+	{USB_DEVICE(0x04F2, 0xAFF5)},
+	{USB_DEVICE(0x04F2, 0xAFF6)},
+	{USB_DEVICE(0x13D3, 0x3339)},
+	{USB_DEVICE(0x13D3, 0x3340)}, /* 11n mode disable */
+	{USB_DEVICE(0x13D3, 0x3341)}, /* 11n mode disable */
 	{USB_DEVICE(0x13D3, 0x3310)},
-	{USB_DEVICE(0x13D3, 0x3311)},    /* 11n mode disable */
 	{USB_DEVICE(0x13D3, 0x3325)},
-	{USB_DEVICE(0x083A, 0xC512)},
+
+/* RTL8192SU */
+	/* Realtek */
+	{USB_DEVICE(0x0BDA, 0x8174)},
+	/* Belkin */
+	{USB_DEVICE(0x050D, 0x845A)},
+	/* Corega */
+	{USB_DEVICE(0x07AA, 0x0051)},
+	/* Edimax */
+	{USB_DEVICE(0x7392, 0x7622)},
+	/* NEC */
+	{USB_DEVICE(0x0409, 0x02B6)},
 	{}
 };
 
@@ -103,7 +177,19 @@ MODULE_DEVICE_TABLE(usb, rtl871x_usb_id_tbl);
 static struct specific_device_id specific_device_id_tbl[] = {
 	{.idVendor = 0x0b05, .idProduct = 0x1791,
 		 .flags = SPEC_DEV_ID_DISABLE_HT},
+	{.idVendor = 0x0df6, .idProduct = 0x0059,
+		 .flags = SPEC_DEV_ID_DISABLE_HT},
+	{.idVendor = 0x13d3, .idProduct = 0x3306,
+		 .flags = SPEC_DEV_ID_DISABLE_HT},
 	{.idVendor = 0x13D3, .idProduct = 0x3311,
+		 .flags = SPEC_DEV_ID_DISABLE_HT},
+	{.idVendor = 0x13d3, .idProduct = 0x3335,
+		 .flags = SPEC_DEV_ID_DISABLE_HT},
+	{.idVendor = 0x13d3, .idProduct = 0x3336,
+		 .flags = SPEC_DEV_ID_DISABLE_HT},
+	{.idVendor = 0x13d3, .idProduct = 0x3340,
+		 .flags = SPEC_DEV_ID_DISABLE_HT},
+	{.idVendor = 0x13d3, .idProduct = 0x3341,
 		 .flags = SPEC_DEV_ID_DISABLE_HT},
 	{}
 };
@@ -195,7 +281,6 @@ static uint r8712_usb_dvobj_init(struct _adapter *padapter)
 	}
 	if ((r8712_alloc_io_queue(padapter)) == _FAIL)
 		status = _FAIL;
-	sema_init(&(padapter->dvobjpriv.usb_suspend_sema), 0);
 	return status;
 }
 
@@ -285,23 +370,26 @@ static int r871xu_drv_init(struct usb_interface *pusb_intf,
 	struct _adapter *padapter = NULL;
 	struct dvobj_priv *pdvobjpriv;
 	struct net_device *pnetdev;
+	struct usb_device *udev;
 
-	printk(KERN_INFO "r8712u: DriverVersion: %s\n", DRVER);
+	printk(KERN_INFO "r8712u: Staging version\n");
 	/* In this probe function, O.S. will provide the usb interface pointer
 	 * to driver. We have to increase the reference count of the usb device
 	 * structure by using the usb_get_dev function.
 	 */
-	usb_get_dev(interface_to_usbdev(pusb_intf));
+	udev = interface_to_usbdev(pusb_intf);
+	usb_get_dev(udev);
 	pintf = pusb_intf;
 	/* step 1. */
 	pnetdev = r8712_init_netdev();
 	if (!pnetdev)
 		goto error;
-	padapter = (struct _adapter *)_netdev_priv(pnetdev);
+	padapter = netdev_priv(pnetdev);
 	disable_ht_for_spec_devid(pdid, padapter);
 	pdvobjpriv = &padapter->dvobjpriv;
 	pdvobjpriv->padapter = padapter;
-	padapter->dvobjpriv.pusbdev = interface_to_usbdev(pusb_intf);
+	padapter->dvobjpriv.pusbdev = udev;
+	padapter->pusb_intf = pusb_intf;
 	usb_set_intfdata(pusb_intf, pnetdev);
 	SET_NETDEV_DEV(pnetdev, &pusb_intf->dev);
 	/* step 2. */
@@ -508,17 +596,19 @@ static int r871xu_drv_init(struct usb_interface *pusb_intf,
 			       "%pM\n", mac);
 		memcpy(pnetdev->dev_addr, mac, ETH_ALEN);
 	}
-	/* step 6. Tell the network stack we exist */
-	if (register_netdev(pnetdev) != 0)
+	/* step 6. Load the firmware asynchronously */
+	if (rtl871x_load_fw(padapter))
 		goto error;
+	spin_lock_init(&padapter->lockRxFF0Filter);
+	mutex_init(&padapter->mutex_start);
 	return 0;
 error:
-	usb_put_dev(interface_to_usbdev(pusb_intf));
+	usb_put_dev(udev);
 	usb_set_intfdata(pusb_intf, NULL);
 	if (padapter->dvobj_deinit != NULL)
 		padapter->dvobj_deinit(padapter);
 	if (pnetdev)
-		os_free_netdev(pnetdev);
+		free_netdev(pnetdev);
 	return -ENODEV;
 }
 
@@ -527,26 +617,32 @@ error:
 static void r871xu_dev_remove(struct usb_interface *pusb_intf)
 {
 	struct net_device *pnetdev = usb_get_intfdata(pusb_intf);
-	struct _adapter *padapter = (struct _adapter *)netdev_priv(pnetdev);
+	struct _adapter *padapter = netdev_priv(pnetdev);
 	struct usb_device *udev = interface_to_usbdev(pusb_intf);
 
-	if (padapter) {
-		if (drvpriv.drv_registered == true)
-			padapter->bSurpriseRemoved = true;
-		if (pnetdev != NULL) {
-			/* will call netdev_close() */
-			unregister_netdev(pnetdev);
-		}
-		flush_scheduled_work();
-		udelay(1);
-		r871x_dev_unload(padapter);
-		r8712_free_drv_sw(padapter);
+	usb_set_intfdata(pusb_intf, NULL);
+	if (padapter->fw_found)
+		release_firmware(padapter->fw);
+	/* never exit with a firmware callback pending */
+	wait_for_completion(&padapter->rtl8712_fw_ready);
+	if (drvpriv.drv_registered == true)
+		padapter->bSurpriseRemoved = true;
+	if (pnetdev != NULL) {
+		/* will call netdev_close() */
+		unregister_netdev(pnetdev);
 	}
+	flush_scheduled_work();
+	udelay(1);
+	/*Stop driver mlme relation timer */
+	if (padapter->fw_found)
+		r8712_stop_drv_timers(padapter);
+	r871x_dev_unload(padapter);
+	r8712_free_drv_sw(padapter);
 	usb_set_intfdata(pusb_intf, NULL);
 	/* decrease the reference count of the usb device structure
 	 * when disconnect */
 	usb_put_dev(udev);
-	/* If we didn't unplug usb dongle and remove/insert modlue, driver
+	/* If we didn't unplug usb dongle and remove/insert module, driver
 	 * fails on sitesurvey for the first time when device is up.
 	 * Reset usb port for sitesurvey fail issue. */
 	if (udev->state != USB_STATE_NOTATTACHED)

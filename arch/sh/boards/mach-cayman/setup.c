@@ -165,7 +165,7 @@ static int __init smsc_superio_setup(void)
 
 	return 0;
 }
-__initcall(smsc_superio_setup);
+device_initcall(smsc_superio_setup);
 
 static void __iomem *cayman_ioport_map(unsigned long port, unsigned int len)
 {
@@ -181,7 +181,6 @@ extern void init_cayman_irq(void);
 
 static struct sh_machine_vector mv_cayman __initmv = {
 	.mv_name		= "Hitachi Cayman",
-	.mv_nr_irqs		= 64,
 	.mv_ioport_map		= cayman_ioport_map,
 	.mv_init_irq		= init_cayman_irq,
 };

@@ -40,6 +40,7 @@
 #include "pvrusb2-io.h"
 #include <media/v4l2-device.h>
 #include <media/cx2341x.h>
+#include <media/ir-kbd-i2c.h>
 #include "pvrusb2-devattr.h"
 
 /* Legal values for PVR2_CID_HSM */
@@ -115,7 +116,7 @@ struct pvr2_ctl_info {
 		} type_int;
 		struct { /* enumerated control */
 			unsigned int count;       /* enum value count */
-			const char **value_names; /* symbol names */
+			const char * const *value_names; /* symbol names */
 		} type_enum;
 		struct { /* bitmask control */
 			unsigned int valid_bits; /* bits in use */
@@ -202,6 +203,7 @@ struct pvr2_hdw {
 
 	/* IR related */
 	unsigned int ir_scheme_active; /* IR scheme as seen from the outside */
+	struct IR_i2c_init_data ir_init_data; /* params passed to IR modules */
 
 	/* Frequency table */
 	unsigned int freqTable[FREQTABLE_SIZE];
@@ -315,18 +317,16 @@ struct pvr2_hdw {
 	v4l2_std_id std_mask_eeprom; // Hardware supported selections
 	v4l2_std_id std_mask_avail;  // Which standards we may select from
 	v4l2_std_id std_mask_cur;    // Currently selected standard(s)
-	unsigned int std_enum_cnt;   // # of enumerated standards
 	int std_enum_cur;            // selected standard enumeration value
 	int std_dirty;               // True if std_mask_cur has changed
 	struct pvr2_ctl_info std_info_enum;
 	struct pvr2_ctl_info std_info_avail;
 	struct pvr2_ctl_info std_info_cur;
-	struct v4l2_standard *std_defs;
-	const char **std_enum_names;
+	struct pvr2_ctl_info std_info_detect;
 
 	// Generated string names, one per actual V4L2 standard
 	const char *std_mask_ptrs[32];
-	char std_mask_names[32][10];
+	char std_mask_names[32][16];
 
 	int unit_number;             /* ID for driver instance */
 	unsigned long serial_number; /* ID for hardware itself */

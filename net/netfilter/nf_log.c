@@ -74,7 +74,7 @@ void nf_log_unregister(struct nf_logger *logger)
 		c_logger = rcu_dereference_protected(nf_loggers[i],
 						     lockdep_is_held(&nf_log_mutex));
 		if (c_logger == logger)
-			rcu_assign_pointer(nf_loggers[i], NULL);
+			RCU_INIT_POINTER(nf_loggers[i], NULL);
 		list_del(&logger->list[i]);
 	}
 	mutex_unlock(&nf_log_mutex);
@@ -85,6 +85,8 @@ EXPORT_SYMBOL(nf_log_unregister);
 
 int nf_log_bind_pf(u_int8_t pf, const struct nf_logger *logger)
 {
+	if (pf >= ARRAY_SIZE(nf_loggers))
+		return -EINVAL;
 	mutex_lock(&nf_log_mutex);
 	if (__find_logger(pf, logger->name) == NULL) {
 		mutex_unlock(&nf_log_mutex);
@@ -98,8 +100,10 @@ EXPORT_SYMBOL(nf_log_bind_pf);
 
 void nf_log_unbind_pf(u_int8_t pf)
 {
+	if (pf >= ARRAY_SIZE(nf_loggers))
+		return;
 	mutex_lock(&nf_log_mutex);
-	rcu_assign_pointer(nf_loggers[pf], NULL);
+	RCU_INIT_POINTER(nf_loggers[pf], NULL);
 	mutex_unlock(&nf_log_mutex);
 }
 EXPORT_SYMBOL(nf_log_unbind_pf);
@@ -161,7 +165,8 @@ static int seq_show(struct seq_file *s, void *v)
 	struct nf_logger *t;
 	int ret;
 
-	logger = nf_loggers[*pos];
+	logger = rcu_dereference_protected(nf_loggers[*pos],
+					   lockdep_is_held(&nf_log_mutex));
 
 	if (!logger)
 		ret = seq_printf(s, "%2lld NONE (", *pos);
@@ -209,13 +214,6 @@ static const struct file_operations nflog_file_ops = {
 #endif /* PROC_FS */
 
 #ifdef CONFIG_SYSCTL
-static struct ctl_path nf_log_sysctl_path[] = {
-	{ .procname = "net", },
-	{ .procname = "netfilter", },
-	{ .procname = "nf_log", },
-	{ }
-};
-
 static char nf_log_sysctl_fnames[NFPROTO_NUMPROTO-NFPROTO_UNSPEC][3];
 static struct ctl_table nf_log_sysctl_table[NFPROTO_NUMPROTO+1];
 static struct ctl_table_header *nf_log_dir_header;
@@ -249,7 +247,8 @@ static int nf_log_proc_dostring(ctl_table *table, int write,
 		mutex_unlock(&nf_log_mutex);
 	} else {
 		mutex_lock(&nf_log_mutex);
-		logger = nf_loggers[tindex];
+		logger = rcu_dereference_protected(nf_loggers[tindex],
+						   lockdep_is_held(&nf_log_mutex));
 		if (!logger)
 			table->data = "NONE";
 		else
@@ -277,7 +276,7 @@ static __init int netfilter_log_sysctl_init(void)
 		nf_log_sysctl_table[i].extra1 = (void *)(unsigned long) i;
 	}
 
-	nf_log_dir_header = register_sysctl_paths(nf_log_sysctl_path,
+	nf_log_dir_header = register_net_sysctl(&init_net, "net/netfilter/nf_log",
 				       nf_log_sysctl_table);
 	if (!nf_log_dir_header)
 		return -ENOMEM;

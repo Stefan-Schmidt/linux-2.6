@@ -1,5 +1,5 @@
-/*  sun4m_irq.c
- *  arch/sparc/kernel/sun4m_irq.c:
+/*
+ * sun4m irq support
  *
  *  djhr: Hacked out of irq.c into a CPU dependent version.
  *
@@ -9,101 +9,44 @@
  *  Copyright (C) 1996 Dave Redman (djhr@tadpole.co.uk)
  */
 
-#include <linux/errno.h>
-#include <linux/linkage.h>
-#include <linux/kernel_stat.h>
-#include <linux/signal.h>
-#include <linux/sched.h>
-#include <linux/ptrace.h>
-#include <linux/smp.h>
-#include <linux/interrupt.h>
-#include <linux/init.h>
-#include <linux/ioport.h>
-#include <linux/of.h>
-#include <linux/of_device.h>
-
-#include <asm/ptrace.h>
-#include <asm/processor.h>
-#include <asm/system.h>
-#include <asm/psr.h>
-#include <asm/vaddrs.h>
 #include <asm/timer.h>
-#include <asm/openprom.h>
-#include <asm/oplib.h>
 #include <asm/traps.h>
 #include <asm/pgalloc.h>
 #include <asm/pgtable.h>
-#include <asm/smp.h>
 #include <asm/irq.h>
 #include <asm/io.h>
 #include <asm/cacheflush.h>
 
 #include "irq.h"
+#include "kernel.h"
 
-struct sun4m_irq_percpu {
-	u32		pending;
-	u32		clear;
-	u32		set;
-};
-
-struct sun4m_irq_global {
-	u32		pending;
-	u32		mask;
-	u32		mask_clear;
-	u32		mask_set;
-	u32		interrupt_target;
-};
-
-/* Code in entry.S needs to get at these register mappings.  */
-struct sun4m_irq_percpu __iomem *sun4m_irq_percpu[SUN4M_NCPUS];
-struct sun4m_irq_global __iomem *sun4m_irq_global;
-
-/* Dave Redman (djhr@tadpole.co.uk)
- * The sun4m interrupt registers.
- */
-#define SUN4M_INT_ENABLE  	0x80000000
-#define SUN4M_INT_E14     	0x00000080
-#define SUN4M_INT_E10     	0x00080000
-
-#define SUN4M_HARD_INT(x)	(0x000000001 << (x))
-#define SUN4M_SOFT_INT(x)	(0x000010000 << (x))
-
-#define	SUN4M_INT_MASKALL	0x80000000	  /* mask all interrupts */
-#define	SUN4M_INT_MODULE_ERR	0x40000000	  /* module error */
-#define	SUN4M_INT_M2S_WRITE_ERR	0x20000000	  /* write buffer error */
-#define	SUN4M_INT_ECC_ERR	0x10000000	  /* ecc memory error */
-#define	SUN4M_INT_VME_ERR	0x08000000	  /* vme async error */
-#define	SUN4M_INT_FLOPPY	0x00400000	  /* floppy disk */
-#define	SUN4M_INT_MODULE	0x00200000	  /* module interrupt */
-#define	SUN4M_INT_VIDEO		0x00100000	  /* onboard video */
-#define	SUN4M_INT_REALTIME	0x00080000	  /* system timer */
-#define	SUN4M_INT_SCSI		0x00040000	  /* onboard scsi */
-#define	SUN4M_INT_AUDIO		0x00020000	  /* audio/isdn */
-#define	SUN4M_INT_ETHERNET	0x00010000	  /* onboard ethernet */
-#define	SUN4M_INT_SERIAL	0x00008000	  /* serial ports */
-#define	SUN4M_INT_KBDMS		0x00004000	  /* keyboard/mouse */
-#define	SUN4M_INT_SBUSBITS	0x00003F80	  /* sbus int bits */
-#define	SUN4M_INT_VMEBITS	0x0000007F	  /* vme int bits */
-
-#define	SUN4M_INT_ERROR		(SUN4M_INT_MODULE_ERR |    \
-				 SUN4M_INT_M2S_WRITE_ERR | \
-				 SUN4M_INT_ECC_ERR |       \
-				 SUN4M_INT_VME_ERR)
-
-#define SUN4M_INT_SBUS(x)	(1 << (x+7))
-#define SUN4M_INT_VME(x)	(1 << (x))
-
-/* Interrupt levels used by OBP */
-#define	OBP_INT_LEVEL_SOFT	0x10
-#define	OBP_INT_LEVEL_ONBOARD	0x20
-#define	OBP_INT_LEVEL_SBUS	0x30
-#define	OBP_INT_LEVEL_VME	0x40
-
-/* Interrupt level assignment on sun4m:
+/* Sample sun4m IRQ layout:
+ *
+ * 0x22 - Power
+ * 0x24 - ESP SCSI
+ * 0x26 - Lance ethernet
+ * 0x2b - Floppy
+ * 0x2c - Zilog uart
+ * 0x32 - SBUS level 0
+ * 0x33 - Parallel port, SBUS level 1
+ * 0x35 - SBUS level 2
+ * 0x37 - SBUS level 3
+ * 0x39 - Audio, Graphics card, SBUS level 4
+ * 0x3b - SBUS level 5
+ * 0x3d - SBUS level 6
+ *
+ * Each interrupt source has a mask bit in the interrupt registers.
+ * When the mask bit is set, this blocks interrupt deliver.  So you
+ * clear the bit to enable the interrupt.
+ *
+ * Interrupts numbered less than 0x10 are software triggered interrupts
+ * and unused by Linux.
+ *
+ * Interrupt level assignment on sun4m:
  *
  *	level		source
  * ------------------------------------------------------------
- *        1		softint-1
+ *	  1		softint-1
  *	  2		softint-2, VME/SBUS level 1
  *	  3		softint-3, VME/SBUS level 2
  *	  4		softint-4, onboard SCSI
@@ -138,10 +81,10 @@ struct sun4m_irq_global __iomem *sun4m_irq_global;
  * 'intr' property IRQ priority values from ss4, ss5, ss10, ss20, and
  * Tadpole S3 GX systems.
  *
- * esp: 	0x24	onboard ESP SCSI
- * le:  	0x26	onboard Lance ETHERNET
+ * esp:		0x24	onboard ESP SCSI
+ * le:		0x26	onboard Lance ETHERNET
  * p9100:	0x32	SBUS level 1 P9100 video
- * bpp:  	0x33	SBUS level 2 BPP parallel port device
+ * bpp:		0x33	SBUS level 2 BPP parallel port device
  * DBRI:	0x39	SBUS level 5 DBRI ISDN audio
  * SUNW,leo:	0x39	SBUS level 5 LEO video
  * pcmcia:	0x3b	SBUS level 6 PCMCIA controller
@@ -152,8 +95,59 @@ struct sun4m_irq_global __iomem *sun4m_irq_global;
  * power:	0x22	onboard power device (XXX unknown mask bit XXX)
  */
 
-static unsigned long irq_mask[0x50] = {
-	/* SMP */
+
+/* Code in entry.S needs to get at these register mappings.  */
+struct sun4m_irq_percpu __iomem *sun4m_irq_percpu[SUN4M_NCPUS];
+struct sun4m_irq_global __iomem *sun4m_irq_global;
+
+struct sun4m_handler_data {
+	bool    percpu;
+	long    mask;
+};
+
+/* Dave Redman (djhr@tadpole.co.uk)
+ * The sun4m interrupt registers.
+ */
+#define SUN4M_INT_ENABLE	0x80000000
+#define SUN4M_INT_E14		0x00000080
+#define SUN4M_INT_E10		0x00080000
+
+#define	SUN4M_INT_MASKALL	0x80000000	  /* mask all interrupts */
+#define	SUN4M_INT_MODULE_ERR	0x40000000	  /* module error */
+#define	SUN4M_INT_M2S_WRITE_ERR	0x20000000	  /* write buffer error */
+#define	SUN4M_INT_ECC_ERR	0x10000000	  /* ecc memory error */
+#define	SUN4M_INT_VME_ERR	0x08000000	  /* vme async error */
+#define	SUN4M_INT_FLOPPY	0x00400000	  /* floppy disk */
+#define	SUN4M_INT_MODULE	0x00200000	  /* module interrupt */
+#define	SUN4M_INT_VIDEO		0x00100000	  /* onboard video */
+#define	SUN4M_INT_REALTIME	0x00080000	  /* system timer */
+#define	SUN4M_INT_SCSI		0x00040000	  /* onboard scsi */
+#define	SUN4M_INT_AUDIO		0x00020000	  /* audio/isdn */
+#define	SUN4M_INT_ETHERNET	0x00010000	  /* onboard ethernet */
+#define	SUN4M_INT_SERIAL	0x00008000	  /* serial ports */
+#define	SUN4M_INT_KBDMS		0x00004000	  /* keyboard/mouse */
+#define	SUN4M_INT_SBUSBITS	0x00003F80	  /* sbus int bits */
+#define	SUN4M_INT_VMEBITS	0x0000007F	  /* vme int bits */
+
+#define	SUN4M_INT_ERROR		(SUN4M_INT_MODULE_ERR |    \
+				 SUN4M_INT_M2S_WRITE_ERR | \
+				 SUN4M_INT_ECC_ERR |       \
+				 SUN4M_INT_VME_ERR)
+
+#define SUN4M_INT_SBUS(x)	(1 << (x+7))
+#define SUN4M_INT_VME(x)	(1 << (x))
+
+/* Interrupt levels used by OBP */
+#define	OBP_INT_LEVEL_SOFT	0x10
+#define	OBP_INT_LEVEL_ONBOARD	0x20
+#define	OBP_INT_LEVEL_SBUS	0x30
+#define	OBP_INT_LEVEL_VME	0x40
+
+#define SUN4M_TIMER_IRQ         (OBP_INT_LEVEL_ONBOARD | 10)
+#define SUN4M_PROFILE_IRQ       (OBP_INT_LEVEL_ONBOARD | 14)
+
+static unsigned long sun4m_imask[0x50] = {
+	/* 0x00 - SMP */
 	0,  SUN4M_SOFT_INT(1),
 	SUN4M_SOFT_INT(2),  SUN4M_SOFT_INT(3),
 	SUN4M_SOFT_INT(4),  SUN4M_SOFT_INT(5),
@@ -162,7 +156,7 @@ static unsigned long irq_mask[0x50] = {
 	SUN4M_SOFT_INT(10), SUN4M_SOFT_INT(11),
 	SUN4M_SOFT_INT(12), SUN4M_SOFT_INT(13),
 	SUN4M_SOFT_INT(14), SUN4M_SOFT_INT(15),
-	/* soft */
+	/* 0x10 - soft */
 	0,  SUN4M_SOFT_INT(1),
 	SUN4M_SOFT_INT(2),  SUN4M_SOFT_INT(3),
 	SUN4M_SOFT_INT(4),  SUN4M_SOFT_INT(5),
@@ -171,129 +165,119 @@ static unsigned long irq_mask[0x50] = {
 	SUN4M_SOFT_INT(10), SUN4M_SOFT_INT(11),
 	SUN4M_SOFT_INT(12), SUN4M_SOFT_INT(13),
 	SUN4M_SOFT_INT(14), SUN4M_SOFT_INT(15),
-	/* onboard */
+	/* 0x20 - onboard */
 	0, 0, 0, 0,
 	SUN4M_INT_SCSI,  0, SUN4M_INT_ETHERNET, 0,
 	SUN4M_INT_VIDEO, SUN4M_INT_MODULE,
 	SUN4M_INT_REALTIME, SUN4M_INT_FLOPPY,
 	(SUN4M_INT_SERIAL | SUN4M_INT_KBDMS),
-	SUN4M_INT_AUDIO, 0, SUN4M_INT_MODULE_ERR,
-	/* sbus */
+	SUN4M_INT_AUDIO, SUN4M_INT_E14, SUN4M_INT_MODULE_ERR,
+	/* 0x30 - sbus */
 	0, 0, SUN4M_INT_SBUS(0), SUN4M_INT_SBUS(1),
 	0, SUN4M_INT_SBUS(2), 0, SUN4M_INT_SBUS(3),
 	0, SUN4M_INT_SBUS(4), 0, SUN4M_INT_SBUS(5),
 	0, SUN4M_INT_SBUS(6), 0, 0,
-	/* vme */
+	/* 0x40 - vme */
 	0, 0, SUN4M_INT_VME(0), SUN4M_INT_VME(1),
 	0, SUN4M_INT_VME(2), 0, SUN4M_INT_VME(3),
 	0, SUN4M_INT_VME(4), 0, SUN4M_INT_VME(5),
 	0, SUN4M_INT_VME(6), 0, 0
 };
 
-static unsigned long sun4m_get_irqmask(unsigned int irq)
+static void sun4m_mask_irq(struct irq_data *data)
 {
-	unsigned long mask;
-    
-	if (irq < 0x50)
-		mask = irq_mask[irq];
-	else
-		mask = 0;
-
-	if (!mask)
-		printk(KERN_ERR "sun4m_get_irqmask: IRQ%d has no valid mask!\n",
-		       irq);
-
-	return mask;
-}
-
-static void sun4m_disable_irq(unsigned int irq_nr)
-{
-	unsigned long mask, flags;
+	struct sun4m_handler_data *handler_data = data->handler_data;
 	int cpu = smp_processor_id();
 
-	mask = sun4m_get_irqmask(irq_nr);
-	local_irq_save(flags);
-	if (irq_nr > 15)
-		sbus_writel(mask, &sun4m_irq_global->mask_set);
-	else
-		sbus_writel(mask, &sun4m_irq_percpu[cpu]->set);
-	local_irq_restore(flags);    
-}
+	if (handler_data->mask) {
+		unsigned long flags;
 
-static void sun4m_enable_irq(unsigned int irq_nr)
-{
-	unsigned long mask, flags;
-	int cpu = smp_processor_id();
-
-	/* Dreadful floppy hack. When we use 0x2b instead of
-         * 0x0b the system blows (it starts to whistle!).
-         * So we continue to use 0x0b. Fixme ASAP. --P3
-         */
-        if (irq_nr != 0x0b) {
-		mask = sun4m_get_irqmask(irq_nr);
 		local_irq_save(flags);
-		if (irq_nr > 15)
-			sbus_writel(mask, &sun4m_irq_global->mask_clear);
-		else
-			sbus_writel(mask, &sun4m_irq_percpu[cpu]->clear);
-		local_irq_restore(flags);    
-	} else {
-		local_irq_save(flags);
-		sbus_writel(SUN4M_INT_FLOPPY, &sun4m_irq_global->mask_clear);
+		if (handler_data->percpu) {
+			sbus_writel(handler_data->mask, &sun4m_irq_percpu[cpu]->set);
+		} else {
+			sbus_writel(handler_data->mask, &sun4m_irq_global->mask_set);
+		}
 		local_irq_restore(flags);
 	}
 }
 
-static unsigned long cpu_pil_to_imask[16] = {
-/*0*/	0x00000000,
-/*1*/	0x00000000,
-/*2*/	SUN4M_INT_SBUS(0) | SUN4M_INT_VME(0),
-/*3*/	SUN4M_INT_SBUS(1) | SUN4M_INT_VME(1),
-/*4*/	SUN4M_INT_SCSI,
-/*5*/	SUN4M_INT_SBUS(2) | SUN4M_INT_VME(2),
-/*6*/	SUN4M_INT_ETHERNET,
-/*7*/	SUN4M_INT_SBUS(3) | SUN4M_INT_VME(3),
-/*8*/	SUN4M_INT_VIDEO,
-/*9*/	SUN4M_INT_SBUS(4) | SUN4M_INT_VME(4) | SUN4M_INT_MODULE_ERR,
-/*10*/	SUN4M_INT_REALTIME,
-/*11*/	SUN4M_INT_SBUS(5) | SUN4M_INT_VME(5) | SUN4M_INT_FLOPPY,
-/*12*/	SUN4M_INT_SERIAL  | SUN4M_INT_KBDMS,
-/*13*/	SUN4M_INT_SBUS(6) | SUN4M_INT_VME(6) | SUN4M_INT_AUDIO,
-/*14*/	SUN4M_INT_E14,
-/*15*/	SUN4M_INT_ERROR
+static void sun4m_unmask_irq(struct irq_data *data)
+{
+	struct sun4m_handler_data *handler_data = data->handler_data;
+	int cpu = smp_processor_id();
+
+	if (handler_data->mask) {
+		unsigned long flags;
+
+		local_irq_save(flags);
+		if (handler_data->percpu) {
+			sbus_writel(handler_data->mask, &sun4m_irq_percpu[cpu]->clear);
+		} else {
+			sbus_writel(handler_data->mask, &sun4m_irq_global->mask_clear);
+		}
+		local_irq_restore(flags);
+	}
+}
+
+static unsigned int sun4m_startup_irq(struct irq_data *data)
+{
+	irq_link(data->irq);
+	sun4m_unmask_irq(data);
+	return 0;
+}
+
+static void sun4m_shutdown_irq(struct irq_data *data)
+{
+	sun4m_mask_irq(data);
+	irq_unlink(data->irq);
+}
+
+static struct irq_chip sun4m_irq = {
+	.name		= "sun4m",
+	.irq_startup	= sun4m_startup_irq,
+	.irq_shutdown	= sun4m_shutdown_irq,
+	.irq_mask	= sun4m_mask_irq,
+	.irq_unmask	= sun4m_unmask_irq,
 };
 
-/* We assume the caller has disabled local interrupts when these are called,
- * or else very bizarre behavior will result.
- */
-static void sun4m_disable_pil_irq(unsigned int pil)
-{
-	sbus_writel(cpu_pil_to_imask[pil], &sun4m_irq_global->mask_set);
-}
 
-static void sun4m_enable_pil_irq(unsigned int pil)
+static unsigned int sun4m_build_device_irq(struct platform_device *op,
+					   unsigned int real_irq)
 {
-	sbus_writel(cpu_pil_to_imask[pil], &sun4m_irq_global->mask_clear);
-}
+	struct sun4m_handler_data *handler_data;
+	unsigned int irq;
+	unsigned int pil;
 
-#ifdef CONFIG_SMP
-static void sun4m_send_ipi(int cpu, int level)
-{
-	unsigned long mask = sun4m_get_irqmask(level);
-	sbus_writel(mask, &sun4m_irq_percpu[cpu]->set);
-}
+	if (real_irq >= OBP_INT_LEVEL_VME) {
+		prom_printf("Bogus sun4m IRQ %u\n", real_irq);
+		prom_halt();
+	}
+	pil = (real_irq & 0xf);
+	irq = irq_alloc(real_irq, pil);
 
-static void sun4m_clear_ipi(int cpu, int level)
-{
-	unsigned long mask = sun4m_get_irqmask(level);
-	sbus_writel(mask, &sun4m_irq_percpu[cpu]->clear);
-}
+	if (irq == 0)
+		goto out;
 
-static void sun4m_set_udt(int cpu)
-{
-	sbus_writel(cpu, &sun4m_irq_global->interrupt_target);
+	handler_data = irq_get_handler_data(irq);
+	if (unlikely(handler_data))
+		goto out;
+
+	handler_data = kzalloc(sizeof(struct sun4m_handler_data), GFP_ATOMIC);
+	if (unlikely(!handler_data)) {
+		prom_printf("IRQ: kzalloc(sun4m_handler_data) failed.\n");
+		prom_halt();
+	}
+
+	handler_data->mask = sun4m_imask[real_irq];
+	handler_data->percpu = real_irq < OBP_INT_LEVEL_ONBOARD;
+	irq_set_chip_and_handler_name(irq, &sun4m_irq,
+	                              handle_level_irq, "level");
+	irq_set_handler_data(irq, handler_data);
+
+out:
+	return irq;
 }
-#endif
 
 struct sun4m_timer_percpu {
 	u32		l14_limit;
@@ -313,10 +297,6 @@ struct sun4m_timer_global {
 };
 
 static struct sun4m_timer_global __iomem *timers_global;
-
-#define TIMER_IRQ  	(OBP_INT_LEVEL_ONBOARD | 10)
-
-unsigned int lvl14_resolution = (((1000000/HZ) + 1) << 10);
 
 static void sun4m_clear_clock_irq(void)
 {
@@ -350,7 +330,15 @@ void sun4m_nmi(struct pt_regs *regs)
 	prom_halt();
 }
 
-/* Exported for sun4m_smp.c */
+void sun4m_unmask_profile_irq(void)
+{
+	unsigned long flags;
+
+	local_irq_save(flags);
+	sbus_writel(sun4m_imask[SUN4M_PROFILE_IRQ], &sun4m_irq_global->mask_clear);
+	local_irq_restore(flags);
+}
+
 void sun4m_clear_profile_irq(int cpu)
 {
 	sbus_readl(&timers_percpu[cpu]->l14_limit);
@@ -358,13 +346,15 @@ void sun4m_clear_profile_irq(int cpu)
 
 static void sun4m_load_profile_irq(int cpu, unsigned int limit)
 {
-	sbus_writel(limit, &timers_percpu[cpu]->l14_limit);
+	unsigned int value = limit ? timer_value(limit) : 0;
+	sbus_writel(value, &timers_percpu[cpu]->l14_limit);
 }
 
-static void __init sun4m_init_timers(irq_handler_t counter_fn)
+static void __init sun4m_init_timers(void)
 {
 	struct device_node *dp = of_find_node_by_name(NULL, "counter");
 	int i, err, len, num_cpu_timers;
+	unsigned int irq;
 	const u32 *addr;
 
 	if (!dp) {
@@ -387,12 +377,25 @@ static void __init sun4m_init_timers(irq_handler_t counter_fn)
 	timers_global = (void __iomem *)
 		(unsigned long) addr[num_cpu_timers];
 
-	sbus_writel((((1000000/HZ) + 1) << 10), &timers_global->l10_limit);
+	/* Every per-cpu timer works in timer mode */
+	sbus_writel(0x00000000, &timers_global->timer_config);
+
+#ifdef CONFIG_SMP
+	sparc_config.cs_period = SBUS_CLOCK_RATE * 2;  /* 2 seconds */
+	sparc_config.features |= FEAT_L14_ONESHOT;
+#else
+	sparc_config.cs_period = SBUS_CLOCK_RATE / HZ; /* 1/HZ sec  */
+	sparc_config.features |= FEAT_L10_CLOCKEVENT;
+#endif
+	sparc_config.features |= FEAT_L10_CLOCKSOURCE;
+	sbus_writel(timer_value(sparc_config.cs_period),
+	            &timers_global->l10_limit);
 
 	master_l10_counter = &timers_global->l10_count;
 
-	err = request_irq(TIMER_IRQ, counter_fn,
-			  (IRQF_DISABLED | SA_STATIC_ALLOC), "timer", NULL);
+	irq = sun4m_build_device_irq(NULL, SUN4M_TIMER_IRQ);
+
+	err = request_irq(irq, timer_interrupt, IRQF_TIMER, "timer", NULL);
 	if (err) {
 		printk(KERN_ERR "sun4m_init_timers: Register IRQ error %d.\n",
 			err);
@@ -407,7 +410,6 @@ static void __init sun4m_init_timers(irq_handler_t counter_fn)
 #ifdef CONFIG_SMP
 	{
 		unsigned long flags;
-		extern unsigned long lvl14_save[4];
 		struct tt_entry *trap_table = &sparc_ttable[SP_TRAP_IRQ1 + (14 - 1)];
 
 		/* For SMP we use the level 14 ticker, however the bootup code
@@ -419,7 +421,7 @@ static void __init sun4m_init_timers(irq_handler_t counter_fn)
 		trap_table->inst_two = lvl14_save[1];
 		trap_table->inst_three = lvl14_save[2];
 		trap_table->inst_four = lvl14_save[3];
-		local_flush_cache_all();
+		local_ops->cache_all();
 		local_irq_restore(flags);
 	}
 #endif
@@ -460,18 +462,12 @@ void __init sun4m_init_IRQ(void)
 	if (num_cpu_iregs == 4)
 		sbus_writel(0, &sun4m_irq_global->interrupt_target);
 
-	BTFIXUPSET_CALL(enable_irq, sun4m_enable_irq, BTFIXUPCALL_NORM);
-	BTFIXUPSET_CALL(disable_irq, sun4m_disable_irq, BTFIXUPCALL_NORM);
-	BTFIXUPSET_CALL(enable_pil_irq, sun4m_enable_pil_irq, BTFIXUPCALL_NORM);
-	BTFIXUPSET_CALL(disable_pil_irq, sun4m_disable_pil_irq, BTFIXUPCALL_NORM);
-	BTFIXUPSET_CALL(clear_clock_irq, sun4m_clear_clock_irq, BTFIXUPCALL_NORM);
-	BTFIXUPSET_CALL(load_profile_irq, sun4m_load_profile_irq, BTFIXUPCALL_NORM);
-	sparc_init_timers = sun4m_init_timers;
-#ifdef CONFIG_SMP
-	BTFIXUPSET_CALL(set_cpu_int, sun4m_send_ipi, BTFIXUPCALL_NORM);
-	BTFIXUPSET_CALL(clear_cpu_int, sun4m_clear_ipi, BTFIXUPCALL_NORM);
-	BTFIXUPSET_CALL(set_irq_udt, sun4m_set_udt, BTFIXUPCALL_NORM);
-#endif
+	sparc_config.init_timers      = sun4m_init_timers;
+	sparc_config.build_device_irq = sun4m_build_device_irq;
+	sparc_config.clock_rate       = SBUS_CLOCK_RATE;
+	sparc_config.clear_clock_irq  = sun4m_clear_clock_irq;
+	sparc_config.load_profile_irq = sun4m_load_profile_irq;
+
 
 	/* Cannot enable interrupts until OBP ticker is disabled. */
 }

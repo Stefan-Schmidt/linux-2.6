@@ -100,6 +100,14 @@ config CRYPTO_MANAGER2
 	select CRYPTO_BLKCIPHER2
 	select CRYPTO_PCOMP2
 
+config CRYPTO_USER
+	tristate "Userspace cryptographic algorithm configuration"
+	depends on NET
+	select CRYPTO_MANAGER
+	help
+	  Userspace configuration for cryptographic instantiations such as
+	  cbc(aes).
+
 config CRYPTO_MANAGER_DISABLE_TESTS
 	bool "Disable run-time self tests"
 	default y
@@ -109,8 +117,7 @@ config CRYPTO_MANAGER_DISABLE_TESTS
 	  algorithm registration.
 
 config CRYPTO_GF128MUL
-	tristate "GF(2^128) multiplication functions (EXPERIMENTAL)"
-	depends on EXPERIMENTAL
+	tristate "GF(2^128) multiplication functions"
 	help
 	  Efficient table driven implementation of multiplications in the
 	  field GF(2^128).  This is needed by some cypher modes. This
@@ -166,6 +173,16 @@ config CRYPTO_TEST
 	select CRYPTO_MANAGER
 	help
 	  Quick & dirty crypto test module.
+
+config CRYPTO_ABLK_HELPER_X86
+	tristate
+	depends on X86
+	select CRYPTO_CRYPTD
+
+config CRYPTO_GLUE_HELPER_X86
+	tristate
+	depends on X86
+	select CRYPTO_ALGAPI
 
 comment "Authenticated Encryption with Associated Data"
 
@@ -234,8 +251,7 @@ config CRYPTO_ECB
 	  the input block by block.
 
 config CRYPTO_LRW
-	tristate "LRW support (EXPERIMENTAL)"
-	depends on EXPERIMENTAL
+	tristate "LRW support"
 	select CRYPTO_BLKCIPHER
 	select CRYPTO_MANAGER
 	select CRYPTO_GF128MUL
@@ -255,8 +271,7 @@ config CRYPTO_PCBC
 	  This block cipher algorithm is required for RxRPC.
 
 config CRYPTO_XTS
-	tristate "XTS support (EXPERIMENTAL)"
-	depends on EXPERIMENTAL
+	tristate "XTS support"
 	select CRYPTO_BLKCIPHER
 	select CRYPTO_MANAGER
 	select CRYPTO_GF128MUL
@@ -264,11 +279,6 @@ config CRYPTO_XTS
 	  XTS: IEEE1619/D16 narrow block cipher use with aes-xts-plain,
 	  key size 256, 384 or 512 bits. This implementation currently
 	  can't handle a sectorsize which is not a multiple of 16 bytes.
-
-config CRYPTO_FPU
-	tristate
-	select CRYPTO_BLKCIPHER
-	select CRYPTO_MANAGER
 
 comment "Hash modes"
 
@@ -308,6 +318,7 @@ comment "Digest"
 config CRYPTO_CRC32C
 	tristate "CRC32c CRC algorithm"
 	select CRYPTO_HASH
+	select CRC32
 	help
 	  Castagnoli, et al Cyclic Redundancy-Check Algorithm.  Used
 	  by iSCSI for header and data digests and by others.
@@ -327,7 +338,6 @@ config CRYPTO_CRC32C_INTEL
 
 config CRYPTO_GHASH
 	tristate "GHASH digest algorithm"
-	select CRYPTO_SHASH
 	select CRYPTO_GF128MUL
 	help
 	  GHASH is message digest algorithm for GCM (Galois/Counter Mode).
@@ -360,7 +370,7 @@ config CRYPTO_RMD128
 	  RIPEMD-128 (ISO/IEC 10118-3:2004).
 
 	  RIPEMD-128 is a 128-bit cryptographic hash function. It should only
-	  to be used as a secure replacement for RIPEMD. For other use cases
+	  be used as a secure replacement for RIPEMD. For other use cases,
 	  RIPEMD-160 should be used.
 
 	  Developed by Hans Dobbertin, Antoon Bosselaers and Bart Preneel.
@@ -413,6 +423,16 @@ config CRYPTO_SHA1
 	help
 	  SHA-1 secure hash standard (FIPS 180-1/DFIPS 180-2).
 
+config CRYPTO_SHA1_SSSE3
+	tristate "SHA1 digest algorithm (SSSE3/AVX)"
+	depends on X86 && 64BIT
+	select CRYPTO_SHA1
+	select CRYPTO_HASH
+	help
+	  SHA-1 secure hash standard (FIPS 180-1/DFIPS 180-2) implemented
+	  using Supplemental SSE3 (SSSE3) instructions or Advanced Vector
+	  Extensions (AVX), when available.
+
 config CRYPTO_SHA256
 	tristate "SHA224 and SHA256 digest algorithm"
 	select CRYPTO_HASH
@@ -464,8 +484,7 @@ config CRYPTO_WP512
 
 config CRYPTO_GHASH_CLMUL_NI_INTEL
 	tristate "GHASH digest algorithm (CLMUL-NI accelerated)"
-	depends on (X86 || UML_X86) && 64BIT
-	select CRYPTO_SHASH
+	depends on X86 && 64BIT
 	select CRYPTO_CRYPTD
 	help
 	  GHASH is message digest algorithm for GCM (Galois/Counter Mode).
@@ -539,11 +558,12 @@ config CRYPTO_AES_X86_64
 
 config CRYPTO_AES_NI_INTEL
 	tristate "AES cipher algorithms (AES-NI)"
-	depends on (X86 || UML_X86) && 64BIT
-	select CRYPTO_AES_X86_64
+	depends on X86
+	select CRYPTO_AES_X86_64 if 64BIT
+	select CRYPTO_AES_586 if !64BIT
 	select CRYPTO_CRYPTD
+	select CRYPTO_ABLK_HELPER_X86
 	select CRYPTO_ALGAPI
-	select CRYPTO_FPU
 	help
 	  Use Intel AES-NI instructions for AES algorithm.
 
@@ -563,9 +583,10 @@ config CRYPTO_AES_NI_INTEL
 
 	  See <http://csrc.nist.gov/encryption/aes/> for more information.
 
-	  In addition to AES cipher algorithm support, the
-	  acceleration for some popular block cipher mode is supported
-	  too, including ECB, CBC, CTR, LRW, PCBC, XTS.
+	  In addition to AES cipher algorithm support, the acceleration
+	  for some popular block cipher mode is supported too, including
+	  ECB, CBC, LRW, PCBC, XTS. The 64 bit version has additional
+	  acceleration for CTR.
 
 config CRYPTO_ANUBIS
 	tristate "Anubis cipher algorithm"
@@ -583,7 +604,7 @@ config CRYPTO_ANUBIS
 
 config CRYPTO_ARC4
 	tristate "ARC4 cipher algorithm"
-	select CRYPTO_ALGAPI
+	select CRYPTO_BLKCIPHER
 	help
 	  ARC4 cipher algorithm.
 
@@ -595,8 +616,33 @@ config CRYPTO_ARC4
 config CRYPTO_BLOWFISH
 	tristate "Blowfish cipher algorithm"
 	select CRYPTO_ALGAPI
+	select CRYPTO_BLOWFISH_COMMON
 	help
 	  Blowfish cipher algorithm, by Bruce Schneier.
+
+	  This is a variable key length cipher which can use keys from 32
+	  bits to 448 bits in length.  It's fast, simple and specifically
+	  designed for use on "large microprocessors".
+
+	  See also:
+	  <http://www.schneier.com/blowfish.html>
+
+config CRYPTO_BLOWFISH_COMMON
+	tristate
+	help
+	  Common parts of the Blowfish cipher algorithm shared by the
+	  generic c and the assembler implementations.
+
+	  See also:
+	  <http://www.schneier.com/blowfish.html>
+
+config CRYPTO_BLOWFISH_X86_64
+	tristate "Blowfish cipher algorithm (x86_64)"
+	depends on X86 && 64BIT
+	select CRYPTO_ALGAPI
+	select CRYPTO_BLOWFISH_COMMON
+	help
+	  Blowfish cipher algorithm (x86_64), by Bruce Schneier.
 
 	  This is a variable key length cipher which can use keys from 32
 	  bits to 448 bits in length.  It's fast, simple and specifically
@@ -611,6 +657,25 @@ config CRYPTO_CAMELLIA
 	select CRYPTO_ALGAPI
 	help
 	  Camellia cipher algorithms module.
+
+	  Camellia is a symmetric key block cipher developed jointly
+	  at NTT and Mitsubishi Electric Corporation.
+
+	  The Camellia specifies three key sizes: 128, 192 and 256 bits.
+
+	  See also:
+	  <https://info.isl.ntt.co.jp/crypt/eng/camellia/index_s.html>
+
+config CRYPTO_CAMELLIA_X86_64
+	tristate "Camellia cipher algorithm (x86_64)"
+	depends on X86 && 64BIT
+	depends on CRYPTO
+	select CRYPTO_ALGAPI
+	select CRYPTO_GLUE_HELPER_X86
+	select CRYPTO_LRW
+	select CRYPTO_XTS
+	help
+	  Camellia cipher algorithm module (x86_64).
 
 	  Camellia is a symmetric key block cipher developed jointly
 	  at NTT and Mitsubishi Electric Corporation.
@@ -728,6 +793,72 @@ config CRYPTO_SERPENT
 	  See also:
 	  <http://www.cl.cam.ac.uk/~rja14/serpent.html>
 
+config CRYPTO_SERPENT_SSE2_X86_64
+	tristate "Serpent cipher algorithm (x86_64/SSE2)"
+	depends on X86 && 64BIT
+	select CRYPTO_ALGAPI
+	select CRYPTO_CRYPTD
+	select CRYPTO_ABLK_HELPER_X86
+	select CRYPTO_GLUE_HELPER_X86
+	select CRYPTO_SERPENT
+	select CRYPTO_LRW
+	select CRYPTO_XTS
+	help
+	  Serpent cipher algorithm, by Anderson, Biham & Knudsen.
+
+	  Keys are allowed to be from 0 to 256 bits in length, in steps
+	  of 8 bits.
+
+	  This module provides Serpent cipher algorithm that processes eigth
+	  blocks parallel using SSE2 instruction set.
+
+	  See also:
+	  <http://www.cl.cam.ac.uk/~rja14/serpent.html>
+
+config CRYPTO_SERPENT_SSE2_586
+	tristate "Serpent cipher algorithm (i586/SSE2)"
+	depends on X86 && !64BIT
+	select CRYPTO_ALGAPI
+	select CRYPTO_CRYPTD
+	select CRYPTO_ABLK_HELPER_X86
+	select CRYPTO_GLUE_HELPER_X86
+	select CRYPTO_SERPENT
+	select CRYPTO_LRW
+	select CRYPTO_XTS
+	help
+	  Serpent cipher algorithm, by Anderson, Biham & Knudsen.
+
+	  Keys are allowed to be from 0 to 256 bits in length, in steps
+	  of 8 bits.
+
+	  This module provides Serpent cipher algorithm that processes four
+	  blocks parallel using SSE2 instruction set.
+
+	  See also:
+	  <http://www.cl.cam.ac.uk/~rja14/serpent.html>
+
+config CRYPTO_SERPENT_AVX_X86_64
+	tristate "Serpent cipher algorithm (x86_64/AVX)"
+	depends on X86 && 64BIT
+	select CRYPTO_ALGAPI
+	select CRYPTO_CRYPTD
+	select CRYPTO_ABLK_HELPER_X86
+	select CRYPTO_GLUE_HELPER_X86
+	select CRYPTO_SERPENT
+	select CRYPTO_LRW
+	select CRYPTO_XTS
+	help
+	  Serpent cipher algorithm, by Anderson, Biham & Knudsen.
+
+	  Keys are allowed to be from 0 to 256 bits in length, in steps
+	  of 8 bits.
+
+	  This module provides the Serpent cipher algorithm that processes
+	  eight blocks parallel using the AVX instruction set.
+
+	  See also:
+	  <http://www.cl.cam.ac.uk/~rja14/serpent.html>
+
 config CRYPTO_TEA
 	tristate "TEA, XTEA and XETA cipher algorithms"
 	select CRYPTO_ALGAPI
@@ -798,6 +929,55 @@ config CRYPTO_TWOFISH_X86_64
 	  See also:
 	  <http://www.schneier.com/twofish.html>
 
+config CRYPTO_TWOFISH_X86_64_3WAY
+	tristate "Twofish cipher algorithm (x86_64, 3-way parallel)"
+	depends on X86 && 64BIT
+	select CRYPTO_ALGAPI
+	select CRYPTO_TWOFISH_COMMON
+	select CRYPTO_TWOFISH_X86_64
+	select CRYPTO_GLUE_HELPER_X86
+	select CRYPTO_LRW
+	select CRYPTO_XTS
+	help
+	  Twofish cipher algorithm (x86_64, 3-way parallel).
+
+	  Twofish was submitted as an AES (Advanced Encryption Standard)
+	  candidate cipher by researchers at CounterPane Systems.  It is a
+	  16 round block cipher supporting key sizes of 128, 192, and 256
+	  bits.
+
+	  This module provides Twofish cipher algorithm that processes three
+	  blocks parallel, utilizing resources of out-of-order CPUs better.
+
+	  See also:
+	  <http://www.schneier.com/twofish.html>
+
+config CRYPTO_TWOFISH_AVX_X86_64
+	tristate "Twofish cipher algorithm (x86_64/AVX)"
+	depends on X86 && 64BIT
+	select CRYPTO_ALGAPI
+	select CRYPTO_CRYPTD
+	select CRYPTO_ABLK_HELPER_X86
+	select CRYPTO_GLUE_HELPER_X86
+	select CRYPTO_TWOFISH_COMMON
+	select CRYPTO_TWOFISH_X86_64
+	select CRYPTO_TWOFISH_X86_64_3WAY
+	select CRYPTO_LRW
+	select CRYPTO_XTS
+	help
+	  Twofish cipher algorithm (x86_64/AVX).
+
+	  Twofish was submitted as an AES (Advanced Encryption Standard)
+	  candidate cipher by researchers at CounterPane Systems.  It is a
+	  16 round block cipher supporting key sizes of 128, 192, and 256
+	  bits.
+
+	  This module provides the Twofish cipher algorithm that processes
+	  eight blocks parallel using the AVX Instruction Set.
+
+	  See also:
+	  <http://www.schneier.com/twofish.html>
+
 comment "Compression"
 
 config CRYPTO_DEFLATE
@@ -840,6 +1020,27 @@ config CRYPTO_ANSI_CPRNG
 	  for cryptographic modules.  Uses the Algorithm specified in
 	  ANSI X9.31 A.2.4. Note that this option must be enabled if
 	  CRYPTO_FIPS is selected
+
+config CRYPTO_USER_API
+	tristate
+
+config CRYPTO_USER_API_HASH
+	tristate "User-space interface for hash algorithms"
+	depends on NET
+	select CRYPTO_HASH
+	select CRYPTO_USER_API
+	help
+	  This option enables the user-spaces interface for hash
+	  algorithms.
+
+config CRYPTO_USER_API_SKCIPHER
+	tristate "User-space interface for symmetric key cipher algorithms"
+	depends on NET
+	select CRYPTO_BLKCIPHER
+	select CRYPTO_USER_API
+	help
+	  This option enables the user-spaces interface for symmetric
+	  key cipher algorithms.
 
 source "drivers/crypto/Kconfig"
 

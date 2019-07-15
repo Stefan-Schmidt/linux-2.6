@@ -38,7 +38,7 @@ MODULE_DESCRIPTION("DNS Resolver");
 MODULE_AUTHOR("Wang Lei");
 MODULE_LICENSE("GPL");
 
-unsigned dns_resolver_debug;
+unsigned int dns_resolver_debug;
 module_param_named(debug, dns_resolver_debug, uint, S_IWUSR | S_IRUGO);
 MODULE_PARM_DESC(debug, "DNS Resolver debugging mask");
 
@@ -67,8 +67,9 @@ dns_resolver_instantiate(struct key *key, const void *_data, size_t datalen)
 	size_t result_len = 0;
 	const char *data = _data, *end, *opt;
 
-	kenter("%%%d,%s,'%s',%zu",
-	       key->serial, key->description, data, datalen);
+	kenter("%%%d,%s,'%*.*s',%zu",
+	       key->serial, key->description,
+	       (int)datalen, (int)datalen, data, datalen);
 
 	if (datalen <= 1 || !data || data[datalen - 1] != '\0')
 		return -EINVAL;
@@ -211,10 +212,25 @@ static void dns_resolver_describe(const struct key *key, struct seq_file *m)
 	int err = key->type_data.x[0];
 
 	seq_puts(m, key->description);
-	if (err)
-		seq_printf(m, ": %d", err);
-	else
-		seq_printf(m, ": %u", key->datalen);
+	if (key_is_instantiated(key)) {
+		if (err)
+			seq_printf(m, ": %d", err);
+		else
+			seq_printf(m, ": %u", key->datalen);
+	}
+}
+
+/*
+ * read the DNS data
+ * - the key's semaphore is read-locked
+ */
+static long dns_resolver_read(const struct key *key,
+			      char __user *buffer, size_t buflen)
+{
+	if (key->type_data.x[0])
+		return key->type_data.x[0];
+
+	return user_read(key, buffer, buflen);
 }
 
 struct key_type key_type_dns_resolver = {
@@ -224,7 +240,7 @@ struct key_type key_type_dns_resolver = {
 	.revoke		= user_revoke,
 	.destroy	= user_destroy,
 	.describe	= dns_resolver_describe,
-	.read		= user_read,
+	.read		= dns_resolver_read,
 };
 
 static int __init init_dns_resolver(void)
@@ -232,9 +248,6 @@ static int __init init_dns_resolver(void)
 	struct cred *cred;
 	struct key *keyring;
 	int ret;
-
-	printk(KERN_NOTICE "Registering the %s key type\n",
-	       key_type_dns_resolver.name);
 
 	/* create an override credential set with a special thread keyring in
 	 * which DNS requests are cached
@@ -265,6 +278,7 @@ static int __init init_dns_resolver(void)
 
 	/* instruct request_key() to use this special keyring as a cache for
 	 * the results it looks up */
+	set_bit(KEY_FLAG_ROOT_CAN_CLEAR, &keyring->flags);
 	cred->thread_keyring = keyring;
 	cred->jit_keyring = KEY_REQKEY_DEFL_THREAD_KEYRING;
 	dns_resolver_cache = cred;
@@ -284,8 +298,6 @@ static void __exit exit_dns_resolver(void)
 	key_revoke(dns_resolver_cache->thread_keyring);
 	unregister_key_type(&key_type_dns_resolver);
 	put_cred(dns_resolver_cache);
-	printk(KERN_NOTICE "Unregistered %s key type\n",
-	       key_type_dns_resolver.name);
 }
 
 module_init(init_dns_resolver)

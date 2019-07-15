@@ -23,7 +23,7 @@
 
 /* #define DEBUG */
 
-#define debug(format, arg...) pr_debug("ff-memless: " format "\n", ## arg)
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/slab.h>
 #include <linux/input.h>
@@ -31,8 +31,7 @@
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
 #include <linux/jiffies.h>
-
-#include "fixp-arith.h"
+#include <linux/fixp-arith.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Anssi Hannula <anssi.hannula@gmail.com>");
@@ -129,7 +128,7 @@ static void ml_schedule_timer(struct ml_device *ml)
 	int events = 0;
 	int i;
 
-	debug("calculating next timer");
+	pr_debug("calculating next timer\n");
 
 	for (i = 0; i < FF_MEMLESS_EFFECTS; i++) {
 
@@ -149,10 +148,10 @@ static void ml_schedule_timer(struct ml_device *ml)
 	}
 
 	if (!events) {
-		debug("no actions");
+		pr_debug("no actions\n");
 		del_timer(&ml->timer);
 	} else {
-		debug("timer set");
+		pr_debug("timer set\n");
 		mod_timer(&ml->timer, earliest);
 	}
 }
@@ -173,11 +172,11 @@ static int apply_envelope(struct ml_effect_state *state, int value,
 	if (envelope->attack_length &&
 	    time_before(now,
 			state->play_at + msecs_to_jiffies(envelope->attack_length))) {
-		debug("value = 0x%x, attack_level = 0x%x", value,
-		      envelope->attack_level);
+		pr_debug("value = 0x%x, attack_level = 0x%x\n",
+			 value, envelope->attack_level);
 		time_from_level = jiffies_to_msecs(now - state->play_at);
 		time_of_envelope = envelope->attack_length;
-		envelope_level = min_t(__s16, envelope->attack_level, 0x7fff);
+		envelope_level = min_t(u16, envelope->attack_level, 0x7fff);
 
 	} else if (envelope->fade_length && effect->replay.length &&
 		   time_after(now,
@@ -185,19 +184,19 @@ static int apply_envelope(struct ml_effect_state *state, int value,
 		   time_before(now, state->stop_at)) {
 		time_from_level = jiffies_to_msecs(state->stop_at - now);
 		time_of_envelope = envelope->fade_length;
-		envelope_level = min_t(__s16, envelope->fade_level, 0x7fff);
+		envelope_level = min_t(u16, envelope->fade_level, 0x7fff);
 	} else
 		return value;
 
 	difference = abs(value) - envelope_level;
 
-	debug("difference = %d", difference);
-	debug("time_from_level = 0x%x", time_from_level);
-	debug("time_of_envelope = 0x%x", time_of_envelope);
+	pr_debug("difference = %d\n", difference);
+	pr_debug("time_from_level = 0x%x\n", time_from_level);
+	pr_debug("time_of_envelope = 0x%x\n", time_of_envelope);
 
 	difference = difference * time_from_level / time_of_envelope;
 
-	debug("difference = %d", difference);
+	pr_debug("difference = %d\n", difference);
 
 	return value < 0 ?
 		-(difference + envelope_level) : (difference + envelope_level);
@@ -215,8 +214,7 @@ static int get_compatible_type(struct ff_device *ff, int effect_type)
 	if (effect_type == FF_PERIODIC && test_bit(FF_RUMBLE, ff->ffbit))
 		return FF_RUMBLE;
 
-	printk(KERN_ERR
-	       "ff-memless: invalid type in get_compatible_type()\n");
+	pr_err("invalid type in get_compatible_type()\n");
 
 	return 0;
 }
@@ -312,7 +310,7 @@ static void ml_combine_effects(struct ff_effect *effect,
 		break;
 
 	default:
-		printk(KERN_ERR "ff-memless: invalid type in ml_combine_effects()\n");
+		pr_err("invalid type in ml_combine_effects()\n");
 		break;
 	}
 
@@ -406,7 +404,7 @@ static void ml_effect_timer(unsigned long timer_data)
 	struct ml_device *ml = dev->ff->private;
 	unsigned long flags;
 
-	debug("timer: updating effects");
+	pr_debug("timer: updating effects\n");
 
 	spin_lock_irqsave(&dev->event_lock, flags);
 	ml_play_effects(ml);
@@ -438,7 +436,7 @@ static int ml_ff_playback(struct input_dev *dev, int effect_id, int value)
 	struct ml_effect_state *state = &ml->states[effect_id];
 
 	if (value > 0) {
-		debug("initiated play");
+		pr_debug("initiated play\n");
 
 		__set_bit(FF_EFFECT_STARTED, &state->flags);
 		state->count = value;
@@ -449,7 +447,7 @@ static int ml_ff_playback(struct input_dev *dev, int effect_id, int value)
 		state->adj_at = state->play_at;
 
 	} else {
-		debug("initiated stop");
+		pr_debug("initiated stop\n");
 
 		if (test_bit(FF_EFFECT_PLAYING, &state->flags))
 			__set_bit(FF_EFFECT_ABORTING, &state->flags);

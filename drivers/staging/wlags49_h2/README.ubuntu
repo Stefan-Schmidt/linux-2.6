@@ -87,7 +87,7 @@ The linux driver files (wl_xxxx.c) are changed in the following ways:
 -- Recovery actions added
 
 The major problem was the order in which calls can be made. The original
-looks like a traditonal UNIX driver. To call an "ioctl" function you
+looks like a traditional UNIX driver. To call an "ioctl" function you
 have to "open" the device first to get a handle and after "close" no
 "ioctl" function can be called anymore. With the 2.6 driver this all
 changed; the former ioctl functions are now called before "open" and
@@ -116,7 +116,7 @@ LICENSE
 
 The Agere Systems license applies. This is why I include the original
 README.wlags49. The instructions in that file are bogus now. I also
-include the man page. Eventhough setting parameters on the module
+include the man page. Even though setting parameters on the module
 does not work anymore but it provides some information about all the
 settings.
 

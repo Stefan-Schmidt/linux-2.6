@@ -14,16 +14,19 @@
 #include <linux/sched.h>
 #include <linux/interrupt.h>
 #include <linux/cache.h>
+#include <linux/clockchips.h>
 #include <linux/profile.h>
 #include <linux/errno.h>
 #include <linux/mm.h>
 #include <linux/cpu.h>
 #include <linux/smp.h>
+#include <linux/cpumask.h>
 #include <linux/seq_file.h>
 #include <linux/irq.h>
 #include <linux/slab.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <asm/cacheflush.h>
+#include <asm/irq_handler.h>
 #include <asm/mmu_context.h>
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
@@ -39,19 +42,19 @@
  */
 struct corelock_slot corelock __attribute__ ((__section__(".l2.bss")));
 
-void __cpuinitdata *init_retx_coreb, *init_saved_retx_coreb,
-	*init_saved_seqstat_coreb, *init_saved_icplb_fault_addr_coreb,
-	*init_saved_dcplb_fault_addr_coreb;
+#ifdef CONFIG_ICACHE_FLUSH_L1
+unsigned long blackfin_iflush_l1_entry[NR_CPUS];
+#endif
 
-cpumask_t cpu_possible_map;
-EXPORT_SYMBOL(cpu_possible_map);
+struct blackfin_initial_pda __cpuinitdata initial_pda_coreb;
 
-cpumask_t cpu_online_map;
-EXPORT_SYMBOL(cpu_online_map);
-
-#define BFIN_IPI_RESCHEDULE   0
-#define BFIN_IPI_CALL_FUNC    1
-#define BFIN_IPI_CPU_STOP     2
+enum ipi_message_type {
+	BFIN_IPI_TIMER,
+	BFIN_IPI_RESCHEDULE,
+	BFIN_IPI_CALL_FUNC,
+	BFIN_IPI_CALL_FUNC_SINGLE,
+	BFIN_IPI_CPU_STOP,
+};
 
 struct blackfin_flush_data {
 	unsigned long start;
@@ -60,32 +63,20 @@ struct blackfin_flush_data {
 
 void *secondary_stack;
 
-
-struct smp_call_struct {
-	void (*func)(void *info);
-	void *info;
-	int wait;
-	cpumask_t pending;
-	cpumask_t waitmask;
-};
-
 static struct blackfin_flush_data smp_flush_data;
 
 static DEFINE_SPINLOCK(stop_lock);
 
-struct ipi_message {
-	struct list_head list;
-	unsigned long type;
-	struct smp_call_struct call_struct;
-};
+/* A magic number - stress test shows this is safe for common cases */
+#define BFIN_IPI_MSGQ_LEN 5
 
-struct ipi_message_queue {
-	struct list_head head;
-	spinlock_t lock;
+/* Simple FIFO buffer, overflow leads to panic */
+struct ipi_data {
 	unsigned long count;
+	unsigned long bits;
 };
 
-static DEFINE_PER_CPU(struct ipi_message_queue, ipi_msg_queue);
+static DEFINE_PER_CPU(struct ipi_data, bfin_ipi);
 
 static void ipi_cpu_stop(unsigned int cpu)
 {
@@ -94,7 +85,7 @@ static void ipi_cpu_stop(unsigned int cpu)
 	dump_stack();
 	spin_unlock(&stop_lock);
 
-	cpu_clear(cpu, cpu_online_map);
+	set_cpu_online(cpu, false);
 
 	local_irq_disable();
 
@@ -110,252 +101,157 @@ static void ipi_flush_icache(void *info)
 	blackfin_dcache_invalidate_range((unsigned long)fdata,
 					 (unsigned long)fdata + sizeof(*fdata));
 
+	/* Make sure all write buffers in the data side of the core
+	 * are flushed before trying to invalidate the icache.  This
+	 * needs to be after the data flush and before the icache
+	 * flush so that the SSYNC does the right thing in preventing
+	 * the instruction prefetcher from hitting things in cached
+	 * memory at the wrong time -- it runs much further ahead than
+	 * the pipeline.
+	 */
+	SSYNC();
+
+	/* ipi_flaush_icache is invoked by generic flush_icache_range,
+	 * so call blackfin arch icache flush directly here.
+	 */
 	blackfin_icache_flush_range(fdata->start, fdata->end);
 }
 
-static void ipi_call_function(unsigned int cpu, struct ipi_message *msg)
+/* Use IRQ_SUPPLE_0 to request reschedule.
+ * When returning from interrupt to user space,
+ * there is chance to reschedule */
+static irqreturn_t ipi_handler_int0(int irq, void *dev_instance)
 {
-	int wait;
-	void (*func)(void *info);
-	void *info;
-	func = msg->call_struct.func;
-	info = msg->call_struct.info;
-	wait = msg->call_struct.wait;
-	cpu_clear(cpu, msg->call_struct.pending);
-	func(info);
-	if (wait) {
-#ifdef __ARCH_SYNC_CORE_DCACHE
-		/*
-		 * 'wait' usually means synchronization between CPUs.
-		 * Invalidate D cache in case shared data was changed
-		 * by func() to ensure cache coherence.
-		 */
-		resync_core_dcache();
-#endif
-		cpu_clear(cpu, msg->call_struct.waitmask);
-	} else
-		kfree(msg);
-}
-
-static irqreturn_t ipi_handler(int irq, void *dev_instance)
-{
-	struct ipi_message *msg;
-	struct ipi_message_queue *msg_queue;
 	unsigned int cpu = smp_processor_id();
 
-	platform_clear_ipi(cpu);
-
-	msg_queue = &__get_cpu_var(ipi_msg_queue);
-	msg_queue->count++;
-
-	spin_lock(&msg_queue->lock);
-	while (!list_empty(&msg_queue->head)) {
-		msg = list_entry(msg_queue->head.next, typeof(*msg), list);
-		list_del(&msg->list);
-		switch (msg->type) {
-		case BFIN_IPI_RESCHEDULE:
-			/* That's the easiest one; leave it to
-			 * return_from_int. */
-			kfree(msg);
-			break;
-		case BFIN_IPI_CALL_FUNC:
-			spin_unlock(&msg_queue->lock);
-			ipi_call_function(cpu, msg);
-			spin_lock(&msg_queue->lock);
-			break;
-		case BFIN_IPI_CPU_STOP:
-			spin_unlock(&msg_queue->lock);
-			ipi_cpu_stop(cpu);
-			spin_lock(&msg_queue->lock);
-			kfree(msg);
-			break;
-		default:
-			printk(KERN_CRIT "CPU%u: Unknown IPI message 0x%lx\n",
-			       cpu, msg->type);
-			kfree(msg);
-			break;
-		}
-	}
-	spin_unlock(&msg_queue->lock);
+	platform_clear_ipi(cpu, IRQ_SUPPLE_0);
 	return IRQ_HANDLED;
 }
 
-static void ipi_queue_init(void)
+DECLARE_PER_CPU(struct clock_event_device, coretmr_events);
+void ipi_timer(void)
+{
+	int cpu = smp_processor_id();
+	struct clock_event_device *evt = &per_cpu(coretmr_events, cpu);
+	evt->event_handler(evt);
+}
+
+static irqreturn_t ipi_handler_int1(int irq, void *dev_instance)
+{
+	struct ipi_data *bfin_ipi_data;
+	unsigned int cpu = smp_processor_id();
+	unsigned long pending;
+	unsigned long msg;
+
+	platform_clear_ipi(cpu, IRQ_SUPPLE_1);
+
+	bfin_ipi_data = &__get_cpu_var(bfin_ipi);
+
+	while ((pending = xchg(&bfin_ipi_data->bits, 0)) != 0) {
+		msg = 0;
+		do {
+			msg = find_next_bit(&pending, BITS_PER_LONG, msg + 1);
+			switch (msg) {
+			case BFIN_IPI_TIMER:
+				ipi_timer();
+				break;
+			case BFIN_IPI_RESCHEDULE:
+				scheduler_ipi();
+				break;
+			case BFIN_IPI_CALL_FUNC:
+				generic_smp_call_function_interrupt();
+				break;
+
+			case BFIN_IPI_CALL_FUNC_SINGLE:
+				generic_smp_call_function_single_interrupt();
+				break;
+
+			case BFIN_IPI_CPU_STOP:
+				ipi_cpu_stop(cpu);
+				break;
+			}
+		} while (msg < BITS_PER_LONG);
+
+		smp_mb();
+	}
+	return IRQ_HANDLED;
+}
+
+static void bfin_ipi_init(void)
 {
 	unsigned int cpu;
-	struct ipi_message_queue *msg_queue;
+	struct ipi_data *bfin_ipi_data;
 	for_each_possible_cpu(cpu) {
-		msg_queue = &per_cpu(ipi_msg_queue, cpu);
-		INIT_LIST_HEAD(&msg_queue->head);
-		spin_lock_init(&msg_queue->lock);
-		msg_queue->count = 0;
+		bfin_ipi_data = &per_cpu(bfin_ipi, cpu);
+		bfin_ipi_data->bits = 0;
+		bfin_ipi_data->count = 0;
 	}
 }
 
-int smp_call_function(void (*func)(void *info), void *info, int wait)
+void send_ipi(const struct cpumask *cpumask, enum ipi_message_type msg)
 {
 	unsigned int cpu;
-	cpumask_t callmap;
+	struct ipi_data *bfin_ipi_data;
 	unsigned long flags;
-	struct ipi_message_queue *msg_queue;
-	struct ipi_message *msg;
 
-	callmap = cpu_online_map;
-	cpu_clear(smp_processor_id(), callmap);
-	if (cpus_empty(callmap))
-		return 0;
+	local_irq_save(flags);
 
-	msg = kmalloc(sizeof(*msg), GFP_ATOMIC);
-	if (!msg)
-		return -ENOMEM;
-	INIT_LIST_HEAD(&msg->list);
-	msg->call_struct.func = func;
-	msg->call_struct.info = info;
-	msg->call_struct.wait = wait;
-	msg->call_struct.pending = callmap;
-	msg->call_struct.waitmask = callmap;
-	msg->type = BFIN_IPI_CALL_FUNC;
-
-	for_each_cpu_mask(cpu, callmap) {
-		msg_queue = &per_cpu(ipi_msg_queue, cpu);
-		spin_lock_irqsave(&msg_queue->lock, flags);
-		list_add_tail(&msg->list, &msg_queue->head);
-		spin_unlock_irqrestore(&msg_queue->lock, flags);
-		platform_send_ipi_cpu(cpu);
+	for_each_cpu(cpu, cpumask) {
+		bfin_ipi_data = &per_cpu(bfin_ipi, cpu);
+		smp_mb();
+		set_bit(msg, &bfin_ipi_data->bits);
+		bfin_ipi_data->count++;
+		platform_send_ipi_cpu(cpu, IRQ_SUPPLE_1);
 	}
-	if (wait) {
-		while (!cpus_empty(msg->call_struct.waitmask))
-			blackfin_dcache_invalidate_range(
-				(unsigned long)(&msg->call_struct.waitmask),
-				(unsigned long)(&msg->call_struct.waitmask));
-#ifdef __ARCH_SYNC_CORE_DCACHE
-		/*
-		 * Invalidate D cache in case shared data was changed by
-		 * other processors to ensure cache coherence.
-		 */
-		resync_core_dcache();
-#endif
-		kfree(msg);
-	}
-	return 0;
+
+	local_irq_restore(flags);
 }
-EXPORT_SYMBOL_GPL(smp_call_function);
 
-int smp_call_function_single(int cpuid, void (*func) (void *info), void *info,
-				int wait)
+void arch_send_call_function_single_ipi(int cpu)
 {
-	unsigned int cpu = cpuid;
-	cpumask_t callmap;
-	unsigned long flags;
-	struct ipi_message_queue *msg_queue;
-	struct ipi_message *msg;
-
-	if (cpu_is_offline(cpu))
-		return 0;
-	cpus_clear(callmap);
-	cpu_set(cpu, callmap);
-
-	msg = kmalloc(sizeof(*msg), GFP_ATOMIC);
-	if (!msg)
-		return -ENOMEM;
-	INIT_LIST_HEAD(&msg->list);
-	msg->call_struct.func = func;
-	msg->call_struct.info = info;
-	msg->call_struct.wait = wait;
-	msg->call_struct.pending = callmap;
-	msg->call_struct.waitmask = callmap;
-	msg->type = BFIN_IPI_CALL_FUNC;
-
-	msg_queue = &per_cpu(ipi_msg_queue, cpu);
-	spin_lock_irqsave(&msg_queue->lock, flags);
-	list_add_tail(&msg->list, &msg_queue->head);
-	spin_unlock_irqrestore(&msg_queue->lock, flags);
-	platform_send_ipi_cpu(cpu);
-
-	if (wait) {
-		while (!cpus_empty(msg->call_struct.waitmask))
-			blackfin_dcache_invalidate_range(
-				(unsigned long)(&msg->call_struct.waitmask),
-				(unsigned long)(&msg->call_struct.waitmask));
-#ifdef __ARCH_SYNC_CORE_DCACHE
-		/*
-		 * Invalidate D cache in case shared data was changed by
-		 * other processors to ensure cache coherence.
-		 */
-		resync_core_dcache();
-#endif
-		kfree(msg);
-	}
-	return 0;
+	send_ipi(cpumask_of(cpu), BFIN_IPI_CALL_FUNC_SINGLE);
 }
-EXPORT_SYMBOL_GPL(smp_call_function_single);
+
+void arch_send_call_function_ipi_mask(const struct cpumask *mask)
+{
+	send_ipi(mask, BFIN_IPI_CALL_FUNC);
+}
 
 void smp_send_reschedule(int cpu)
 {
-	unsigned long flags;
-	struct ipi_message_queue *msg_queue;
-	struct ipi_message *msg;
-
-	if (cpu_is_offline(cpu))
-		return;
-
-	msg = kzalloc(sizeof(*msg), GFP_ATOMIC);
-	if (!msg)
-		return;
-	INIT_LIST_HEAD(&msg->list);
-	msg->type = BFIN_IPI_RESCHEDULE;
-
-	msg_queue = &per_cpu(ipi_msg_queue, cpu);
-	spin_lock_irqsave(&msg_queue->lock, flags);
-	list_add_tail(&msg->list, &msg_queue->head);
-	spin_unlock_irqrestore(&msg_queue->lock, flags);
-	platform_send_ipi_cpu(cpu);
+	send_ipi(cpumask_of(cpu), BFIN_IPI_RESCHEDULE);
 
 	return;
+}
+
+void smp_send_msg(const struct cpumask *mask, unsigned long type)
+{
+	send_ipi(mask, type);
+}
+
+void smp_timer_broadcast(const struct cpumask *mask)
+{
+	smp_send_msg(mask, BFIN_IPI_TIMER);
 }
 
 void smp_send_stop(void)
 {
-	unsigned int cpu;
 	cpumask_t callmap;
-	unsigned long flags;
-	struct ipi_message_queue *msg_queue;
-	struct ipi_message *msg;
 
-	callmap = cpu_online_map;
-	cpu_clear(smp_processor_id(), callmap);
-	if (cpus_empty(callmap))
-		return;
+	preempt_disable();
+	cpumask_copy(&callmap, cpu_online_mask);
+	cpumask_clear_cpu(smp_processor_id(), &callmap);
+	if (!cpumask_empty(&callmap))
+		send_ipi(&callmap, BFIN_IPI_CPU_STOP);
 
-	msg = kzalloc(sizeof(*msg), GFP_ATOMIC);
-	if (!msg)
-		return;
-	INIT_LIST_HEAD(&msg->list);
-	msg->type = BFIN_IPI_CPU_STOP;
+	preempt_enable();
 
-	for_each_cpu_mask(cpu, callmap) {
-		msg_queue = &per_cpu(ipi_msg_queue, cpu);
-		spin_lock_irqsave(&msg_queue->lock, flags);
-		list_add_tail(&msg->list, &msg_queue->head);
-		spin_unlock_irqrestore(&msg_queue->lock, flags);
-		platform_send_ipi_cpu(cpu);
-	}
 	return;
 }
 
-int __cpuinit __cpu_up(unsigned int cpu)
+int __cpuinit __cpu_up(unsigned int cpu, struct task_struct *idle)
 {
 	int ret;
-	static struct task_struct *idle;
-
-	if (idle)
-		free_task(idle);
-
-	idle = fork_idle(cpu);
-	if (IS_ERR(idle)) {
-		printk(KERN_ERR "CPU%u: fork() failed\n", cpu);
-		return PTR_ERR(idle);
-	}
 
 	secondary_stack = task_stack_page(idle) + THREAD_SIZE;
 
@@ -392,13 +288,16 @@ void __cpuinit secondary_start_kernel(void)
 	if (_bfin_swrst & SWRST_DBL_FAULT_B) {
 		printk(KERN_EMERG "CoreB Recovering from DOUBLE FAULT event\n");
 #ifdef CONFIG_DEBUG_DOUBLEFAULT
-		printk(KERN_EMERG " While handling exception (EXCAUSE = 0x%x) at %pF\n",
-			(int)init_saved_seqstat_coreb & SEQSTAT_EXCAUSE, init_saved_retx_coreb);
-		printk(KERN_NOTICE "   DCPLB_FAULT_ADDR: %pF\n", init_saved_dcplb_fault_addr_coreb);
-		printk(KERN_NOTICE "   ICPLB_FAULT_ADDR: %pF\n", init_saved_icplb_fault_addr_coreb);
+		printk(KERN_EMERG " While handling exception (EXCAUSE = %#x) at %pF\n",
+			initial_pda_coreb.seqstat_doublefault & SEQSTAT_EXCAUSE,
+			initial_pda_coreb.retx_doublefault);
+		printk(KERN_NOTICE "   DCPLB_FAULT_ADDR: %pF\n",
+			initial_pda_coreb.dcplb_doublefault_addr);
+		printk(KERN_NOTICE "   ICPLB_FAULT_ADDR: %pF\n",
+			initial_pda_coreb.icplb_doublefault_addr);
 #endif
 		printk(KERN_NOTICE " The instruction at %pF caused a double exception\n",
-			init_retx_coreb);
+			initial_pda_coreb.retx);
 	}
 
 	/*
@@ -407,8 +306,6 @@ void __cpuinit secondary_start_kernel(void)
 	 * __ARCH_SYNC_CORE_DCACHE).
 	 */
 	init_exception_vectors();
-
-	bfin_setup_caches(cpu);
 
 	local_irq_disable();
 
@@ -428,6 +325,9 @@ void __cpuinit secondary_start_kernel(void)
 
 	local_irq_enable();
 
+	bfin_setup_caches(cpu);
+
+	notify_cpu_starting(cpu);
 	/*
 	 * Calibrate loops per jiffy value.
 	 * IRQs need to be enabled here - D-cache can be invalidated
@@ -445,8 +345,9 @@ void __init smp_prepare_boot_cpu(void)
 void __init smp_prepare_cpus(unsigned int max_cpus)
 {
 	platform_prepare_cpus(max_cpus);
-	ipi_queue_init();
-	platform_request_ipi(&ipi_handler);
+	bfin_ipi_init();
+	platform_request_ipi(IRQ_SUPPLE_0, ipi_handler_int0);
+	platform_request_ipi(IRQ_SUPPLE_1, ipi_handler_int1);
 }
 
 void __init smp_cpus_done(unsigned int max_cpus)
@@ -469,8 +370,10 @@ void smp_icache_flush_range_others(unsigned long start, unsigned long end)
 	smp_flush_data.start = start;
 	smp_flush_data.end = end;
 
-	if (smp_call_function(&ipi_flush_icache, &smp_flush_data, 0))
+	preempt_disable();
+	if (smp_call_function(&ipi_flush_icache, &smp_flush_data, 1))
 		printk(KERN_WARNING "SMP: failed to run I-cache flush request on other CPUs\n");
+	preempt_enable();
 }
 EXPORT_SYMBOL_GPL(smp_icache_flush_range_others);
 

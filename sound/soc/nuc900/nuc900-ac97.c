@@ -49,7 +49,7 @@ static unsigned short nuc900_ac97_read(struct snd_ac97 *ac97,
 	mutex_lock(&ac97_mutex);
 
 	val = nuc900_checkready();
-	if (!!val) {
+	if (val) {
 		dev_err(nuc900_audio->dev, "AC97 codec is not ready\n");
 		goto out;
 	}
@@ -102,7 +102,7 @@ static void nuc900_ac97_write(struct snd_ac97 *ac97, unsigned short reg,
 	mutex_lock(&ac97_mutex);
 
 	tmp = nuc900_checkready();
-	if (!!tmp)
+	if (tmp)
 		dev_err(nuc900_audio->dev, "AC97 codec is not ready\n");
 
 	/* clear the R_WB bit and write register index */
@@ -149,7 +149,7 @@ static void nuc900_ac97_warm_reset(struct snd_ac97 *ac97)
 	udelay(100);
 
 	val = nuc900_checkready();
-	if (!!val)
+	if (val)
 		dev_err(nuc900_audio->dev, "AC97 codec is not ready\n");
 
 	mutex_unlock(&ac97_mutex);
@@ -263,8 +263,7 @@ static int nuc900_ac97_trigger(struct snd_pcm_substream *substream,
 	return ret;
 }
 
-static int nuc900_ac97_probe(struct platform_device *pdev,
-					struct snd_soc_dai *dai)
+static int nuc900_ac97_probe(struct snd_soc_dai *dai)
 {
 	struct nuc900_audio *nuc900_audio = nuc900_ac97_data;
 	unsigned long val;
@@ -284,15 +283,15 @@ static int nuc900_ac97_probe(struct platform_device *pdev,
 	return 0;
 }
 
-static void nuc900_ac97_remove(struct platform_device *pdev,
-						struct snd_soc_dai *dai)
+static int nuc900_ac97_remove(struct snd_soc_dai *dai)
 {
 	struct nuc900_audio *nuc900_audio = nuc900_ac97_data;
 
 	clk_disable(nuc900_audio->clk);
+	return 0;
 }
 
-static struct snd_soc_dai_ops nuc900_ac97_dai_ops = {
+static const struct snd_soc_dai_ops nuc900_ac97_dai_ops = {
 	.trigger	= nuc900_ac97_trigger,
 };
 
@@ -313,7 +312,7 @@ static struct snd_soc_dai_driver nuc900_ac97_dai = {
 		.channels_max	= 2,
 	},
 	.ops = &nuc900_ac97_dai_ops,
-}
+};
 
 static int __devinit nuc900_ac97_drvprobe(struct platform_device *pdev)
 {
@@ -357,7 +356,7 @@ static int __devinit nuc900_ac97_drvprobe(struct platform_device *pdev)
 	nuc900_audio->irq_num = platform_get_irq(pdev, 0);
 	if (!nuc900_audio->irq_num) {
 		ret = -EBUSY;
-		goto out2;
+		goto out3;
 	}
 
 	nuc900_ac97_data = nuc900_audio;
@@ -366,7 +365,8 @@ static int __devinit nuc900_ac97_drvprobe(struct platform_device *pdev)
 	if (ret)
 		goto out3;
 
-	mfp_set_groupg(nuc900_audio->dev); /* enbale ac97 multifunction pin*/
+	/* enbale ac97 multifunction pin */
+	mfp_set_groupg(nuc900_audio->dev, NULL);
 
 	return 0;
 
@@ -384,7 +384,6 @@ out0:
 
 static int __devexit nuc900_ac97_drvremove(struct platform_device *pdev)
 {
-
 	snd_soc_unregister_dai(&pdev->dev);
 
 	clk_put(nuc900_ac97_data->clk);
@@ -392,6 +391,7 @@ static int __devexit nuc900_ac97_drvremove(struct platform_device *pdev)
 	release_mem_region(nuc900_ac97_data->res->start,
 				resource_size(nuc900_ac97_data->res));
 
+	kfree(nuc900_ac97_data);
 	nuc900_ac97_data = NULL;
 
 	return 0;
@@ -406,18 +406,7 @@ static struct platform_driver nuc900_ac97_driver = {
 	.remove		= __devexit_p(nuc900_ac97_drvremove),
 };
 
-static int __init nuc900_ac97_init(void)
-{
-	return platform_driver_register(&nuc900_ac97_driver);
-}
-
-static void __exit nuc900_ac97_exit(void)
-{
-	platform_driver_unregister(&nuc900_ac97_driver);
-}
-
-module_init(nuc900_ac97_init);
-module_exit(nuc900_ac97_exit);
+module_platform_driver(nuc900_ac97_driver);
 
 MODULE_AUTHOR("Wan ZongShun <mcuos.com@gmail.com>");
 MODULE_DESCRIPTION("NUC900 AC97 SoC driver!");

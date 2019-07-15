@@ -37,7 +37,7 @@ u8 r8712_usb_hal_bus_init(struct _adapter *padapter)
 {
 	u8 val8 = 0;
 	u8 ret = _SUCCESS;
-	u8 PollingCnt = 20;
+	int PollingCnt = 20;
 	struct registry_priv *pregistrypriv = &padapter->registrypriv;
 
 	if (pregistrypriv->chip_version == RTL8712_FPGA) {
@@ -112,7 +112,7 @@ u8 r8712_usb_hal_bus_init(struct _adapter *padapter)
 		/* Initialization for power on sequence, */
 		r8712_write8(padapter, SPS0_CTRL + 1, 0x53);
 		r8712_write8(padapter, SPS0_CTRL, 0x57);
-		/* Enable AFE Macro Block's Bandgap adn Enable AFE Macro
+		/* Enable AFE Macro Block's Bandgap and Enable AFE Macro
 		 * Block's Mbias
 		 */
 		val8 = r8712_read8(padapter, AFE_MISC);
@@ -141,7 +141,7 @@ u8 r8712_usb_hal_bus_init(struct _adapter *padapter)
 		/* Enable AFE PLL Macro Block */
 		val8 = r8712_read8(padapter, AFE_PLL_CTRL);
 		r8712_write8(padapter, AFE_PLL_CTRL, (val8 | 0x11));
-		/* Attatch AFE PLL to MACTOP/BB/PCIe Digital */
+		/* Attach AFE PLL to MACTOP/BB/PCIe Digital */
 		val8 = r8712_read8(padapter, SYS_ISO_CTRL);
 		r8712_write8(padapter, SYS_ISO_CTRL, (val8 & 0xEE));
 		/* Switch to 40M clock */
@@ -234,7 +234,7 @@ u8 r8712_usb_hal_bus_init(struct _adapter *padapter)
 		udelay(500);
 		r8712_write8(padapter, AFE_PLL_CTRL, (val8 | 0x11));
 		udelay(500);
-		/* Attatch AFE PLL to MACTOP/BB/PCIe Digital */
+		/* Attach AFE PLL to MACTOP/BB/PCIe Digital */
 		val8 = r8712_read8(padapter, SYS_ISO_CTRL);
 		r8712_write8(padapter, SYS_ISO_CTRL, (val8 & 0xEE));
 		/* Switch to 40M clock */

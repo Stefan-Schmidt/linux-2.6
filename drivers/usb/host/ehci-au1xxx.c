@@ -14,65 +14,16 @@
 #include <linux/platform_device.h>
 #include <asm/mach-au1x00/au1000.h>
 
-#define USB_HOST_CONFIG   (USB_MSR_BASE + USB_MSR_MCFG)
-#define USB_MCFG_PFEN     (1<<31)
-#define USB_MCFG_RDCOMB   (1<<30)
-#define USB_MCFG_SSDEN    (1<<23)
-#define USB_MCFG_PHYPLLEN (1<<19)
-#define USB_MCFG_UCECLKEN (1<<18)
-#define USB_MCFG_EHCCLKEN (1<<17)
-#ifdef CONFIG_DMA_COHERENT
-#define USB_MCFG_UCAM     (1<<7)
-#else
-#define USB_MCFG_UCAM     (0)
-#endif
-#define USB_MCFG_EBMEN    (1<<3)
-#define USB_MCFG_EMEMEN   (1<<2)
-
-#define USBH_ENABLE_CE	(USB_MCFG_PHYPLLEN | USB_MCFG_EHCCLKEN)
-#define USBH_ENABLE_INIT (USB_MCFG_PFEN  | USB_MCFG_RDCOMB |	\
-			  USBH_ENABLE_CE | USB_MCFG_SSDEN  |	\
-			  USB_MCFG_UCAM  | USB_MCFG_EBMEN  |	\
-			  USB_MCFG_EMEMEN)
-
-#define USBH_DISABLE      (USB_MCFG_EBMEN | USB_MCFG_EMEMEN)
 
 extern int usb_disabled(void);
-
-static void au1xxx_start_ehc(void)
-{
-	/* enable clock to EHCI block and HS PHY PLL*/
-	au_writel(au_readl(USB_HOST_CONFIG) | USBH_ENABLE_CE, USB_HOST_CONFIG);
-	au_sync();
-	udelay(1000);
-
-	/* enable EHCI mmio */
-	au_writel(au_readl(USB_HOST_CONFIG) | USBH_ENABLE_INIT, USB_HOST_CONFIG);
-	au_sync();
-	udelay(1000);
-}
-
-static void au1xxx_stop_ehc(void)
-{
-	unsigned long c;
-
-	/* Disable mem */
-	au_writel(au_readl(USB_HOST_CONFIG) & ~USBH_DISABLE, USB_HOST_CONFIG);
-	au_sync();
-	udelay(1000);
-
-	/* Disable EHC clock. If the HS PHY is unused disable it too. */
-	c = au_readl(USB_HOST_CONFIG) & ~USB_MCFG_EHCCLKEN;
-	if (!(c & USB_MCFG_UCECLKEN))		/* UDC disabled? */
-		c &= ~USB_MCFG_PHYPLLEN;	/* yes: disable HS PHY PLL */
-	au_writel(c, USB_HOST_CONFIG);
-	au_sync();
-}
 
 static int au1xxx_ehci_setup(struct usb_hcd *hcd)
 {
 	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
-	int ret = ehci_init(hcd);
+	int ret;
+
+	ehci->caps = hcd->regs;
+	ret = ehci_setup(hcd);
 
 	ehci->need_io_watchdog = 0;
 	return ret;
@@ -129,22 +80,11 @@ static const struct hc_driver ehci_au1xxx_hc_driver = {
 static int ehci_hcd_au1xxx_drv_probe(struct platform_device *pdev)
 {
 	struct usb_hcd *hcd;
-	struct ehci_hcd *ehci;
 	struct resource *res;
 	int ret;
 
 	if (usb_disabled())
 		return -ENODEV;
-
-#if defined(CONFIG_SOC_AU1200) && defined(CONFIG_DMA_COHERENT)
-	/* Au1200 AB USB does not support coherent memory */
-	if (!(read_c0_prid() & 0xff)) {
-		printk(KERN_INFO "%s: this is chip revision AB!\n", pdev->name);
-		printk(KERN_INFO "%s: update your board or re-configure"
-				 " the kernel\n", pdev->name);
-		return -ENODEV;
-	}
-#endif
 
 	if (pdev->resource[1].flags != IORESOURCE_IRQ) {
 		pr_debug("resource[1] is not IORESOURCE_IRQ");
@@ -171,22 +111,21 @@ static int ehci_hcd_au1xxx_drv_probe(struct platform_device *pdev)
 		goto err2;
 	}
 
-	au1xxx_start_ehc();
-
-	ehci = hcd_to_ehci(hcd);
-	ehci->caps = hcd->regs;
-	ehci->regs = hcd->regs + HC_LENGTH(readl(&ehci->caps->hc_capbase));
-	/* cache this readonly data; minimize chip reads */
-	ehci->hcs_params = readl(&ehci->caps->hcs_params);
+	if (alchemy_usb_control(ALCHEMY_USB_EHCI0, 1)) {
+		printk(KERN_INFO "%s: controller init failed!\n", pdev->name);
+		ret = -ENODEV;
+		goto err3;
+	}
 
 	ret = usb_add_hcd(hcd, pdev->resource[1].start,
-			  IRQF_DISABLED | IRQF_SHARED);
+			  IRQF_SHARED);
 	if (ret == 0) {
 		platform_set_drvdata(pdev, hcd);
 		return ret;
 	}
 
-	au1xxx_stop_ehc();
+	alchemy_usb_control(ALCHEMY_USB_EHCI0, 0);
+err3:
 	iounmap(hcd->regs);
 err2:
 	release_mem_region(hcd->rsrc_start, hcd->rsrc_len);
@@ -200,10 +139,10 @@ static int ehci_hcd_au1xxx_drv_remove(struct platform_device *pdev)
 	struct usb_hcd *hcd = platform_get_drvdata(pdev);
 
 	usb_remove_hcd(hcd);
+	alchemy_usb_control(ALCHEMY_USB_EHCI0, 0);
 	iounmap(hcd->regs);
 	release_mem_region(hcd->rsrc_start, hcd->rsrc_len);
 	usb_put_hcd(hcd);
-	au1xxx_stop_ehc();
 	platform_set_drvdata(pdev, NULL);
 
 	return 0;
@@ -213,32 +152,11 @@ static int ehci_hcd_au1xxx_drv_remove(struct platform_device *pdev)
 static int ehci_hcd_au1xxx_drv_suspend(struct device *dev)
 {
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
-	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
-	unsigned long flags;
+	bool do_wakeup = device_may_wakeup(dev);
 	int rc;
 
-	return 0;
-	rc = 0;
-
-	if (time_before(jiffies, ehci->next_statechange))
-		msleep(10);
-
-	/* Root hub was already suspended. Disable irq emission and
-	 * mark HW unaccessible.  The PM and USB cores make sure that
-	 * the root hub is either suspended or stopped.
-	 */
-	spin_lock_irqsave(&ehci->lock, flags);
-	ehci_prepare_ports_for_controller_suspend(ehci, device_may_wakeup(dev));
-	ehci_writel(ehci, 0, &ehci->regs->intr_enable);
-	(void)ehci_readl(ehci, &ehci->regs->intr_enable);
-
-	clear_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
-
-	au1xxx_stop_ehc();
-	spin_unlock_irqrestore(&ehci->lock, flags);
-
-	// could save FLADJ in case of Vaux power loss
-	// ... we'd only use it to handle clock skew
+	rc = ehci_suspend(hcd, do_wakeup);
+	alchemy_usb_control(ALCHEMY_USB_EHCI0, 0);
 
 	return rc;
 }
@@ -246,56 +164,9 @@ static int ehci_hcd_au1xxx_drv_suspend(struct device *dev)
 static int ehci_hcd_au1xxx_drv_resume(struct device *dev)
 {
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
-	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
 
-	au1xxx_start_ehc();
-
-	// maybe restore FLADJ
-
-	if (time_before(jiffies, ehci->next_statechange))
-		msleep(100);
-
-	/* Mark hardware accessible again as we are out of D3 state by now */
-	set_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
-
-	/* If CF is still set, we maintained PCI Vaux power.
-	 * Just undo the effect of ehci_pci_suspend().
-	 */
-	if (ehci_readl(ehci, &ehci->regs->configured_flag) == FLAG_CF) {
-		int	mask = INTR_MASK;
-
-		ehci_prepare_ports_for_controller_resume(ehci);
-		if (!hcd->self.root_hub->do_remote_wakeup)
-			mask &= ~STS_PCD;
-		ehci_writel(ehci, mask, &ehci->regs->intr_enable);
-		ehci_readl(ehci, &ehci->regs->intr_enable);
-		return 0;
-	}
-
-	ehci_dbg(ehci, "lost power, restarting\n");
-	usb_root_hub_lost_power(hcd->self.root_hub);
-
-	/* Else reset, to cope with power loss or flush-to-storage
-	 * style "resume" having let BIOS kick in during reboot.
-	 */
-	(void) ehci_halt(ehci);
-	(void) ehci_reset(ehci);
-
-	/* emptying the schedule aborts any urbs */
-	spin_lock_irq(&ehci->lock);
-	if (ehci->reclaim)
-		end_unlink_async(ehci);
-	ehci_work(ehci);
-	spin_unlock_irq(&ehci->lock);
-
-	ehci_writel(ehci, ehci->command, &ehci->regs->command);
-	ehci_writel(ehci, FLAG_CF, &ehci->regs->configured_flag);
-	ehci_readl(ehci, &ehci->regs->command);	/* unblock posted writes */
-
-	/* here we "know" root ports should always stay powered */
-	ehci_port_power(ehci, 1);
-
-	hcd->state = HC_STATE_SUSPENDED;
+	alchemy_usb_control(ALCHEMY_USB_EHCI0, 1);
+	ehci_resume(hcd, false);
 
 	return 0;
 }

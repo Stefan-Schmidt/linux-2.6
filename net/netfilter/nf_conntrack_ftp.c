@@ -42,7 +42,7 @@ static u_int16_t ports[MAX_PORTS];
 static unsigned int ports_c;
 module_param_array(ports, ushort, &ports_c, 0400);
 
-static int loose;
+static bool loose;
 module_param(loose, bool, 0600);
 
 unsigned int (*nf_nat_ftp_hook)(struct sk_buff *skb,
@@ -358,7 +358,7 @@ static int help(struct sk_buff *skb,
 	u32 seq;
 	int dir = CTINFO2DIR(ctinfo);
 	unsigned int uninitialized_var(matchlen), uninitialized_var(matchoff);
-	struct nf_ct_ftp_master *ct_ftp_info = &nfct_help(ct)->help.ct_ftp_info;
+	struct nf_ct_ftp_master *ct_ftp_info = nfct_help_data(ct);
 	struct nf_conntrack_expect *exp;
 	union nf_inet_addr *daddr;
 	struct nf_conntrack_man cmd = {};
@@ -368,7 +368,7 @@ static int help(struct sk_buff *skb,
 
 	/* Until there's been traffic both ways, don't look in packets. */
 	if (ctinfo != IP_CT_ESTABLISHED &&
-	    ctinfo != IP_CT_ESTABLISHED + IP_CT_IS_REPLY) {
+	    ctinfo != IP_CT_ESTABLISHED_REPLY) {
 		pr_debug("ftp: Conntrackinfo = %u\n", ctinfo);
 		return NF_ACCEPT;
 	}
@@ -512,7 +512,6 @@ out_update_nl:
 }
 
 static struct nf_conntrack_helper ftp[MAX_PORTS][2] __read_mostly;
-static char ftp_names[MAX_PORTS][2][sizeof("ftp-65535")] __read_mostly;
 
 static const struct nf_conntrack_expect_policy ftp_exp_policy = {
 	.max_expected	= 1,
@@ -541,7 +540,6 @@ static void nf_conntrack_ftp_fini(void)
 static int __init nf_conntrack_ftp_init(void)
 {
 	int i, j = -1, ret = 0;
-	char *tmpname;
 
 	ftp_buffer = kmalloc(65536, GFP_KERNEL);
 	if (!ftp_buffer)
@@ -556,17 +554,16 @@ static int __init nf_conntrack_ftp_init(void)
 		ftp[i][0].tuple.src.l3num = PF_INET;
 		ftp[i][1].tuple.src.l3num = PF_INET6;
 		for (j = 0; j < 2; j++) {
+			ftp[i][j].data_len = sizeof(struct nf_ct_ftp_master);
 			ftp[i][j].tuple.src.u.tcp.port = htons(ports[i]);
 			ftp[i][j].tuple.dst.protonum = IPPROTO_TCP;
 			ftp[i][j].expect_policy = &ftp_exp_policy;
 			ftp[i][j].me = THIS_MODULE;
 			ftp[i][j].help = help;
-			tmpname = &ftp_names[i][j][0];
 			if (ports[i] == FTP_PORT)
-				sprintf(tmpname, "ftp");
+				sprintf(ftp[i][j].name, "ftp");
 			else
-				sprintf(tmpname, "ftp-%d", ports[i]);
-			ftp[i][j].name = tmpname;
+				sprintf(ftp[i][j].name, "ftp-%d", ports[i]);
 
 			pr_debug("nf_ct_ftp: registering helper for pf: %d "
 				 "port: %d\n",

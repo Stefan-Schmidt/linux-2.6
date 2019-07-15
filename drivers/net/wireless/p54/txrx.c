@@ -16,9 +16,11 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/export.h>
 #include <linux/init.h>
 #include <linux/firmware.h>
 #include <linux/etherdevice.h>
+#include <asm/div64.h>
 
 #include <net/mac80211.h>
 
@@ -240,7 +242,7 @@ void p54_free_skb(struct ieee80211_hw *dev, struct sk_buff *skb)
 
 	skb_unlink(skb, &priv->tx_queue);
 	p54_tx_qos_accounting_free(priv, skb);
-	dev_kfree_skb_any(skb);
+	ieee80211_free_txskb(dev, skb);
 }
 EXPORT_SYMBOL_GPL(p54_free_skb);
 
@@ -273,11 +275,9 @@ void p54_tx(struct p54_common *priv, struct sk_buff *skb)
 
 static int p54_rssi_to_dbm(struct p54_common *priv, int rssi)
 {
-	int band = priv->hw->conf.channel->band;
-
 	if (priv->rxhw != 5) {
-		return ((rssi * priv->rssical_db[band].mul) / 64 +
-			 priv->rssical_db[band].add) / 4;
+		return ((rssi * priv->cur_rssi->mul) / 64 +
+			 priv->cur_rssi->add) / 4;
 	} else {
 		/*
 		 * TODO: find the correct formula
@@ -308,7 +308,7 @@ static void p54_pspoll_workaround(struct p54_common *priv, struct sk_buff *skb)
 		return;
 
 	/* only consider beacons from the associated BSSID */
-	if (compare_ether_addr(hdr->addr3, priv->bssid))
+	if (!ether_addr_equal(hdr->addr3, priv->bssid))
 		return;
 
 	tim = p54_find_ie(skb, WLAN_EID_TIM);
@@ -369,7 +369,7 @@ static int p54_rx_data(struct p54_common *priv, struct sk_buff *skb)
 	rx_status->mactime = ((u64)priv->tsf_high32) << 32 | tsf32;
 	priv->tsf_low32 = tsf32;
 
-	rx_status->flag |= RX_FLAG_TSFT;
+	rx_status->flag |= RX_FLAG_MACTIME_MPDU;
 
 	if (hdr->flags & cpu_to_le16(P54_HDR_FLAG_DATA_ALIGN))
 		header_len += hdr->align[0];
@@ -422,11 +422,11 @@ static void p54_rx_frame_sent(struct p54_common *priv, struct sk_buff *skb)
 	 * Clear manually, ieee80211_tx_info_clear_status would
 	 * clear the counts too and we need them.
 	 */
-	memset(&info->status.ampdu_ack_len, 0,
+	memset(&info->status.ack_signal, 0,
 	       sizeof(struct ieee80211_tx_info) -
-	       offsetof(struct ieee80211_tx_info, status.ampdu_ack_len));
+	       offsetof(struct ieee80211_tx_info, status.ack_signal));
 	BUILD_BUG_ON(offsetof(struct ieee80211_tx_info,
-			      status.ampdu_ack_len) != 23);
+			      status.ack_signal) != 20);
 
 	if (entry_hdr->flags & cpu_to_le16(P54_HDR_FLAG_DATA_ALIGN))
 		pad = entry_data->align[0];
@@ -509,6 +509,8 @@ static void p54_rx_stats(struct p54_common *priv, struct sk_buff *skb)
 	struct p54_hdr *hdr = (struct p54_hdr *) skb->data;
 	struct p54_statistics *stats = (struct p54_statistics *) hdr->data;
 	struct sk_buff *tmp;
+	struct ieee80211_channel *chan;
+	unsigned int i, rssi, tx, cca, dtime, dtotal, dcca, dtx, drssi, unit;
 	u32 tsf32;
 
 	if (unlikely(priv->mode == NL80211_IFTYPE_UNSPECIFIED))
@@ -525,8 +527,75 @@ static void p54_rx_stats(struct p54_common *priv, struct sk_buff *skb)
 
 	priv->noise = p54_rssi_to_dbm(priv, le32_to_cpu(stats->noise));
 
+	/*
+	 * STSW450X LMAC API page 26 - 3.8 Statistics
+	 * "The exact measurement period can be derived from the
+	 * timestamp member".
+	 */
+	dtime = tsf32 - priv->survey_raw.timestamp;
+
+	/*
+	 * STSW450X LMAC API page 26 - 3.8.1 Noise histogram
+	 * The LMAC samples RSSI, CCA and transmit state at regular
+	 * periods (typically 8 times per 1k [as in 1024] usec).
+	 */
+	cca = le32_to_cpu(stats->sample_cca);
+	tx = le32_to_cpu(stats->sample_tx);
+	rssi = 0;
+	for (i = 0; i < ARRAY_SIZE(stats->sample_noise); i++)
+		rssi += le32_to_cpu(stats->sample_noise[i]);
+
+	dcca = cca - priv->survey_raw.cached_cca;
+	drssi = rssi - priv->survey_raw.cached_rssi;
+	dtx = tx - priv->survey_raw.cached_tx;
+	dtotal = dcca + drssi + dtx;
+
+	/*
+	 * update statistics when more than a second is over since the
+	 * last call, or when a update is badly needed.
+	 */
+	if (dtotal && (priv->update_stats || dtime >= USEC_PER_SEC) &&
+	    dtime >= dtotal) {
+		priv->survey_raw.timestamp = tsf32;
+		priv->update_stats = false;
+		unit = dtime / dtotal;
+
+		if (dcca) {
+			priv->survey_raw.cca += dcca * unit;
+			priv->survey_raw.cached_cca = cca;
+		}
+		if (dtx) {
+			priv->survey_raw.tx += dtx * unit;
+			priv->survey_raw.cached_tx = tx;
+		}
+		if (drssi) {
+			priv->survey_raw.rssi += drssi * unit;
+			priv->survey_raw.cached_rssi = rssi;
+		}
+
+		/* 1024 usec / 8 times = 128 usec / time */
+		if (!(priv->phy_ps || priv->phy_idle))
+			priv->survey_raw.active += dtotal * unit;
+		else
+			priv->survey_raw.active += (dcca + dtx) * unit;
+	}
+
+	chan = priv->curchan;
+	if (chan) {
+		struct survey_info *survey = &priv->survey[chan->hw_value];
+		survey->noise = clamp_t(s8, priv->noise, -128, 127);
+		survey->channel_time = priv->survey_raw.active;
+		survey->channel_time_tx = priv->survey_raw.tx;
+		survey->channel_time_busy = priv->survey_raw.tx +
+			priv->survey_raw.cca;
+		do_div(survey->channel_time, 1024);
+		do_div(survey->channel_time_tx, 1024);
+		do_div(survey->channel_time_busy, 1024);
+	}
+
 	tmp = p54_find_and_unlink_skb(priv, hdr->req_id);
 	dev_kfree_skb_any(tmp);
+	complete(&priv->stat_comp);
 }
 
 static void p54_rx_trap(struct p54_common *priv, struct sk_buff *skb)
@@ -618,10 +687,10 @@ static void p54_tx_80211_header(struct p54_common *priv, struct sk_buff *skb,
 	else
 		*burst_possible = false;
 
-	if (info->flags & IEEE80211_TX_CTL_ASSIGN_SEQ)
+	if (!(info->flags & IEEE80211_TX_CTL_ASSIGN_SEQ))
 		*flags |= P54_HDR_FLAG_DATA_OUT_SEQNR;
 
-	if (info->flags & IEEE80211_TX_CTL_PSPOLL_RESPONSE)
+	if (info->flags & IEEE80211_TX_CTL_NO_PS_BUFFER)
 		*flags |= P54_HDR_FLAG_DATA_OUT_NOCANCEL;
 
 	if (info->flags & IEEE80211_TX_CTL_CLEAR_PS_FILT)
@@ -698,14 +767,14 @@ static u8 p54_convert_algo(u32 cipher)
 	}
 }
 
-int p54_tx_80211(struct ieee80211_hw *dev, struct sk_buff *skb)
+void p54_tx_80211(struct ieee80211_hw *dev, struct sk_buff *skb)
 {
 	struct p54_common *priv = dev->priv;
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 	struct p54_tx_info *p54info;
 	struct p54_hdr *hdr;
 	struct p54_tx_data *txhdr;
-	unsigned int padding, len, extra_len;
+	unsigned int padding, len, extra_len = 0;
 	int i, j, ridx;
 	u16 hdr_flags = 0, aid = 0;
 	u8 rate, queue = 0, crypt_offset = 0;
@@ -719,12 +788,8 @@ int p54_tx_80211(struct ieee80211_hw *dev, struct sk_buff *skb)
 			    &hdr_flags, &aid, &burst_allowed);
 
 	if (p54_tx_qos_accounting_alloc(priv, skb, queue)) {
-		if (!IS_QOS_QUEUE(queue)) {
-			dev_kfree_skb_any(skb);
-			return NETDEV_TX_OK;
-		} else {
-			return NETDEV_TX_BUSY;
-		}
+		ieee80211_free_txskb(dev, skb);
+		return;
 	}
 
 	padding = (unsigned long)(skb->data - (sizeof(*hdr) + sizeof(*txhdr))) & 3;
@@ -849,8 +914,7 @@ int p54_tx_80211(struct ieee80211_hw *dev, struct sk_buff *skb)
 	txhdr->hw_queue = queue;
 	txhdr->backlog = priv->tx_stats[queue].len - 1;
 	memset(txhdr->durations, 0, sizeof(txhdr->durations));
-	txhdr->tx_antenna = ((info->antenna_sel_tx == 0) ?
-		2 : info->antenna_sel_tx - 1) & priv->tx_diversity_mask;
+	txhdr->tx_antenna = 2 & priv->tx_diversity_mask;
 	if (priv->rxhw == 5) {
 		txhdr->longbow.cts_rate = cts_rate;
 		txhdr->longbow.output_power = cpu_to_le16(priv->output_power);
@@ -867,5 +931,4 @@ int p54_tx_80211(struct ieee80211_hw *dev, struct sk_buff *skb)
 	p54info->extra_len = extra_len;
 
 	p54_tx(priv, skb);
-	return NETDEV_TX_OK;
 }

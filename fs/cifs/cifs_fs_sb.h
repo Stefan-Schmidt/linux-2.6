@@ -15,7 +15,7 @@
  *   the GNU Lesser General Public License for more details.
  *
  */
-#include <linux/radix-tree.h>
+#include <linux/rbtree.h>
 
 #ifndef _CIFS_FS_SB_H
 #define _CIFS_FS_SB_H
@@ -40,25 +40,29 @@
 #define CIFS_MOUNT_FSCACHE	0x8000 /* local caching enabled */
 #define CIFS_MOUNT_MF_SYMLINKS	0x10000 /* Minshall+French Symlinks enabled */
 #define CIFS_MOUNT_MULTIUSER	0x20000 /* multiuser mount */
+#define CIFS_MOUNT_STRICT_IO	0x40000 /* strict cache mode */
+#define CIFS_MOUNT_RWPIDFORWARD	0x80000 /* use pid forwarding for rw */
+#define CIFS_MOUNT_POSIXACL	0x100000 /* mirror of MS_POSIXACL in mnt_cifs_flags */
+#define CIFS_MOUNT_CIFS_BACKUPUID 0x200000 /* backup intent bit for a user */
+#define CIFS_MOUNT_CIFS_BACKUPGID 0x400000 /* backup intent bit for a group */
 
 struct cifs_sb_info {
-	struct radix_tree_root tlink_tree;
-#define CIFS_TLINK_MASTER_TAG		0	/* is "master" (mount) tcon */
+	struct rb_root tlink_tree;
 	spinlock_t tlink_tree_lock;
+	struct tcon_link *master_tlink;
 	struct nls_table *local_nls;
 	unsigned int rsize;
 	unsigned int wsize;
+	unsigned long actimeo; /* attribute cache timeout (jiffies) */
 	atomic_t active;
 	uid_t	mnt_uid;
 	gid_t	mnt_gid;
-	mode_t	mnt_file_mode;
-	mode_t	mnt_dir_mode;
+	uid_t	mnt_backupuid;
+	gid_t	mnt_backupgid;
+	umode_t	mnt_file_mode;
+	umode_t	mnt_dir_mode;
 	unsigned int mnt_cifs_flags;
-	int	prepathlen;
-	char   *prepath; /* relative path under the share to mount to */
-#ifdef CONFIG_CIFS_DFS_UPCALL
-	char   *mountdata; /* mount options received at mount time */
-#endif
+	char   *mountdata; /* options received at mount time or via DFS refs */
 	struct backing_dev_info bdi;
 	struct delayed_work prune_tlinks;
 };

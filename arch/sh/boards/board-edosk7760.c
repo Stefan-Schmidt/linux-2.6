@@ -23,6 +23,7 @@
 #include <linux/platform_device.h>
 #include <linux/smc91x.h>
 #include <linux/interrupt.h>
+#include <linux/sh_intc.h>
 #include <linux/i2c.h>
 #include <linux/mtd/physmap.h>
 #include <asm/machvec.h>
@@ -40,8 +41,6 @@
 #define SMC_IO_OFFSET	0x300
 #define SMC_IOADDR	(SMC_IOBASE + SMC_IO_OFFSET)
 
-#define ETHERNET_IRQ	5
-
 /* NOR flash */
 static struct mtd_partition edosk7760_nor_flash_partitions[] = {
 	{
@@ -56,7 +55,7 @@ static struct mtd_partition edosk7760_nor_flash_partitions[] = {
 	}, {
 		.name = "fs",
 		.offset = MTDPART_OFS_APPEND,
-		.size = SZ_26M,
+		.size = (26 << 20),
 	}, {
 		.name = "other",
 		.offset = MTDPART_OFS_APPEND,
@@ -99,8 +98,8 @@ static struct resource sh7760_i2c1_res[] = {
 		.end	= SH7760_I2C1_MMIOEND,
 		.flags	= IORESOURCE_MEM,
 	},{
-		.start	= SH7760_I2C1_IRQ,
-		.end	= SH7760_I2C1_IRQ,
+		.start	= evt2irq(0x9e0),
+		.end	= evt2irq(0x9e0),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -122,8 +121,8 @@ static struct resource sh7760_i2c0_res[] = {
 		.end	= SH7760_I2C0_MMIOEND,
 		.flags	= IORESOURCE_MEM,
 	}, {
-		.start	= SH7760_I2C0_IRQ,
-		.end	= SH7760_I2C0_IRQ,
+		.start	= evt2irq(0x9c0),
+		.end	= evt2irq(0x9c0),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -150,8 +149,8 @@ static struct resource smc91x_res[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= ETHERNET_IRQ,
-		.end	= ETHERNET_IRQ,
+		.start	= evt2irq(0x2a0),
+		.end	= evt2irq(0x2a0),
 		.flags	= IORESOURCE_IRQ ,
 	}
 };
@@ -182,12 +181,11 @@ static int __init init_edosk7760_devices(void)
 	return platform_add_devices(edosk7760_devices,
 				    ARRAY_SIZE(edosk7760_devices));
 }
-__initcall(init_edosk7760_devices);
+device_initcall(init_edosk7760_devices);
 
 /*
  * The Machine Vector
  */
 struct sh_machine_vector mv_edosk7760 __initmv = {
 	.mv_name	= "EDOSK7760",
-	.mv_nr_irqs	= 128,
 };

@@ -922,7 +922,7 @@ do {									\
 #define write_c0_config7(val)	__write_32bit_c0_register($16, 7, val)
 
 /*
- * The WatchLo register.  There may be upto 8 of them.
+ * The WatchLo register.  There may be up to 8 of them.
  */
 #define read_c0_watchlo0()	__read_ulong_c0_register($18, 0)
 #define read_c0_watchlo1()	__read_ulong_c0_register($18, 1)
@@ -942,7 +942,7 @@ do {									\
 #define write_c0_watchlo7(val)	__write_ulong_c0_register($18, 7, val)
 
 /*
- * The WatchHi register.  There may be upto 8 of them.
+ * The WatchHi register.  There may be up to 8 of them.
  */
 #define read_c0_watchhi0()	__read_32bit_c0_register($19, 0)
 #define read_c0_watchhi1()	__read_32bit_c0_register($19, 1)
@@ -1006,18 +1006,26 @@ do {									\
 #define write_c0_perfctrl0(val)	__write_32bit_c0_register($25, 0, val)
 #define read_c0_perfcntr0()	__read_32bit_c0_register($25, 1)
 #define write_c0_perfcntr0(val)	__write_32bit_c0_register($25, 1, val)
+#define read_c0_perfcntr0_64()	__read_64bit_c0_register($25, 1)
+#define write_c0_perfcntr0_64(val) __write_64bit_c0_register($25, 1, val)
 #define read_c0_perfctrl1()	__read_32bit_c0_register($25, 2)
 #define write_c0_perfctrl1(val)	__write_32bit_c0_register($25, 2, val)
 #define read_c0_perfcntr1()	__read_32bit_c0_register($25, 3)
 #define write_c0_perfcntr1(val)	__write_32bit_c0_register($25, 3, val)
+#define read_c0_perfcntr1_64()	__read_64bit_c0_register($25, 3)
+#define write_c0_perfcntr1_64(val) __write_64bit_c0_register($25, 3, val)
 #define read_c0_perfctrl2()	__read_32bit_c0_register($25, 4)
 #define write_c0_perfctrl2(val)	__write_32bit_c0_register($25, 4, val)
 #define read_c0_perfcntr2()	__read_32bit_c0_register($25, 5)
 #define write_c0_perfcntr2(val)	__write_32bit_c0_register($25, 5, val)
+#define read_c0_perfcntr2_64()	__read_64bit_c0_register($25, 5)
+#define write_c0_perfcntr2_64(val) __write_64bit_c0_register($25, 5, val)
 #define read_c0_perfctrl3()	__read_32bit_c0_register($25, 6)
 #define write_c0_perfctrl3(val)	__write_32bit_c0_register($25, 6, val)
 #define read_c0_perfcntr3()	__read_32bit_c0_register($25, 7)
 #define write_c0_perfcntr3(val)	__write_32bit_c0_register($25, 7, val)
+#define read_c0_perfcntr3_64()	__read_64bit_c0_register($25, 7)
+#define write_c0_perfcntr3_64(val) __write_64bit_c0_register($25, 7, val)
 
 /* RM9000 PerfCount performance counter register */
 #define read_c0_perfcount()	__read_64bit_c0_register($25, 0)
@@ -1098,7 +1106,7 @@ do {									\
 #define read_c0_brcm_reset()		__read_32bit_c0_register($22, 5)
 #define write_c0_brcm_reset(val)	__write_32bit_c0_register($22, 5, val)
 
-/* BMIPS4380 */
+/* BMIPS43xx */
 #define read_c0_brcm_cmt_intr()		__read_32bit_c0_register($22, 1)
 #define write_c0_brcm_cmt_intr(val)	__write_32bit_c0_register($22, 1, val)
 
@@ -1659,6 +1667,13 @@ __BUILD_SET_C0(config)
 __BUILD_SET_C0(intcontrol)
 __BUILD_SET_C0(intctl)
 __BUILD_SET_C0(srsmap)
+__BUILD_SET_C0(brcm_config_0)
+__BUILD_SET_C0(brcm_bus_pll)
+__BUILD_SET_C0(brcm_reset)
+__BUILD_SET_C0(brcm_cmt_intr)
+__BUILD_SET_C0(brcm_cmt_ctrl)
+__BUILD_SET_C0(brcm_config)
+__BUILD_SET_C0(brcm_mode)
 
 #endif /* !__ASSEMBLY__ */
 

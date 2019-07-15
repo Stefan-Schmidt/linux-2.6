@@ -3,14 +3,14 @@ config DEFCONFIG_LIST
 	option defconfig_list
 	default "arch/$ARCH/defconfig"
 
-# UML uses the generic IRQ subsystem
-config GENERIC_HARDIRQS
-	bool
-	default y
-
 config UML
 	bool
 	default y
+	select HAVE_GENERIC_HARDIRQS
+	select GENERIC_IRQ_SHOW
+	select GENERIC_CPU_DEVICES
+	select GENERIC_IO
+	select GENERIC_CLOCKEVENTS
 
 config MMU
 	bool
@@ -52,15 +52,6 @@ config GENERIC_BUG
 	bool
 	default y
 	depends on BUG
-
-config GENERIC_CLOCKEVENTS
-	bool
-	default y
-
-# Used in kernel/irq/manage.c and include/linux/irq.h
-config IRQ_RELEASE_METHOD
-	bool
-	default y
 
 config HZ
 	int

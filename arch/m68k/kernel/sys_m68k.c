@@ -27,7 +27,10 @@
 #include <asm/traps.h>
 #include <asm/page.h>
 #include <asm/unistd.h>
-#include <linux/elf.h>
+#include <asm/cacheflush.h>
+
+#ifdef CONFIG_MMU
+
 #include <asm/tlb.h>
 
 asmlinkage int do_page_fault(struct pt_regs *regs, unsigned long address,
@@ -447,6 +450,100 @@ out:
 	return ret;
 }
 
+/* This syscall gets its arguments in A0 (mem), D2 (oldval) and
+   D1 (newval).  */
+asmlinkage int
+sys_atomic_cmpxchg_32(unsigned long newval, int oldval, int d3, int d4, int d5,
+		      unsigned long __user * mem)
+{
+	/* This was borrowed from ARM's implementation.  */
+	for (;;) {
+		struct mm_struct *mm = current->mm;
+		pgd_t *pgd;
+		pmd_t *pmd;
+		pte_t *pte;
+		spinlock_t *ptl;
+		unsigned long mem_value;
+
+		down_read(&mm->mmap_sem);
+		pgd = pgd_offset(mm, (unsigned long)mem);
+		if (!pgd_present(*pgd))
+			goto bad_access;
+		pmd = pmd_offset(pgd, (unsigned long)mem);
+		if (!pmd_present(*pmd))
+			goto bad_access;
+		pte = pte_offset_map_lock(mm, pmd, (unsigned long)mem, &ptl);
+		if (!pte_present(*pte) || !pte_dirty(*pte)
+		    || !pte_write(*pte)) {
+			pte_unmap_unlock(pte, ptl);
+			goto bad_access;
+		}
+
+		/*
+		 * No need to check for EFAULT; we know that the page is
+		 * present and writable.
+		 */
+		__get_user(mem_value, mem);
+		if (mem_value == oldval)
+			__put_user(newval, mem);
+
+		pte_unmap_unlock(pte, ptl);
+		up_read(&mm->mmap_sem);
+		return mem_value;
+
+	      bad_access:
+		up_read(&mm->mmap_sem);
+		/* This is not necessarily a bad access, we can get here if
+		   a memory we're trying to write to should be copied-on-write.
+		   Make the kernel do the necessary page stuff, then re-iterate.
+		   Simulate a write access fault to do that.  */
+		{
+			/* The first argument of the function corresponds to
+			   D1, which is the first field of struct pt_regs.  */
+			struct pt_regs *fp = (struct pt_regs *)&newval;
+
+			/* '3' is an RMW flag.  */
+			if (do_page_fault(fp, (unsigned long)mem, 3))
+				/* If the do_page_fault() failed, we don't
+				   have anything meaningful to return.
+				   There should be a SIGSEGV pending for
+				   the process.  */
+				return 0xdeadbeef;
+		}
+	}
+}
+
+#else
+
+/* sys_cacheflush -- flush (part of) the processor cache.  */
+asmlinkage int
+sys_cacheflush (unsigned long addr, int scope, int cache, unsigned long len)
+{
+	flush_cache_all();
+	return 0;
+}
+
+/* This syscall gets its arguments in A0 (mem), D2 (oldval) and
+   D1 (newval).  */
+asmlinkage int
+sys_atomic_cmpxchg_32(unsigned long newval, int oldval, int d3, int d4, int d5,
+		      unsigned long __user * mem)
+{
+	struct mm_struct *mm = current->mm;
+	unsigned long mem_value;
+
+	down_read(&mm->mmap_sem);
+
+	mem_value = *mem;
+	if (mem_value == oldval)
+		*mem = newval;
+
+	up_read(&mm->mmap_sem);
+	return mem_value;
+}
+
+#endif /* CONFIG_MMU */
+
 asmlinkage int sys_getpagesize(void)
 {
 	return PAGE_SIZE;
@@ -478,65 +575,6 @@ asmlinkage int sys_set_thread_area(unsigned long tp)
 {
 	current_thread_info()->tp_value = tp;
 	return 0;
-}
-
-/* This syscall gets its arguments in A0 (mem), D2 (oldval) and
-   D1 (newval).  */
-asmlinkage int
-sys_atomic_cmpxchg_32(unsigned long newval, int oldval, int d3, int d4, int d5,
-		      unsigned long __user * mem)
-{
-	/* This was borrowed from ARM's implementation.  */
-	for (;;) {
-		struct mm_struct *mm = current->mm;
-		pgd_t *pgd;
-		pmd_t *pmd;
-		pte_t *pte;
-		spinlock_t *ptl;
-		unsigned long mem_value;
-
-		down_read(&mm->mmap_sem);
-		pgd = pgd_offset(mm, (unsigned long)mem);
-		if (!pgd_present(*pgd))
-			goto bad_access;
-		pmd = pmd_offset(pgd, (unsigned long)mem);
-		if (!pmd_present(*pmd))
-			goto bad_access;
-		pte = pte_offset_map_lock(mm, pmd, (unsigned long)mem, &ptl);
-		if (!pte_present(*pte) || !pte_dirty(*pte)
-		    || !pte_write(*pte)) {
-			pte_unmap_unlock(pte, ptl);
-			goto bad_access;
-		}
-
-		mem_value = *mem;
-		if (mem_value == oldval)
-			*mem = newval;
-
-		pte_unmap_unlock(pte, ptl);
-		up_read(&mm->mmap_sem);
-		return mem_value;
-
-	      bad_access:
-		up_read(&mm->mmap_sem);
-		/* This is not necessarily a bad access, we can get here if
-		   a memory we're trying to write to should be copied-on-write.
-		   Make the kernel do the necessary page stuff, then re-iterate.
-		   Simulate a write access fault to do that.  */
-		{
-			/* The first argument of the function corresponds to
-			   D1, which is the first field of struct pt_regs.  */
-			struct pt_regs *fp = (struct pt_regs *)&newval;
-
-			/* '3' is an RMW flag.  */
-			if (do_page_fault(fp, (unsigned long)mem, 3))
-				/* If the do_page_fault() failed, we don't
-				   have anything meaningful to return.
-				   There should be a SIGSEGV pending for
-				   the process.  */
-				return 0xdeadbeef;
-		}
-	}
 }
 
 asmlinkage int sys_atomic_barrier(void)

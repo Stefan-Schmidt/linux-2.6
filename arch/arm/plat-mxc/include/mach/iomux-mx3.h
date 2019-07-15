@@ -112,12 +112,12 @@ enum iomux_gp_func {
  * 	- setups the iomux according to the configuration
  * 	- if the pin is configured as a GPIO, we claim it through kernel gpiolib
  */
-int mxc_iomux_alloc_pin(const unsigned int pin, const char *label);
+int mxc_iomux_alloc_pin(unsigned int pin, const char *label);
 /*
  * setups mutliple pins
  * convenient way to call the above function with tables
  */
-int mxc_iomux_setup_multiple_pins(unsigned int *pin_list, unsigned count,
+int mxc_iomux_setup_multiple_pins(const unsigned int *pin_list, unsigned count,
 		const char *label);
 
 /*
@@ -126,12 +126,12 @@ int mxc_iomux_setup_multiple_pins(unsigned int *pin_list, unsigned count,
  * 	- frees the GPIO if the pin was configured as GPIO
  * 	- DOES NOT reconfigure the IOMUX in its reset state
  */
-void mxc_iomux_release_pin(const unsigned int pin);
+void mxc_iomux_release_pin(unsigned int pin);
 /*
  * releases multiple pins
  * convenvient way to call the above function with tables
  */
-void mxc_iomux_release_multiple_pins(unsigned int *pin_list, int count);
+void mxc_iomux_release_multiple_pins(const unsigned int *pin_list, int count);
 
 /*
  * This function enables/disables the general purpose function for a particular
@@ -160,9 +160,6 @@ int mxc_iomux_mode(unsigned int pin_mode);
 
 #define IOMUX_TO_GPIO(iomux_pin) \
 	((iomux_pin & IOMUX_GPIONUM_MASK) >> IOMUX_GPIONUM_SHIFT)
-#define IOMUX_TO_IRQ(iomux_pin) \
-	(((iomux_pin & IOMUX_GPIONUM_MASK) >> IOMUX_GPIONUM_SHIFT) + \
-	MXC_GPIO_IRQ_START)
 
 /*
  * This enumeration is constructed based on the Section
@@ -735,6 +732,7 @@ enum iomux_pins {
 #define MX31_PIN_KEY_COL5_KEY_COL5	IOMUX_MODE(MX31_PIN_KEY_COL5, IOMUX_CONFIG_FUNC)
 #define MX31_PIN_KEY_COL6_KEY_COL6	IOMUX_MODE(MX31_PIN_KEY_COL6, IOMUX_CONFIG_FUNC)
 #define MX31_PIN_KEY_COL7_KEY_COL7	IOMUX_MODE(MX31_PIN_KEY_COL7, IOMUX_CONFIG_FUNC)
+#define MX31_PIN_WATCHDOG_RST__WATCHDOG_RST	IOMUX_MODE(MX31_PIN_WATCHDOG_RST, IOMUX_CONFIG_FUNC)
 
 
 /*

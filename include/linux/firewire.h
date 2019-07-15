@@ -14,11 +14,8 @@
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <asm/byteorder.h>
-
-#define fw_notify(s, args...) printk(KERN_NOTICE KBUILD_MODNAME ": " s, ## args)
-#define fw_error(s, args...) printk(KERN_ERR KBUILD_MODNAME ": " s, ## args)
 
 #define CSR_REGISTER_BASE		0xfffff0000000ULL
 
@@ -42,6 +39,10 @@
 #define CSR_BROADCAST_CHANNEL		0x234
 #define CSR_CONFIG_ROM			0x400
 #define CSR_CONFIG_ROM_END		0x800
+#define CSR_OMPR			0x900
+#define CSR_OPCR(i)			(0x904 + (i) * 4)
+#define CSR_IMPR			0x980
+#define CSR_IPCR(i)			(0x984 + (i) * 4)
 #define CSR_FCP_COMMAND			0xB00
 #define CSR_FCP_RESPONSE		0xD00
 #define CSR_FCP_END			0xF00
@@ -89,7 +90,7 @@ struct fw_card {
 	int current_tlabel;
 	u64 tlabel_mask;
 	struct list_head transaction_list;
-	unsigned long reset_jiffies;
+	u64 reset_jiffies;
 
 	u32 split_timeout_hi;
 	u32 split_timeout_lo;
@@ -121,7 +122,6 @@ struct fw_card {
 	struct delayed_work bm_work; /* bus manager job */
 	int bm_retries;
 	int bm_generation;
-	__be32 bm_transaction_data[2];
 	int bm_node_id;
 	bool bm_abdicate;
 
@@ -135,10 +135,24 @@ struct fw_card {
 	__be32 maint_utility_register;
 };
 
+static inline struct fw_card *fw_card_get(struct fw_card *card)
+{
+	kref_get(&card->kref);
+
+	return card;
+}
+
+void fw_card_release(struct kref *kref);
+
+static inline void fw_card_put(struct fw_card *card)
+{
+	kref_put(&card->kref, fw_card_release);
+}
+
 struct fw_attribute_group {
 	struct attribute_group *groups[2];
 	struct attribute_group group;
-	struct attribute *attrs[12];
+	struct attribute *attrs[13];
 };
 
 enum fw_device_state {
@@ -198,18 +212,6 @@ static inline struct fw_device *fw_device(struct device *dev)
 static inline int fw_device_is_shutdown(struct fw_device *device)
 {
 	return atomic_read(&device->state) == FW_DEVICE_SHUTDOWN;
-}
-
-static inline struct fw_device *fw_device_get(struct fw_device *device)
-{
-	get_device(&device->device);
-
-	return device;
-}
-
-static inline void fw_device_put(struct fw_device *device)
-{
-	put_device(&device->device);
 }
 
 int fw_device_enable_phys_dma(struct fw_device *device);
@@ -302,9 +304,9 @@ struct fw_packet {
 struct fw_transaction {
 	int node_id; /* The generation is implied; it is always the current. */
 	int tlabel;
-	int timestamp;
 	struct list_head link;
 	struct fw_card *card;
+	bool is_split_transaction;
 	struct timer_list split_timeout_timer;
 
 	struct fw_packet packet;
@@ -319,7 +321,7 @@ struct fw_transaction {
 
 struct fw_address_handler {
 	u64 offset;
-	size_t length;
+	u64 length;
 	fw_address_callback_t address_callback;
 	void *callback_data;
 	struct list_head link;
@@ -337,6 +339,7 @@ int fw_core_add_address_handler(struct fw_address_handler *handler,
 void fw_core_remove_address_handler(struct fw_address_handler *handler);
 void fw_send_response(struct fw_card *card,
 		      struct fw_request *request, int rcode);
+int fw_get_request_speed(struct fw_request *request);
 void fw_send_request(struct fw_card *card, struct fw_transaction *t,
 		     int tcode, int destination_id, int generation, int speed,
 		     unsigned long long offset, void *payload, size_t length,
@@ -346,6 +349,7 @@ int fw_cancel_transaction(struct fw_card *card,
 int fw_run_transaction(struct fw_card *card, int tcode, int destination_id,
 		       int generation, int speed, unsigned long long offset,
 		       void *payload, size_t length);
+const char *fw_rcode_string(int rcode);
 
 static inline int fw_stream_packet_destination_id(int tag, int channel, int sy)
 {
@@ -403,6 +407,7 @@ struct fw_iso_buffer {
 	enum dma_data_direction direction;
 	struct page **pages;
 	int page_count;
+	int page_count_mapped;
 };
 
 int fw_iso_buffer_init(struct fw_iso_buffer *buffer, struct fw_card *card,
@@ -437,9 +442,16 @@ int fw_iso_context_queue(struct fw_iso_context *ctx,
 			 struct fw_iso_packet *packet,
 			 struct fw_iso_buffer *buffer,
 			 unsigned long payload);
+void fw_iso_context_queue_flush(struct fw_iso_context *ctx);
+int fw_iso_context_flush_completions(struct fw_iso_context *ctx);
 int fw_iso_context_start(struct fw_iso_context *ctx,
 			 int cycle, int sync, int tags);
 int fw_iso_context_stop(struct fw_iso_context *ctx);
 void fw_iso_context_destroy(struct fw_iso_context *ctx);
+void fw_iso_resource_manage(struct fw_card *card, int generation,
+			    u64 channels_mask, int *channel, int *bandwidth,
+			    bool allocate);
+
+extern struct workqueue_struct *fw_workqueue;
 
 #endif /* _LINUX_FIREWIRE_H */

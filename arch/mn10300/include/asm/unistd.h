@@ -349,15 +349,15 @@
 #define __NR_rt_tgsigqueueinfo	336
 #define __NR_perf_event_open	337
 #define __NR_recvmmsg		338
+#define __NR_setns		339
 
 #ifdef __KERNEL__
 
-#define NR_syscalls 339
+#define NR_syscalls 340
 
 /*
  * specify the deprecated syscalls we want to support on this arch
  */
-#define __ARCH_WANT_IPC_PARSE_VERSION
 #define __ARCH_WANT_OLD_READDIR
 #define __ARCH_WANT_OLD_STAT
 #define __ARCH_WANT_STAT64

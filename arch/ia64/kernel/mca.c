@@ -92,7 +92,6 @@
 #include <asm/meminit.h>
 #include <asm/page.h>
 #include <asm/ptrace.h>
-#include <asm/system.h>
 #include <asm/sal.h>
 #include <asm/mca.h>
 #include <asm/kexec.h>
@@ -581,6 +580,8 @@ ia64_mca_cpe_int_handler (int cpe_irq, void *arg)
 out:
 	/* Get the CPE error record and log it */
 	ia64_mca_log_sal_error_record(SAL_INFO_TYPE_CPE);
+
+	local_irq_disable();
 
 	return IRQ_HANDLED;
 }
@@ -1445,6 +1446,8 @@ out:
 	/* Get the CMC error record and log it */
 	ia64_mca_log_sal_error_record(SAL_INFO_TYPE_CMC);
 
+	local_irq_disable();
+
 	return IRQ_HANDLED;
 }
 
@@ -1511,7 +1514,8 @@ static void
 ia64_mca_cmc_poll (unsigned long dummy)
 {
 	/* Trigger a CMC interrupt cascade  */
-	platform_send_ipi(first_cpu(cpu_online_map), IA64_CMCP_VECTOR, IA64_IPI_DM_INT, 0);
+	platform_send_ipi(cpumask_first(cpu_online_mask), IA64_CMCP_VECTOR,
+							IA64_IPI_DM_INT, 0);
 }
 
 /*
@@ -1587,7 +1591,8 @@ static void
 ia64_mca_cpe_poll (unsigned long dummy)
 {
 	/* Trigger a CPE interrupt cascade  */
-	platform_send_ipi(first_cpu(cpu_online_map), IA64_CPEP_VECTOR, IA64_IPI_DM_INT, 0);
+	platform_send_ipi(cpumask_first(cpu_online_mask), IA64_CPEP_VECTOR,
+							IA64_IPI_DM_INT, 0);
 }
 
 #endif /* CONFIG_ACPI */
@@ -1859,7 +1864,8 @@ ia64_mca_cpu_init(void *cpu_data)
 			data = mca_bootmem();
 			first_time = 0;
 		} else
-			data = __get_free_pages(GFP_KERNEL, get_order(sz));
+			data = (void *)__get_free_pages(GFP_KERNEL,
+							get_order(sz));
 		if (!data)
 			panic("Could not allocate MCA memory for cpu %d\n",
 					cpu);
@@ -2122,7 +2128,6 @@ ia64_mca_late_init(void)
 	cpe_poll_timer.function = ia64_mca_cpe_poll;
 
 	{
-		struct irq_desc *desc;
 		unsigned int irq;
 
 		if (cpe_vector >= 0) {
@@ -2130,8 +2135,7 @@ ia64_mca_late_init(void)
 			irq = local_vector_to_irq(cpe_vector);
 			if (irq > 0) {
 				cpe_poll_enabled = 0;
-				desc = irq_desc + irq;
-				desc->status |= IRQ_PER_CPU;
+				irq_set_status_flags(irq, IRQ_PER_CPU);
 				setup_irq(irq, &mca_cpe_irqaction);
 				ia64_cpe_irq = irq;
 				ia64_mca_register_cpev(cpe_vector);

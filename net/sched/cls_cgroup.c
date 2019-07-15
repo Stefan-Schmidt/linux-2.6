@@ -22,25 +22,6 @@
 #include <net/sock.h>
 #include <net/cls_cgroup.h>
 
-static struct cgroup_subsys_state *cgrp_create(struct cgroup_subsys *ss,
-					       struct cgroup *cgrp);
-static void cgrp_destroy(struct cgroup_subsys *ss, struct cgroup *cgrp);
-static int cgrp_populate(struct cgroup_subsys *ss, struct cgroup *cgrp);
-
-struct cgroup_subsys net_cls_subsys = {
-	.name		= "net_cls",
-	.create		= cgrp_create,
-	.destroy	= cgrp_destroy,
-	.populate	= cgrp_populate,
-#ifdef CONFIG_NET_CLS_CGROUP
-	.subsys_id	= net_cls_subsys_id,
-#else
-#define net_cls_subsys_id net_cls_subsys.subsys_id
-#endif
-	.module		= THIS_MODULE,
-};
-
-
 static inline struct cgroup_cls_state *cgrp_cls_state(struct cgroup *cgrp)
 {
 	return container_of(cgroup_subsys_state(cgrp, net_cls_subsys_id),
@@ -53,12 +34,12 @@ static inline struct cgroup_cls_state *task_cls_state(struct task_struct *p)
 			    struct cgroup_cls_state, css);
 }
 
-static struct cgroup_subsys_state *cgrp_create(struct cgroup_subsys *ss,
-						 struct cgroup *cgrp)
+static struct cgroup_subsys_state *cgrp_create(struct cgroup *cgrp)
 {
 	struct cgroup_cls_state *cs;
 
-	if (!(cs = kzalloc(sizeof(*cs), GFP_KERNEL)))
+	cs = kzalloc(sizeof(*cs), GFP_KERNEL);
+	if (!cs)
 		return ERR_PTR(-ENOMEM);
 
 	if (cgrp->parent)
@@ -67,7 +48,7 @@ static struct cgroup_subsys_state *cgrp_create(struct cgroup_subsys *ss,
 	return &cs->css;
 }
 
-static void cgrp_destroy(struct cgroup_subsys *ss, struct cgroup *cgrp)
+static void cgrp_destroy(struct cgroup *cgrp)
 {
 	kfree(cgrp_cls_state(cgrp));
 }
@@ -89,21 +70,27 @@ static struct cftype ss_files[] = {
 		.read_u64 = read_classid,
 		.write_u64 = write_classid,
 	},
+	{ }	/* terminate */
 };
 
-static int cgrp_populate(struct cgroup_subsys *ss, struct cgroup *cgrp)
-{
-	return cgroup_add_files(cgrp, ss, ss_files, ARRAY_SIZE(ss_files));
-}
+struct cgroup_subsys net_cls_subsys = {
+	.name		= "net_cls",
+	.create		= cgrp_create,
+	.destroy	= cgrp_destroy,
+#ifdef CONFIG_NET_CLS_CGROUP
+	.subsys_id	= net_cls_subsys_id,
+#endif
+	.base_cftypes	= ss_files,
+	.module		= THIS_MODULE,
+};
 
-struct cls_cgroup_head
-{
+struct cls_cgroup_head {
 	u32			handle;
 	struct tcf_exts		exts;
 	struct tcf_ematch_tree	ematches;
 };
 
-static int cls_cgroup_classify(struct sk_buff *skb, struct tcf_proto *tp,
+static int cls_cgroup_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 			       struct tcf_result *res)
 {
 	struct cls_cgroup_head *head = tp->root;
@@ -168,7 +155,7 @@ static int cls_cgroup_change(struct tcf_proto *tp, unsigned long base,
 			     u32 handle, struct nlattr **tca,
 			     unsigned long *arg)
 {
-	struct nlattr *tb[TCA_CGROUP_MAX+1];
+	struct nlattr *tb[TCA_CGROUP_MAX + 1];
 	struct cls_cgroup_head *head = tp->root;
 	struct tcf_ematch_tree t;
 	struct tcf_exts e;

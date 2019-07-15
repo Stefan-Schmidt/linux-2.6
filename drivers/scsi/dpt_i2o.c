@@ -423,7 +423,7 @@ static int adpt_slave_configure(struct scsi_device * device)
 	return 0;
 }
 
-static int adpt_queue(struct scsi_cmnd * cmd, void (*done) (struct scsi_cmnd *))
+static int adpt_queue_lck(struct scsi_cmnd * cmd, void (*done) (struct scsi_cmnd *))
 {
 	adpt_hba* pHba = NULL;
 	struct adpt_device* pDev = NULL;	/* dpt per device information */
@@ -490,6 +490,8 @@ static int adpt_queue(struct scsi_cmnd * cmd, void (*done) (struct scsi_cmnd *))
 	}
 	return adpt_scsi_to_i2o(pHba, cmd, pDev);
 }
+
+static DEF_SCSI_QCMD(adpt_queue)
 
 static int adpt_bios_param(struct scsi_device *sdev, struct block_device *dev,
 		sector_t capacity, int geom[])
@@ -778,7 +780,7 @@ static int adpt_abort(struct scsi_cmnd * cmd)
 		return FAILED;
 	}
 	pHba = (adpt_hba*) cmd->device->host->hostdata[0];
-	printk(KERN_INFO"%s: Trying to Abort cmd=%ld\n",pHba->name, cmd->serial_number);
+	printk(KERN_INFO"%s: Trying to Abort\n",pHba->name);
 	if ((dptdevice = (void*) (cmd->device->hostdata)) == NULL) {
 		printk(KERN_ERR "%s: Unable to abort: No device in cmnd\n",pHba->name);
 		return FAILED;
@@ -800,10 +802,10 @@ static int adpt_abort(struct scsi_cmnd * cmd)
 			printk(KERN_INFO"%s: Abort cmd not supported\n",pHba->name);
 			return FAILED;
 		}
-		printk(KERN_INFO"%s: Abort cmd=%ld failed.\n",pHba->name, cmd->serial_number);
+		printk(KERN_INFO"%s: Abort failed.\n",pHba->name);
 		return FAILED;
 	} 
-	printk(KERN_INFO"%s: Abort cmd=%ld complete.\n",pHba->name, cmd->serial_number);
+	printk(KERN_INFO"%s: Abort complete.\n",pHba->name);
 	return SUCCESS;
 }
 

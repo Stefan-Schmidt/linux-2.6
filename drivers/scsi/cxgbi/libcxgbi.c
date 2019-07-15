@@ -25,6 +25,7 @@
 #include <net/dst.h>
 #include <net/route.h>
 #include <linux/inetdevice.h>	/* ip_dev_find */
+#include <linux/module.h>
 #include <net/tcp.h>
 
 static unsigned int dbg_level;
@@ -450,27 +451,15 @@ static struct cxgbi_sock *cxgbi_sock_create(struct cxgbi_device *cdev)
 	return csk;
 }
 
-static struct rtable *find_route_ipv4(__be32 saddr, __be32 daddr,
-					__be16 sport, __be16 dport, u8 tos)
+static struct rtable *find_route_ipv4(struct flowi4 *fl4,
+				      __be32 saddr, __be32 daddr,
+				      __be16 sport, __be16 dport, u8 tos)
 {
 	struct rtable *rt;
-	struct flowi fl = {
-		.oif = 0,
-		.nl_u = {
-			.ip4_u = {
-				.daddr = daddr,
-				.saddr = saddr,
-				.tos = tos }
-			},
-		.proto = IPPROTO_TCP,
-		.uli_u = {
-			.ports = {
-				.sport = sport,
-				.dport = dport }
-			}
-	};
 
-	if (ip_route_output_flow(&init_net, &rt, &fl, NULL, 0))
+	rt = ip_route_output_ports(&init_net, fl4, NULL, daddr, saddr,
+				   dport, sport, IPPROTO_TCP, tos, 0);
+	if (IS_ERR(rt))
 		return NULL;
 
 	return rt;
@@ -483,6 +472,8 @@ static struct cxgbi_sock *cxgbi_check_route(struct sockaddr *dst_addr)
 	struct net_device *ndev;
 	struct cxgbi_device *cdev;
 	struct rtable *rt = NULL;
+	struct neighbour *n;
+	struct flowi4 fl4;
 	struct cxgbi_sock *csk = NULL;
 	unsigned int mtu = 0;
 	int port = 0xFFFF;
@@ -495,7 +486,7 @@ static struct cxgbi_sock *cxgbi_check_route(struct sockaddr *dst_addr)
 		goto err_out;
 	}
 
-	rt = find_route_ipv4(0, daddr->sin_addr.s_addr, 0, daddr->sin_port, 0);
+	rt = find_route_ipv4(&fl4, 0, daddr->sin_addr.s_addr, 0, daddr->sin_port, 0);
 	if (!rt) {
 		pr_info("no route to ipv4 0x%x, port %u.\n",
 			daddr->sin_addr.s_addr, daddr->sin_port);
@@ -503,21 +494,26 @@ static struct cxgbi_sock *cxgbi_check_route(struct sockaddr *dst_addr)
 		goto err_out;
 	}
 	dst = &rt->dst;
-	ndev = dst->neighbour->dev;
+	n = dst_neigh_lookup(dst, &daddr->sin_addr.s_addr);
+	if (!n) {
+		err = -ENODEV;
+		goto rel_rt;
+	}
+	ndev = n->dev;
 
 	if (rt->rt_flags & (RTCF_MULTICAST | RTCF_BROADCAST)) {
 		pr_info("multi-cast route %pI4, port %u, dev %s.\n",
 			&daddr->sin_addr.s_addr, ntohs(daddr->sin_port),
 			ndev->name);
 		err = -ENETUNREACH;
-		goto rel_rt;
+		goto rel_neigh;
 	}
 
 	if (ndev->flags & IFF_LOOPBACK) {
 		ndev = ip_dev_find(&init_net, daddr->sin_addr.s_addr);
 		mtu = ndev->mtu;
 		pr_info("rt dev %s, loopback -> %s, mtu %u.\n",
-			dst->neighbour->dev->name, ndev->name, mtu);
+			n->dev->name, ndev->name, mtu);
 	}
 
 	cdev = cxgbi_device_find_by_netdev(ndev, &port);
@@ -525,7 +521,7 @@ static struct cxgbi_sock *cxgbi_check_route(struct sockaddr *dst_addr)
 		pr_info("dst %pI4, %s, NOT cxgbi device.\n",
 			&daddr->sin_addr.s_addr, ndev->name);
 		err = -ENETUNREACH;
-		goto rel_rt;
+		goto rel_neigh;
 	}
 	log_debug(1 << CXGBI_DBG_SOCK,
 		"route to %pI4 :%u, ndev p#%d,%s, cdev 0x%p.\n",
@@ -535,7 +531,7 @@ static struct cxgbi_sock *cxgbi_check_route(struct sockaddr *dst_addr)
 	csk = cxgbi_sock_create(cdev);
 	if (!csk) {
 		err = -ENOMEM;
-		goto rel_rt;
+		goto rel_neigh;
 	}
 	csk->cdev = cdev;
 	csk->port_id = port;
@@ -543,9 +539,14 @@ static struct cxgbi_sock *cxgbi_check_route(struct sockaddr *dst_addr)
 	csk->dst = dst;
 	csk->daddr.sin_addr.s_addr = daddr->sin_addr.s_addr;
 	csk->daddr.sin_port = daddr->sin_port;
-	csk->saddr.sin_addr.s_addr = rt->rt_src;
+	csk->daddr.sin_family = daddr->sin_family;
+	csk->saddr.sin_addr.s_addr = fl4.saddr;
+	neigh_release(n);
 
 	return csk;
+
+rel_neigh:
+	neigh_release(n);
 
 rel_rt:
 	ip_rt_put(rt);
@@ -825,7 +826,7 @@ unsigned int cxgbi_sock_select_mss(struct cxgbi_sock *csk, unsigned int pmtu)
 	unsigned int idx;
 	struct dst_entry *dst = csk->dst;
 
-	csk->advmss = dst_metric(dst, RTAX_ADVMSS);
+	csk->advmss = dst_metric_advmss(dst);
 
 	if (csk->advmss > pmtu - 40)
 		csk->advmss = pmtu - 40;
@@ -1277,12 +1278,6 @@ static int ddp_tag_reserve(struct cxgbi_sock *csk, unsigned int tid,
 		return idx;
 	}
 
-	if (cdev->csk_ddp_alloc_gl_skb) {
-		err = cdev->csk_ddp_alloc_gl_skb(ddp, idx, npods, gfp);
-		if (err < 0)
-			goto unmark_entries;
-	}
-
 	tag = cxgbi_ddp_tag_base(tformat, sw_tag);
 	tag |= idx << PPOD_IDX_SHIFT;
 
@@ -1293,11 +1288,8 @@ static int ddp_tag_reserve(struct cxgbi_sock *csk, unsigned int tid,
 	hdr.page_offset = htonl(gl->offset);
 
 	err = cdev->csk_ddp_set(csk, &hdr, idx, npods, gl);
-	if (err < 0) {
-		if (cdev->csk_ddp_free_gl_skb)
-			cdev->csk_ddp_free_gl_skb(ddp, idx, npods);
+	if (err < 0)
 		goto unmark_entries;
-	}
 
 	ddp->idx_last = idx;
 	log_debug(1 << CXGBI_DBG_DDP,
@@ -1363,8 +1355,6 @@ static void ddp_destroy(struct kref *kref)
 					>> PPOD_PAGES_SHIFT;
 			pr_info("cdev 0x%p, ddp %d + %d.\n", cdev, i, npods);
 			kfree(gl);
-			if (cdev->csk_ddp_free_gl_skb)
-				cdev->csk_ddp_free_gl_skb(ddp, i, npods);
 			i += npods;
 		} else
 			i++;
@@ -1407,8 +1397,6 @@ int cxgbi_ddp_init(struct cxgbi_device *cdev,
 		return -ENOMEM;
 	}
 	ddp->gl_map = (struct cxgbi_gather_list **)(ddp + 1);
-	ddp->gl_skb = (struct sk_buff **)(((char *)ddp->gl_map) +
-				ppmax * sizeof(struct cxgbi_gather_list *));
 	cdev->ddp = ddp;
 
 	spin_lock_init(&ddp->map_lock);
@@ -1810,7 +1798,7 @@ static int sgl_seek_offset(struct scatterlist *sgl, unsigned int sgcnt,
 }
 
 static int sgl_read_to_frags(struct scatterlist *sg, unsigned int sgoffset,
-				unsigned int dlen, skb_frag_t *frags,
+				unsigned int dlen, struct page_frag *frags,
 				int frag_max)
 {
 	unsigned int datalen = dlen;
@@ -1837,7 +1825,7 @@ static int sgl_read_to_frags(struct scatterlist *sg, unsigned int sgoffset,
 		copy = min(datalen, sglen);
 		if (i && page == frags[i - 1].page &&
 		    sgoffset + sg->offset ==
-			frags[i - 1].page_offset + frags[i - 1].size) {
+			frags[i - 1].offset + frags[i - 1].size) {
 			frags[i - 1].size += copy;
 		} else {
 			if (i >= frag_max) {
@@ -1847,7 +1835,7 @@ static int sgl_read_to_frags(struct scatterlist *sg, unsigned int sgoffset,
 			}
 
 			frags[i].page = page;
-			frags[i].page_offset = sg->offset + sgoffset;
+			frags[i].offset = sg->offset + sgoffset;
 			frags[i].size = copy;
 			i++;
 		}
@@ -1884,8 +1872,9 @@ int cxgbi_conn_alloc_pdu(struct iscsi_task *task, u8 opcode)
 
 	tdata->skb = alloc_skb(cdev->skb_tx_rsvd + headroom, GFP_ATOMIC);
 	if (!tdata->skb) {
-		pr_warn("alloc skb %u+%u, opcode 0x%x failed.\n",
-			cdev->skb_tx_rsvd, headroom, opcode);
+		struct cxgbi_sock *csk = cconn->cep->csk;
+		struct net_device *ndev = cdev->ports[csk->port_id];
+		ndev->stats.tx_dropped++;
 		return -ENOMEM;
 	}
 
@@ -1908,13 +1897,16 @@ EXPORT_SYMBOL_GPL(cxgbi_conn_alloc_pdu);
 
 static inline void tx_skb_setmode(struct sk_buff *skb, int hcrc, int dcrc)
 {
-	u8 submode = 0;
+	if (hcrc || dcrc) {
+		u8 submode = 0;
 
-	if (hcrc)
-		submode |= 1;
-	if (dcrc)
-		submode |= 2;
-	cxgbi_skcb_ulp_mode(skb) = (ULP2_MODE_ISCSI << 4) | submode;
+		if (hcrc)
+			submode |= 1;
+		if (dcrc)
+			submode |= 2;
+		cxgbi_skcb_ulp_mode(skb) = (ULP2_MODE_ISCSI << 4) | submode;
+	} else
+		cxgbi_skcb_ulp_mode(skb) = 0;
 }
 
 int cxgbi_conn_init_pdu(struct iscsi_task *task, unsigned int offset,
@@ -1964,16 +1956,15 @@ int cxgbi_conn_init_pdu(struct iscsi_task *task, unsigned int offset,
 		if (tdata->nr_frags > MAX_SKB_FRAGS ||
 		    (padlen && tdata->nr_frags == MAX_SKB_FRAGS)) {
 			char *dst = skb->data + task->hdr_len;
-			skb_frag_t *frag = tdata->frags;
+			struct page_frag *frag = tdata->frags;
 
 			/* data fits in the skb's headroom */
 			for (i = 0; i < tdata->nr_frags; i++, frag++) {
-				char *src = kmap_atomic(frag->page,
-							KM_SOFTIRQ0);
+				char *src = kmap_atomic(frag->page);
 
-				memcpy(dst, src+frag->page_offset, frag->size);
+				memcpy(dst, src+frag->offset, frag->size);
 				dst += frag->size;
-				kunmap_atomic(src, KM_SOFTIRQ0);
+				kunmap_atomic(src);
 			}
 			if (padlen) {
 				memset(dst, 0, padlen);
@@ -1982,11 +1973,13 @@ int cxgbi_conn_init_pdu(struct iscsi_task *task, unsigned int offset,
 			skb_put(skb, count + padlen);
 		} else {
 			/* data fit into frag_list */
-			for (i = 0; i < tdata->nr_frags; i++)
-				get_page(tdata->frags[i].page);
-
-			memcpy(skb_shinfo(skb)->frags, tdata->frags,
-				sizeof(skb_frag_t) * tdata->nr_frags);
+			for (i = 0; i < tdata->nr_frags; i++) {
+				__skb_fill_page_desc(skb, i,
+						tdata->frags[i].page,
+						tdata->frags[i].offset,
+						tdata->frags[i].size);
+				skb_frag_ref(skb, i);
+			}
 			skb_shinfo(skb)->nr_frags = tdata->nr_frags;
 			skb->len += count;
 			skb->data_len += count;
@@ -2158,11 +2151,10 @@ int cxgbi_set_conn_param(struct iscsi_cls_conn *cls_conn,
 			enum iscsi_param param, char *buf, int buflen)
 {
 	struct iscsi_conn *conn = cls_conn->dd_data;
-	struct iscsi_session *session = conn->session;
 	struct iscsi_tcp_conn *tcp_conn = conn->dd_data;
 	struct cxgbi_conn *cconn = tcp_conn->dd_data;
 	struct cxgbi_sock *csk = cconn->cep->csk;
-	int value, err = 0;
+	int err;
 
 	log_debug(1 << CXGBI_DBG_ISCSI,
 		"cls_conn 0x%p, param %d, buf(%d) %s.\n",
@@ -2184,15 +2176,7 @@ int cxgbi_set_conn_param(struct iscsi_cls_conn *cls_conn,
 							conn->datadgst_en, 0);
 		break;
 	case ISCSI_PARAM_MAX_R2T:
-		sscanf(buf, "%d", &value);
-		if (value <= 0 || !is_power_of_2(value))
-			return -EINVAL;
-		if (session->max_r2t == value)
-			break;
-		iscsi_tcp_r2tpool_free(session);
-		err = iscsi_set_param(cls_conn, param, buf, buflen);
-		if (!err && iscsi_tcp_r2tpool_alloc(session))
-			return -ENOMEM;
+		return iscsi_tcp_set_max_r2t(conn, buf);
 	case ISCSI_PARAM_MAX_RECV_DLENGTH:
 		err = iscsi_set_param(cls_conn, param, buf, buflen);
 		if (!err)
@@ -2210,32 +2194,34 @@ int cxgbi_set_conn_param(struct iscsi_cls_conn *cls_conn,
 }
 EXPORT_SYMBOL_GPL(cxgbi_set_conn_param);
 
-int cxgbi_get_conn_param(struct iscsi_cls_conn *cls_conn,
-			enum iscsi_param param, char *buf)
+int cxgbi_get_ep_param(struct iscsi_endpoint *ep, enum iscsi_param param,
+		       char *buf)
 {
-	struct iscsi_conn *iconn = cls_conn->dd_data;
+	struct cxgbi_endpoint *cep = ep->dd_data;
+	struct cxgbi_sock *csk;
 	int len;
 
 	log_debug(1 << CXGBI_DBG_ISCSI,
-		"cls_conn 0x%p, param %d.\n", cls_conn, param);
+		"cls_conn 0x%p, param %d.\n", ep, param);
 
 	switch (param) {
 	case ISCSI_PARAM_CONN_PORT:
-		spin_lock_bh(&iconn->session->lock);
-		len = sprintf(buf, "%hu\n", iconn->portal_port);
-		spin_unlock_bh(&iconn->session->lock);
-		break;
 	case ISCSI_PARAM_CONN_ADDRESS:
-		spin_lock_bh(&iconn->session->lock);
-		len = sprintf(buf, "%s\n", iconn->portal_address);
-		spin_unlock_bh(&iconn->session->lock);
-		break;
+		if (!cep)
+			return -ENOTCONN;
+
+		csk = cep->csk;
+		if (!csk)
+			return -ENOTCONN;
+
+		return iscsi_conn_get_addr_param((struct sockaddr_storage *)
+						 &csk->daddr, param, buf);
 	default:
-		return iscsi_conn_get_param(cls_conn, param, buf);
+		return -ENOSYS;
 	}
 	return len;
 }
-EXPORT_SYMBOL_GPL(cxgbi_get_conn_param);
+EXPORT_SYMBOL_GPL(cxgbi_get_ep_param);
 
 struct iscsi_cls_conn *
 cxgbi_create_conn(struct iscsi_cls_session *cls_session, u32 cid)
@@ -2301,11 +2287,6 @@ int cxgbi_bind_conn(struct iscsi_cls_session *cls_session,
 
 	cxgbi_conn_max_xmit_dlength(conn);
 	cxgbi_conn_max_recv_dlength(conn);
-
-	spin_lock_bh(&conn->session->lock);
-	sprintf(conn->portal_address, "%pI4", &csk->daddr.sin_addr.s_addr);
-	conn->portal_port = ntohs(csk->daddr.sin_port);
-	spin_unlock_bh(&conn->session->lock);
 
 	log_debug(1 << CXGBI_DBG_ISCSI,
 		"cls 0x%p,0x%p, ep 0x%p, cconn 0x%p, csk 0x%p.\n",
@@ -2588,6 +2569,62 @@ void cxgbi_iscsi_cleanup(struct iscsi_transport *itp,
 	}
 }
 EXPORT_SYMBOL_GPL(cxgbi_iscsi_cleanup);
+
+umode_t cxgbi_attr_is_visible(int param_type, int param)
+{
+	switch (param_type) {
+	case ISCSI_HOST_PARAM:
+		switch (param) {
+		case ISCSI_HOST_PARAM_NETDEV_NAME:
+		case ISCSI_HOST_PARAM_HWADDRESS:
+		case ISCSI_HOST_PARAM_IPADDRESS:
+		case ISCSI_HOST_PARAM_INITIATOR_NAME:
+			return S_IRUGO;
+		default:
+			return 0;
+		}
+	case ISCSI_PARAM:
+		switch (param) {
+		case ISCSI_PARAM_MAX_RECV_DLENGTH:
+		case ISCSI_PARAM_MAX_XMIT_DLENGTH:
+		case ISCSI_PARAM_HDRDGST_EN:
+		case ISCSI_PARAM_DATADGST_EN:
+		case ISCSI_PARAM_CONN_ADDRESS:
+		case ISCSI_PARAM_CONN_PORT:
+		case ISCSI_PARAM_EXP_STATSN:
+		case ISCSI_PARAM_PERSISTENT_ADDRESS:
+		case ISCSI_PARAM_PERSISTENT_PORT:
+		case ISCSI_PARAM_PING_TMO:
+		case ISCSI_PARAM_RECV_TMO:
+		case ISCSI_PARAM_INITIAL_R2T_EN:
+		case ISCSI_PARAM_MAX_R2T:
+		case ISCSI_PARAM_IMM_DATA_EN:
+		case ISCSI_PARAM_FIRST_BURST:
+		case ISCSI_PARAM_MAX_BURST:
+		case ISCSI_PARAM_PDU_INORDER_EN:
+		case ISCSI_PARAM_DATASEQ_INORDER_EN:
+		case ISCSI_PARAM_ERL:
+		case ISCSI_PARAM_TARGET_NAME:
+		case ISCSI_PARAM_TPGT:
+		case ISCSI_PARAM_USERNAME:
+		case ISCSI_PARAM_PASSWORD:
+		case ISCSI_PARAM_USERNAME_IN:
+		case ISCSI_PARAM_PASSWORD_IN:
+		case ISCSI_PARAM_FAST_ABORT:
+		case ISCSI_PARAM_ABORT_TMO:
+		case ISCSI_PARAM_LU_RESET_TMO:
+		case ISCSI_PARAM_TGT_RESET_TMO:
+		case ISCSI_PARAM_IFACE_NAME:
+		case ISCSI_PARAM_INITIATOR_NAME:
+			return S_IRUGO;
+		default:
+			return 0;
+		}
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(cxgbi_attr_is_visible);
 
 static int __init libcxgbi_init_module(void)
 {

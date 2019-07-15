@@ -38,22 +38,23 @@
  * Queue register offset macros
  */
 #define TX_QUEUE_REG_OFFSET		0x10
-#define TX_BASE_PTR(__x)		TX_BASE_PTR0 + ((__x) * TX_QUEUE_REG_OFFSET)
-#define TX_MAX_CNT(__x)			TX_MAX_CNT0 + ((__x) * TX_QUEUE_REG_OFFSET)
-#define TX_CTX_IDX(__x)			TX_CTX_IDX0 + ((__x) * TX_QUEUE_REG_OFFSET)
-#define TX_DTX_IDX(__x)			TX_DTX_IDX0 + ((__x) * TX_QUEUE_REG_OFFSET)
+#define TX_BASE_PTR(__x)		(TX_BASE_PTR0 + ((__x) * TX_QUEUE_REG_OFFSET))
+#define TX_MAX_CNT(__x)			(TX_MAX_CNT0 + ((__x) * TX_QUEUE_REG_OFFSET))
+#define TX_CTX_IDX(__x)			(TX_CTX_IDX0 + ((__x) * TX_QUEUE_REG_OFFSET))
+#define TX_DTX_IDX(__x)			(TX_DTX_IDX0 + ((__x) * TX_QUEUE_REG_OFFSET))
 
 /*
  * 8051 firmware image.
  */
 #define FIRMWARE_RT2860			"rt2860.bin"
+#define FIRMWARE_RT3290			"rt3290.bin"
 #define FIRMWARE_IMAGE_BASE		0x2000
 
 /*
  * DMA descriptor defines.
  */
-#define TXD_DESC_SIZE			( 4 * sizeof(__le32) )
-#define RXD_DESC_SIZE			( 4 * sizeof(__le32) )
+#define TXD_DESC_SIZE			(4 * sizeof(__le32))
+#define RXD_DESC_SIZE			(4 * sizeof(__le32))
 
 /*
  * TX descriptor format for TX, PRIO and Beacon Ring.

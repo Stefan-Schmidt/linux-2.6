@@ -10,8 +10,17 @@
 #define STE_DMA40_H
 
 #include <linux/dmaengine.h>
+#include <linux/scatterlist.h>
 #include <linux/workqueue.h>
 #include <linux/interrupt.h>
+
+/*
+ * Maxium size for a single dma descriptor
+ * Size is limited to 16 bits.
+ * Size is in the units of addr-widths (1,2,4,8 bytes)
+ * Larger transfers will be split up to multiple linked desc
+ */
+#define STEDMA40_MAX_SEG_SIZE 0xFFFF
 
 /* dev types for memcpy */
 #define STEDMA40_DEV_DST_MEMORY (-1)
@@ -96,13 +105,16 @@ struct stedma40_half_channel_info {
  *
  * @dir: MEM 2 MEM, PERIPH 2 MEM , MEM 2 PERIPH, PERIPH 2 PERIPH
  * @high_priority: true if high-priority
+ * @realtime: true if realtime mode is to be enabled.  Only available on DMA40
+ * version 3+, i.e DB8500v2+
  * @mode: channel mode: physical, logical, or operation
  * @mode_opt: options for the chosen channel mode
  * @src_dev_type: Src device type
  * @dst_dev_type: Dst device type
  * @src_info: Parameters for dst half channel
  * @dst_info: Parameters for dst half channel
- *
+ * @use_fixed_channel: if true, use physical channel specified by phy_channel
+ * @phy_channel: physical channel to use, only if use_fixed_channel is true
  *
  * This structure has to be filled by the client drivers.
  * It is recommended to do all dma configurations for clients in the machine.
@@ -111,12 +123,16 @@ struct stedma40_half_channel_info {
 struct stedma40_chan_cfg {
 	enum stedma40_xfer_dir			 dir;
 	bool					 high_priority;
+	bool					 realtime;
 	enum stedma40_mode			 mode;
 	enum stedma40_mode_opt			 mode_opt;
 	int					 src_dev_type;
 	int					 dst_dev_type;
 	struct stedma40_half_channel_info	 src_info;
 	struct stedma40_half_channel_info	 dst_info;
+
+	bool					 use_fixed_channel;
+	int					 phy_channel;
 };
 
 /**
@@ -141,6 +157,7 @@ struct stedma40_platform_data {
 	struct stedma40_chan_cfg	*memcpy_conf_phy;
 	struct stedma40_chan_cfg	*memcpy_conf_log;
 	int				 disabled_channels[STEDMA40_MAX_PHYS];
+	bool				 use_esram_lcla;
 };
 
 #ifdef CONFIG_STE_DMA40
@@ -161,25 +178,6 @@ struct stedma40_platform_data {
 bool stedma40_filter(struct dma_chan *chan, void *data);
 
 /**
- * stedma40_memcpy_sg() - extension of the dma framework, memcpy to/from
- * scattergatter lists.
- *
- * @chan: dmaengine handle
- * @sgl_dst: Destination scatter list
- * @sgl_src: Source scatter list
- * @sgl_len: The length of each scatterlist. Both lists must be of equal length
- * and each element must match the corresponding element in the other scatter
- * list.
- * @flags: is actually enum dma_ctrl_flags. See dmaengine.h
- */
-
-struct dma_async_tx_descriptor *stedma40_memcpy_sg(struct dma_chan *chan,
-						   struct scatterlist *sgl_dst,
-						   struct scatterlist *sgl_src,
-						   unsigned int sgl_len,
-						   unsigned long flags);
-
-/**
  * stedma40_slave_mem() - Transfers a raw data buffer to or from a slave
  * (=device)
  *
@@ -194,7 +192,7 @@ static inline struct
 dma_async_tx_descriptor *stedma40_slave_mem(struct dma_chan *chan,
 					    dma_addr_t addr,
 					    unsigned int size,
-					    enum dma_data_direction direction,
+					    enum dma_transfer_direction direction,
 					    unsigned long flags)
 {
 	struct scatterlist sg;
@@ -202,8 +200,7 @@ dma_async_tx_descriptor *stedma40_slave_mem(struct dma_chan *chan,
 	sg.dma_address = addr;
 	sg.length = size;
 
-	return chan->device->device_prep_slave_sg(chan, &sg, 1,
-						  direction, flags);
+	return dmaengine_prep_slave_sg(chan, &sg, 1, direction, flags);
 }
 
 #else
@@ -216,7 +213,7 @@ static inline struct
 dma_async_tx_descriptor *stedma40_slave_mem(struct dma_chan *chan,
 					    dma_addr_t addr,
 					    unsigned int size,
-					    enum dma_data_direction direction,
+					    enum dma_transfer_direction direction,
 					    unsigned long flags)
 {
 	return NULL;

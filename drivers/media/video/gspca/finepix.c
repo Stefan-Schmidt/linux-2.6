@@ -18,6 +18,8 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #define MODULE_NAME "finepix"
 
 #include "gspca.h"
@@ -92,7 +94,11 @@ static void dostream(struct work_struct *work)
 
 	/* loop reading a frame */
 again:
-	while (gspca_dev->present && gspca_dev->streaming) {
+	while (gspca_dev->dev && gspca_dev->streaming) {
+#ifdef CONFIG_PM
+		if (gspca_dev->frozen)
+			break;
+#endif
 
 		/* request a frame */
 		mutex_lock(&gspca_dev->usb_lock);
@@ -100,7 +106,11 @@ again:
 		mutex_unlock(&gspca_dev->usb_lock);
 		if (ret < 0)
 			break;
-		if (!gspca_dev->present || !gspca_dev->streaming)
+#ifdef CONFIG_PM
+		if (gspca_dev->frozen)
+			break;
+#endif
+		if (!gspca_dev->dev || !gspca_dev->streaming)
 			break;
 
 		/* the frame comes in parts */
@@ -115,7 +125,11 @@ again:
 				 * error. Just restart. */
 				goto again;
 			}
-			if (!gspca_dev->present || !gspca_dev->streaming)
+#ifdef CONFIG_PM
+			if (gspca_dev->frozen)
+				goto out;
+#endif
+			if (!gspca_dev->dev || !gspca_dev->streaming)
 				goto out;
 			if (len < FPIX_MAX_TRANSFER ||
 				(data[len - 2] == 0xff &&
@@ -182,7 +196,7 @@ static int sd_start(struct gspca_dev *gspca_dev)
 	/* Init the device */
 	ret = command(gspca_dev, 0);
 	if (ret < 0) {
-		err("init failed %d", ret);
+		pr_err("init failed %d\n", ret);
 		return ret;
 	}
 
@@ -194,14 +208,14 @@ static int sd_start(struct gspca_dev *gspca_dev)
 			FPIX_MAX_TRANSFER, &len,
 			FPIX_TIMEOUT);
 	if (ret < 0) {
-		err("usb_bulk_msg failed %d", ret);
+		pr_err("usb_bulk_msg failed %d\n", ret);
 		return ret;
 	}
 
 	/* Request a frame, but don't read it */
 	ret = command(gspca_dev, 1);
 	if (ret < 0) {
-		err("frame request failed %d", ret);
+		pr_err("frame request failed %d\n", ret);
 		return ret;
 	}
 
@@ -229,7 +243,7 @@ static void sd_stop0(struct gspca_dev *gspca_dev)
 }
 
 /* Table of supported USB devices */
-static const __devinitdata struct usb_device_id device_table[] = {
+static const struct usb_device_id device_table[] = {
 	{USB_DEVICE(0x04cb, 0x0104)},
 	{USB_DEVICE(0x04cb, 0x0109)},
 	{USB_DEVICE(0x04cb, 0x010b)},
@@ -285,19 +299,8 @@ static struct usb_driver sd_driver = {
 #ifdef CONFIG_PM
 	.suspend = gspca_suspend,
 	.resume  = gspca_resume,
+	.reset_resume = gspca_resume,
 #endif
 };
 
-/* -- module insert / remove -- */
-static int __init sd_mod_init(void)
-{
-	return usb_register(&sd_driver);
-}
-
-static void __exit sd_mod_exit(void)
-{
-	usb_deregister(&sd_driver);
-}
-
-module_init(sd_mod_init);
-module_exit(sd_mod_exit);
+module_usb_driver(sd_driver);

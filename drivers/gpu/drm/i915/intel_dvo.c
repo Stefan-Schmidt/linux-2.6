@@ -136,7 +136,7 @@ static int intel_dvo_mode_valid(struct drm_connector *connector,
 }
 
 static bool intel_dvo_mode_fixup(struct drm_encoder *encoder,
-				 struct drm_display_mode *mode,
+				 const struct drm_display_mode *mode,
 				 struct drm_display_mode *adjusted_mode)
 {
 	struct intel_dvo *intel_dvo = enc_to_intel_dvo(encoder);
@@ -157,7 +157,6 @@ static bool intel_dvo_mode_fixup(struct drm_encoder *encoder,
 		C(vsync_end);
 		C(vtotal);
 		C(clock);
-		drm_mode_set_crtcinfo(adjusted_mode, CRTC_INTERLACE_HALVE_V);
 #undef C
 	}
 
@@ -178,7 +177,7 @@ static void intel_dvo_mode_set(struct drm_encoder *encoder,
 	int pipe = intel_crtc->pipe;
 	u32 dvo_val;
 	u32 dvo_reg = intel_dvo->dev.dvo_reg, dvo_srcdim_reg;
-	int dpll_reg = (pipe == 0) ? DPLL_A : DPLL_B;
+	int dpll_reg = DPLL(pipe);
 
 	switch (dvo_reg) {
 	case DVOA:
@@ -244,7 +243,7 @@ static int intel_dvo_get_modes(struct drm_connector *connector)
 	 * that's not the case.
 	 */
 	intel_ddc_get_modes(connector,
-			    &dev_priv->gmbus[GMBUS_PORT_DPC].adapter);
+			    intel_gmbus_get_adapter(dev_priv, GMBUS_PORT_DPC));
 	if (!list_empty(&connector->probed_modes))
 		return 1;
 
@@ -376,7 +375,7 @@ void intel_dvo_init(struct drm_device *dev)
 		 * special cases, but otherwise default to what's defined
 		 * in the spec.
 		 */
-		if (dvo->gpio != 0)
+		if (intel_gmbus_is_port_valid(dvo->gpio))
 			gpio = dvo->gpio;
 		else if (dvo->type == INTEL_DVO_CHIP_LVDS)
 			gpio = GMBUS_PORT_SSC;
@@ -387,7 +386,7 @@ void intel_dvo_init(struct drm_device *dev)
 		 * It appears that everything is on GPIOE except for panels
 		 * on i830 laptops, which are on GPIOB (DVOA).
 		 */
-		i2c = &dev_priv->gmbus[gpio].adapter;
+		i2c = intel_gmbus_get_adapter(dev_priv, gpio);
 
 		intel_dvo->dev = *dvo;
 		if (!dvo->dev_ops->init(&intel_dvo->dev, i2c))

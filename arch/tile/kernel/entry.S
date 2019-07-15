@@ -38,12 +38,6 @@ STD_ENTRY(kernel_execve)
 	jrp lr
 	STD_ENDPROC(kernel_execve)
 
-/* Delay a fixed number of cycles. */
-STD_ENTRY(__delay)
-	{ addi r0, r0, -1; bnzt r0, . }
-	jrp lr
-	STD_ENDPROC(__delay)
-
 /*
  * We don't run this function directly, but instead copy it to a page
  * we map into every user process.  See vdso_setup().
@@ -74,48 +68,31 @@ STD_ENTRY(KBacktraceIterator_init_current)
 	jrp lr   /* keep backtracer happy */
 	STD_ENDPROC(KBacktraceIterator_init_current)
 
-/*
- * Reset our stack to r1/r2 (sp and ksp0+cpu respectively), then
- * free the old stack (passed in r0) and re-invoke cpu_idle().
- * We update sp and ksp0 simultaneously to avoid backtracer warnings.
- */
-STD_ENTRY(cpu_idle_on_new_stack)
-	{
-	 move sp, r1
-	 mtspr SPR_SYSTEM_SAVE_K_0, r2
-	}
-	jal free_thread_info
-	j cpu_idle
-	STD_ENDPROC(cpu_idle_on_new_stack)
-
 /* Loop forever on a nap during SMP boot. */
 STD_ENTRY(smp_nap)
 	nap
+	nop       /* avoid provoking the icache prefetch with a jump */
 	j smp_nap /* we are not architecturally guaranteed not to exit nap */
 	jrp lr    /* clue in the backtracer */
 	STD_ENDPROC(smp_nap)
 
 /*
  * Enable interrupts racelessly and then nap until interrupted.
+ * Architecturally, we are guaranteed that enabling interrupts via
+ * mtspr to INTERRUPT_CRITICAL_SECTION only interrupts at the next PC.
  * This function's _cpu_idle_nap address is special; see intvec.S.
  * When interrupted at _cpu_idle_nap, we bump the PC forward 8, and
  * as a result return to the function that called _cpu_idle().
  */
 STD_ENTRY(_cpu_idle)
-	{
-	 lnk r0
-	 movei r1, KERNEL_PL
-	}
-	{
-	 addli r0, r0, _cpu_idle_nap - .
-	 mtspr INTERRUPT_CRITICAL_SECTION, r1
-	}
-	IRQ_ENABLE(r2, r3)             /* unmask, but still with ICS set */
-	mtspr SPR_EX_CONTEXT_K_1, r1   /* Kernel PL, ICS clear */
-	mtspr SPR_EX_CONTEXT_K_0, r0
-	iret
+	movei r1, 1
+	IRQ_ENABLE_LOAD(r2, r3)
+	mtspr INTERRUPT_CRITICAL_SECTION, r1
+	IRQ_ENABLE_APPLY(r2, r3)       /* unmask, but still with ICS set */
+	mtspr INTERRUPT_CRITICAL_SECTION, zero
 	.global _cpu_idle_nap
 _cpu_idle_nap:
 	nap
+	nop       /* avoid provoking the icache prefetch with a jump */
 	jrp lr
 	STD_ENDPROC(_cpu_idle)

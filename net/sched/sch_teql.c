@@ -53,48 +53,45 @@
       which will not break load balancing, though native slave
       traffic will have the highest priority.  */
 
-struct teql_master
-{
+struct teql_master {
 	struct Qdisc_ops qops;
 	struct net_device *dev;
 	struct Qdisc *slaves;
 	struct list_head master_list;
+	unsigned long	tx_bytes;
+	unsigned long	tx_packets;
+	unsigned long	tx_errors;
+	unsigned long	tx_dropped;
 };
 
-struct teql_sched_data
-{
+struct teql_sched_data {
 	struct Qdisc *next;
 	struct teql_master *m;
-	struct neighbour *ncache;
 	struct sk_buff_head q;
 };
 
-#define NEXT_SLAVE(q) (((struct teql_sched_data*)qdisc_priv(q))->next)
+#define NEXT_SLAVE(q) (((struct teql_sched_data *)qdisc_priv(q))->next)
 
-#define FMASK (IFF_BROADCAST|IFF_POINTOPOINT)
+#define FMASK (IFF_BROADCAST | IFF_POINTOPOINT)
 
 /* "teql*" qdisc routines */
 
 static int
-teql_enqueue(struct sk_buff *skb, struct Qdisc* sch)
+teql_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 {
 	struct net_device *dev = qdisc_dev(sch);
 	struct teql_sched_data *q = qdisc_priv(sch);
 
 	if (q->q.qlen < dev->tx_queue_len) {
 		__skb_queue_tail(&q->q, skb);
-		sch->bstats.bytes += qdisc_pkt_len(skb);
-		sch->bstats.packets++;
 		return NET_XMIT_SUCCESS;
 	}
 
-	kfree_skb(skb);
-	sch->qstats.drops++;
-	return NET_XMIT_DROP;
+	return qdisc_drop(skb, sch);
 }
 
 static struct sk_buff *
-teql_dequeue(struct Qdisc* sch)
+teql_dequeue(struct Qdisc *sch)
 {
 	struct teql_sched_data *dat = qdisc_priv(sch);
 	struct netdev_queue *dat_queue;
@@ -108,19 +105,21 @@ teql_dequeue(struct Qdisc* sch)
 			dat->m->slaves = sch;
 			netif_wake_queue(m);
 		}
+	} else {
+		qdisc_bstats_update(sch, skb);
 	}
 	sch->q.qlen = dat->q.qlen + dat_queue->qdisc->q.qlen;
 	return skb;
 }
 
 static struct sk_buff *
-teql_peek(struct Qdisc* sch)
+teql_peek(struct Qdisc *sch)
 {
 	/* teql is meant to be used as root qdisc */
 	return NULL;
 }
 
-static __inline__ void
+static inline void
 teql_neigh_release(struct neighbour *n)
 {
 	if (n)
@@ -128,23 +127,23 @@ teql_neigh_release(struct neighbour *n)
 }
 
 static void
-teql_reset(struct Qdisc* sch)
+teql_reset(struct Qdisc *sch)
 {
 	struct teql_sched_data *dat = qdisc_priv(sch);
 
 	skb_queue_purge(&dat->q);
 	sch->q.qlen = 0;
-	teql_neigh_release(xchg(&dat->ncache, NULL));
 }
 
 static void
-teql_destroy(struct Qdisc* sch)
+teql_destroy(struct Qdisc *sch)
 {
 	struct Qdisc *q, *prev;
 	struct teql_sched_data *dat = qdisc_priv(sch);
 	struct teql_master *master = dat->m;
 
-	if ((prev = master->slaves) != NULL) {
+	prev = master->slaves;
+	if (prev) {
 		do {
 			q = NEXT_SLAVE(prev);
 			if (q == sch) {
@@ -165,7 +164,6 @@ teql_destroy(struct Qdisc* sch)
 					}
 				}
 				skb_queue_purge(&dat->q);
-				teql_neigh_release(xchg(&dat->ncache, NULL));
 				break;
 			}
 
@@ -176,7 +174,7 @@ teql_destroy(struct Qdisc* sch)
 static int teql_qdisc_init(struct Qdisc *sch, struct nlattr *opt)
 {
 	struct net_device *dev = qdisc_dev(sch);
-	struct teql_master *m = (struct teql_master*)sch->ops;
+	struct teql_master *m = (struct teql_master *)sch->ops;
 	struct teql_sched_data *q = qdisc_priv(sch);
 
 	if (dev->hard_header_len > m->dev->hard_header_len)
@@ -222,23 +220,27 @@ static int teql_qdisc_init(struct Qdisc *sch, struct nlattr *opt)
 
 
 static int
-__teql_resolve(struct sk_buff *skb, struct sk_buff *skb_res, struct net_device *dev)
+__teql_resolve(struct sk_buff *skb, struct sk_buff *skb_res,
+	       struct net_device *dev, struct netdev_queue *txq,
+	       struct dst_entry *dst)
 {
-	struct netdev_queue *dev_queue = netdev_get_tx_queue(dev, 0);
-	struct teql_sched_data *q = qdisc_priv(dev_queue->qdisc);
-	struct neighbour *mn = skb_dst(skb)->neighbour;
-	struct neighbour *n = q->ncache;
+	struct neighbour *n;
+	int err = 0;
 
-	if (mn->tbl == NULL)
-		return -EINVAL;
-	if (n && n->tbl == mn->tbl &&
-	    memcmp(n->primary_key, mn->primary_key, mn->tbl->key_len) == 0) {
-		atomic_inc(&n->refcnt);
-	} else {
-		n = __neigh_lookup_errno(mn->tbl, mn->primary_key, dev);
-		if (IS_ERR(n))
-			return PTR_ERR(n);
+	n = dst_neigh_lookup_skb(dst, skb);
+	if (!n)
+		return -ENOENT;
+
+	if (dst->dev != dev) {
+		struct neighbour *mn;
+
+		mn = __neigh_lookup_errno(n->tbl, n->primary_key, dev);
+		neigh_release(n);
+		if (IS_ERR(mn))
+			return PTR_ERR(mn);
+		n = mn;
 	}
+
 	if (neigh_event_send(n, skb_res) == 0) {
 		int err;
 		char haddr[MAX_ADDR_LEN];
@@ -247,35 +249,39 @@ __teql_resolve(struct sk_buff *skb, struct sk_buff *skb_res, struct net_device *
 		err = dev_hard_header(skb, dev, ntohs(skb->protocol), haddr,
 				      NULL, skb->len);
 
-		if (err < 0) {
-			neigh_release(n);
-			return -EINVAL;
-		}
-		teql_neigh_release(xchg(&q->ncache, n));
-		return 0;
+		if (err < 0)
+			err = -EINVAL;
+	} else {
+		err = (skb_res == NULL) ? -EAGAIN : 1;
 	}
 	neigh_release(n);
-	return (skb_res == NULL) ? -EAGAIN : 1;
+	return err;
 }
 
 static inline int teql_resolve(struct sk_buff *skb,
-			       struct sk_buff *skb_res, struct net_device *dev)
+			       struct sk_buff *skb_res,
+			       struct net_device *dev,
+			       struct netdev_queue *txq)
 {
-	struct netdev_queue *txq = netdev_get_tx_queue(dev, 0);
+	struct dst_entry *dst = skb_dst(skb);
+	int res;
+
 	if (txq->qdisc == &noop_qdisc)
 		return -ENODEV;
 
-	if (dev->header_ops == NULL ||
-	    skb_dst(skb) == NULL ||
-	    skb_dst(skb)->neighbour == NULL)
+	if (!dev->header_ops || !dst)
 		return 0;
-	return __teql_resolve(skb, skb_res, dev);
+
+	rcu_read_lock();
+	res = __teql_resolve(skb, skb_res, dev, txq, dst);
+	rcu_read_unlock();
+
+	return res;
 }
 
 static netdev_tx_t teql_master_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct teql_master *master = netdev_priv(dev);
-	struct netdev_queue *txq = netdev_get_tx_queue(dev, 0);
 	struct Qdisc *start, *q;
 	int busy;
 	int nores;
@@ -288,7 +294,8 @@ restart:
 	nores = 0;
 	busy = 0;
 
-	if ((q = start) == NULL)
+	q = start;
+	if (!q)
 		goto drop;
 
 	do {
@@ -298,31 +305,30 @@ restart:
 
 		if (slave_txq->qdisc_sleeping != q)
 			continue;
-		if (__netif_subqueue_stopped(slave, subq) ||
+		if (netif_xmit_stopped(netdev_get_tx_queue(slave, subq)) ||
 		    !netif_running(slave)) {
 			busy = 1;
 			continue;
 		}
 
-		switch (teql_resolve(skb, skb_res, slave)) {
+		switch (teql_resolve(skb, skb_res, slave, slave_txq)) {
 		case 0:
 			if (__netif_tx_trylock(slave_txq)) {
 				unsigned int length = qdisc_pkt_len(skb);
 
-				if (!netif_tx_queue_stopped(slave_txq) &&
-				    !netif_tx_queue_frozen(slave_txq) &&
+				if (!netif_xmit_frozen_or_stopped(slave_txq) &&
 				    slave_ops->ndo_start_xmit(skb, slave) == NETDEV_TX_OK) {
 					txq_trans_update(slave_txq);
 					__netif_tx_unlock(slave_txq);
 					master->slaves = NEXT_SLAVE(q);
 					netif_wake_queue(dev);
-					txq->tx_packets++;
-					txq->tx_bytes += length;
+					master->tx_packets++;
+					master->tx_bytes += length;
 					return NETDEV_TX_OK;
 				}
 				__netif_tx_unlock(slave_txq);
 			}
-			if (netif_queue_stopped(dev))
+			if (netif_xmit_stopped(netdev_get_tx_queue(dev, 0)))
 				busy = 1;
 			break;
 		case 1:
@@ -344,20 +350,20 @@ restart:
 		netif_stop_queue(dev);
 		return NETDEV_TX_BUSY;
 	}
-	dev->stats.tx_errors++;
+	master->tx_errors++;
 
 drop:
-	txq->tx_dropped++;
+	master->tx_dropped++;
 	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
 }
 
 static int teql_master_open(struct net_device *dev)
 {
-	struct Qdisc * q;
+	struct Qdisc *q;
 	struct teql_master *m = netdev_priv(dev);
 	int mtu = 0xFFFE;
-	unsigned flags = IFF_NOARP|IFF_MULTICAST;
+	unsigned int flags = IFF_NOARP | IFF_MULTICAST;
 
 	if (m->slaves == NULL)
 		return -EUNATCH;
@@ -400,6 +406,18 @@ static int teql_master_close(struct net_device *dev)
 	return 0;
 }
 
+static struct rtnl_link_stats64 *teql_master_stats64(struct net_device *dev,
+						     struct rtnl_link_stats64 *stats)
+{
+	struct teql_master *m = netdev_priv(dev);
+
+	stats->tx_packets	= m->tx_packets;
+	stats->tx_bytes		= m->tx_bytes;
+	stats->tx_errors	= m->tx_errors;
+	stats->tx_dropped	= m->tx_dropped;
+	return stats;
+}
+
 static int teql_master_mtu(struct net_device *dev, int new_mtu)
 {
 	struct teql_master *m = netdev_priv(dev);
@@ -413,7 +431,7 @@ static int teql_master_mtu(struct net_device *dev, int new_mtu)
 		do {
 			if (new_mtu > qdisc_dev(q)->mtu)
 				return -EINVAL;
-		} while ((q=NEXT_SLAVE(q)) != m->slaves);
+		} while ((q = NEXT_SLAVE(q)) != m->slaves);
 	}
 
 	dev->mtu = new_mtu;
@@ -424,6 +442,7 @@ static const struct net_device_ops teql_netdev_ops = {
 	.ndo_open	= teql_master_open,
 	.ndo_stop	= teql_master_close,
 	.ndo_start_xmit	= teql_master_xmit,
+	.ndo_get_stats64 = teql_master_stats64,
 	.ndo_change_mtu	= teql_master_mtu,
 };
 

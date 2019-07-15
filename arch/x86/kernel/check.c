@@ -27,21 +27,29 @@ static int num_scan_areas;
 
 static __init int set_corruption_check(char *arg)
 {
-	char *end;
+	ssize_t ret;
+	unsigned long val;
 
-	memory_corruption_check = simple_strtol(arg, &end, 10);
+	ret = kstrtoul(arg, 10, &val);
+	if (ret)
+		return ret;
 
-	return (*end == 0) ? 0 : -EINVAL;
+	memory_corruption_check = val;
+	return 0;
 }
 early_param("memory_corruption_check", set_corruption_check);
 
 static __init int set_corruption_check_period(char *arg)
 {
-	char *end;
+	ssize_t ret;
+	unsigned long val;
 
-	corruption_check_period = simple_strtoul(arg, &end, 10);
+	ret = kstrtoul(arg, 10, &val);
+	if (ret)
+		return ret;
 
-	return (*end == 0) ? 0 : -EINVAL;
+	corruption_check_period = val;
+	return 0;
 }
 early_param("memory_corruption_check_period", set_corruption_check_period);
 
@@ -62,7 +70,8 @@ early_param("memory_corruption_check_size", set_corruption_check_size);
 
 void __init setup_bios_corruption_check(void)
 {
-	u64 addr = PAGE_SIZE;	/* assume first page is reserved anyway */
+	phys_addr_t start, end;
+	u64 i;
 
 	if (memory_corruption_check == -1) {
 		memory_corruption_check =
@@ -82,32 +91,27 @@ void __init setup_bios_corruption_check(void)
 
 	corruption_check_size = round_up(corruption_check_size, PAGE_SIZE);
 
-	while (addr < corruption_check_size && num_scan_areas < MAX_SCAN_AREAS) {
-		u64 size;
-		addr = memblock_x86_find_in_range_size(addr, &size, PAGE_SIZE);
+	for_each_free_mem_range(i, MAX_NUMNODES, &start, &end, NULL) {
+		start = clamp_t(phys_addr_t, round_up(start, PAGE_SIZE),
+				PAGE_SIZE, corruption_check_size);
+		end = clamp_t(phys_addr_t, round_down(end, PAGE_SIZE),
+			      PAGE_SIZE, corruption_check_size);
+		if (start >= end)
+			continue;
 
-		if (addr == MEMBLOCK_ERROR)
-			break;
-
-		if (addr >= corruption_check_size)
-			break;
-
-		if ((addr + size) > corruption_check_size)
-			size = corruption_check_size - addr;
-
-		memblock_x86_reserve_range(addr, addr + size, "SCAN RAM");
-		scan_areas[num_scan_areas].addr = addr;
-		scan_areas[num_scan_areas].size = size;
-		num_scan_areas++;
+		memblock_reserve(start, end - start);
+		scan_areas[num_scan_areas].addr = start;
+		scan_areas[num_scan_areas].size = end - start;
 
 		/* Assume we've already mapped this early memory */
-		memset(__va(addr), 0, size);
+		memset(__va(start), 0, end - start);
 
-		addr += size;
+		if (++num_scan_areas >= MAX_SCAN_AREAS)
+			break;
 	}
 
-	printk(KERN_INFO "Scanning %d areas for low memory corruption\n",
-	       num_scan_areas);
+	if (num_scan_areas)
+		printk(KERN_INFO "Scanning %d areas for low memory corruption\n", num_scan_areas);
 }
 
 
@@ -143,12 +147,12 @@ static void check_corruption(struct work_struct *dummy)
 {
 	check_for_bios_corruption();
 	schedule_delayed_work(&bios_check_work,
-		round_jiffies_relative(corruption_check_period*HZ)); 
+		round_jiffies_relative(corruption_check_period*HZ));
 }
 
 static int start_periodic_check_for_corruption(void)
 {
-	if (!memory_corruption_check || corruption_check_period == 0)
+	if (!num_scan_areas || !memory_corruption_check || corruption_check_period == 0)
 		return 0;
 
 	printk(KERN_INFO "Scanning for low memory corruption every %d seconds\n",

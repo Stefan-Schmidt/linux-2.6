@@ -1,7 +1,7 @@
 /*
  *  Character device driver for extended error reporting.
  *
- *  Copyright (C) 2005 IBM Corporation
+ *  Copyright IBM Corp. 2005
  *  extended error reporting for DASD ECKD devices
  *  Author(s): Stefan Weinhuber <wein@de.ibm.com>
  */
@@ -17,12 +17,11 @@
 #include <linux/device.h>
 #include <linux/poll.h>
 #include <linux/mutex.h>
-#include <linux/smp_lock.h>
 #include <linux/err.h>
 #include <linux/slab.h>
 
 #include <asm/uaccess.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <asm/ebcdic.h>
 
 #include "dasd_int.h"
@@ -474,6 +473,7 @@ int dasd_eer_enable(struct dasd_device *device)
 	cqr->retries = 255;
 	cqr->expires = 10 * HZ;
 	clear_bit(DASD_CQR_FLAGS_USE_ERP, &cqr->flags);
+	set_bit(DASD_CQR_ALLOW_SLOCK, &cqr->flags);
 
 	ccw = cqr->cpaddr;
 	ccw->cmd_code = DASD_ECKD_CCW_SNSS;

@@ -4,7 +4,6 @@
 #include <linux/mtd/physmap.h>
 #include <linux/spi/flash.h>
 #include <linux/spi/spi.h>
-#include <linux/spi/orion_spi.h>
 #include <linux/serial_reg.h>
 #include <mach/kirkwood.h>
 #include "common.h"
@@ -15,7 +14,7 @@
 
 /****************************************************************************
  * 16 MiB NOR flash. The struct mtd_partition is not in the same order as the
- *     partitions on the device because we want to keep compatability with
+ *     partitions on the device because we want to keep compatibility with
  *     the QNAP firmware.
  * Layout as used by QNAP:
  *  0x00000000-0x00080000 : "U-Boot"

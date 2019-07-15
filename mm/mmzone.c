@@ -8,7 +8,6 @@
 #include <linux/stddef.h>
 #include <linux/mm.h>
 #include <linux/mmzone.h>
-#include <linux/module.h>
 
 struct pglist_data *first_online_pgdat(void)
 {
@@ -88,23 +87,16 @@ int memmap_valid_within(unsigned long pfn,
 }
 #endif /* CONFIG_ARCH_HAS_HOLES_MEMORYMODEL */
 
-#ifdef CONFIG_SMP
-/* Called when a more accurate view of NR_FREE_PAGES is needed */
-unsigned long zone_nr_free_pages(struct zone *zone)
+void lruvec_init(struct lruvec *lruvec, struct zone *zone)
 {
-	unsigned long nr_free_pages = zone_page_state(zone, NR_FREE_PAGES);
+	enum lru_list lru;
 
-	/*
-	 * While kswapd is awake, it is considered the zone is under some
-	 * memory pressure. Under pressure, there is a risk that
-	 * per-cpu-counter-drift will allow the min watermark to be breached
-	 * potentially causing a live-lock. While kswapd is awake and
-	 * free pages are low, get a better estimate for free pages
-	 */
-	if (nr_free_pages < zone->percpu_drift_mark &&
-			!waitqueue_active(&zone->zone_pgdat->kswapd_wait))
-		return zone_page_state_snapshot(zone, NR_FREE_PAGES);
+	memset(lruvec, 0, sizeof(struct lruvec));
 
-	return nr_free_pages;
+	for_each_lru(lru)
+		INIT_LIST_HEAD(&lruvec->lists[lru]);
+
+#ifdef CONFIG_MEMCG
+	lruvec->zone = zone;
+#endif
 }
-#endif /* CONFIG_SMP */

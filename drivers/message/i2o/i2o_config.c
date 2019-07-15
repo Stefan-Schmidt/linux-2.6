@@ -188,6 +188,13 @@ static int i2o_cfg_parms(unsigned long arg, unsigned int type)
 	if (!dev)
 		return -ENXIO;
 
+	/*
+	 * Stop users being able to try and allocate arbitary amounts
+	 * of DMA space. 64K is way more than sufficient for this.
+	 */
+	if (kcmd.oplen > 65536)
+		return -EMSGSIZE;
+
 	ops = memdup_user(kcmd.opbuf, kcmd.oplen);
 	if (IS_ERR(ops))
 		return PTR_ERR(ops);
@@ -1044,8 +1051,7 @@ static long i2o_cfg_ioctl(struct file *fp, unsigned int cmd, unsigned long arg)
 
 static int cfg_open(struct inode *inode, struct file *file)
 {
-	struct i2o_cfg_info *tmp =
-	    (struct i2o_cfg_info *)kmalloc(sizeof(struct i2o_cfg_info),
+	struct i2o_cfg_info *tmp = kmalloc(sizeof(struct i2o_cfg_info),
 					   GFP_KERNEL);
 	unsigned long flags;
 

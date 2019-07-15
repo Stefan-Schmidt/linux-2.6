@@ -11,13 +11,12 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
-
+#include <linux/gpio.h>
 #include <linux/platform_device.h>
 
 #include <linux/i2c/tps65010.h>
 
 #include <plat/mmc.h>
-#include <mach/gpio.h>
 
 #include "board-h3.h"
 
@@ -37,7 +36,6 @@ static int mmc_set_power(struct device *dev, int slot, int power_on,
  */
 static struct omap_mmc_platform_data mmc1_data = {
 	.nr_slots                       = 1,
-	.dma_mask			= 0xffffffff,
 	.slots[0]       = {
 		.set_power              = mmc_set_power,
 		.ocr_mask               = MMC_VDD_32_33 | MMC_VDD_33_34,

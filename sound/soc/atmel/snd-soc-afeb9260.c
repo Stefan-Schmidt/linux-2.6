@@ -30,7 +30,6 @@
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
-#include <sound/soc-dapm.h>
 
 #include <asm/mach-types.h>
 #include <mach/hardware.h>
@@ -47,28 +46,7 @@ static int afeb9260_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_dai *codec_dai = rtd->codec_dai;
-	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
 	int err;
-
-	/* Set codec DAI configuration */
-	err = snd_soc_dai_set_fmt(codec_dai,
-				  SND_SOC_DAIFMT_I2S|
-				  SND_SOC_DAIFMT_NB_IF |
-				  SND_SOC_DAIFMT_CBM_CFM);
-	if (err < 0) {
-		printk(KERN_ERR "can't set codec DAI configuration\n");
-		return err;
-	}
-
-	/* Set cpu DAI configuration */
-	err = snd_soc_dai_set_fmt(cpu_dai,
-				  SND_SOC_DAIFMT_I2S |
-				  SND_SOC_DAIFMT_NB_IF |
-				  SND_SOC_DAIFMT_CBM_CFM);
-	if (err < 0) {
-		printk(KERN_ERR "can't set cpu DAI configuration\n");
-		return err;
-	}
 
 	/* Set the codec system clock for DAC and ADC */
 	err =
@@ -92,7 +70,7 @@ static const struct snd_soc_dapm_widget tlv320aic23_dapm_widgets[] = {
 	SND_SOC_DAPM_MIC("Mic Jack", NULL),
 };
 
-static const struct snd_soc_dapm_route audio_map[] = {
+static const struct snd_soc_dapm_route afeb9260_audio_map[] = {
 	{"Headphone Jack", NULL, "LHPOUT"},
 	{"Headphone Jack", NULL, "RHPOUT"},
 
@@ -105,19 +83,11 @@ static const struct snd_soc_dapm_route audio_map[] = {
 static int afeb9260_tlv320aic23_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_dapm_context *dapm = &codec->dapm;
 
-	/* Add afeb9260 specific widgets */
-	snd_soc_dapm_new_controls(codec, tlv320aic23_dapm_widgets,
-				  ARRAY_SIZE(tlv320aic23_dapm_widgets));
-
-	/* Set up afeb9260 specific audio path audio_map */
-	snd_soc_dapm_add_routes(codec, audio_map, ARRAY_SIZE(audio_map));
-
-	snd_soc_dapm_enable_pin(codec, "Headphone Jack");
-	snd_soc_dapm_enable_pin(codec, "Line In");
-	snd_soc_dapm_enable_pin(codec, "Mic Jack");
-
-	snd_soc_dapm_sync(codec);
+	snd_soc_dapm_enable_pin(dapm, "Headphone Jack");
+	snd_soc_dapm_enable_pin(dapm, "Line In");
+	snd_soc_dapm_enable_pin(dapm, "Mic Jack");
 
 	return 0;
 }
@@ -129,16 +99,24 @@ static struct snd_soc_dai_link afeb9260_dai = {
 	.cpu_dai_name = "atmel-ssc-dai.0",
 	.codec_dai_name = "tlv320aic23-hifi",
 	.platform_name = "atmel_pcm-audio",
-	.codec_name = "tlv320aic23-codec.0-0x1a",
+	.codec_name = "tlv320aic23-codec.0-001a",
 	.init = afeb9260_tlv320aic23_init,
+	.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_IF |
+		   SND_SOC_DAIFMT_CBM_CFM,
 	.ops = &afeb9260_ops,
 };
 
 /* Audio machine driver */
 static struct snd_soc_card snd_soc_machine_afeb9260 = {
 	.name = "AFEB9260",
+	.owner = THIS_MODULE,
 	.dai_link = &afeb9260_dai,
 	.num_links = 1,
+
+	.dapm_widgets = tlv320aic23_dapm_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(tlv320aic23_dapm_widgets),
+	.dapm_routes = afeb9260_audio_map,
+	.num_dapm_routes = ARRAY_SIZE(afeb9260_audio_map),
 };
 
 static struct platform_device *afeb9260_snd_device;
@@ -167,7 +145,6 @@ static int __init afeb9260_soc_init(void)
 
 	return 0;
 err1:
-	platform_device_del(afeb9260_snd_device);
 	platform_device_put(afeb9260_snd_device);
 	return err;
 }

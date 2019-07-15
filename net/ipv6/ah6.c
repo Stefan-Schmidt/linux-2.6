@@ -24,6 +24,8 @@
  * 	This file is derived from net/ipv4/ah.c.
  */
 
+#define pr_fmt(fmt) "IPv6: " fmt
+
 #include <crypto/hash.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -33,6 +35,7 @@
 #include <linux/pfkeyv2.h>
 #include <linux/string.h>
 #include <linux/scatterlist.h>
+#include <net/ip6_route.h>
 #include <net/icmp.h>
 #include <net/ipv6.h>
 #include <net/protocol.h>
@@ -111,7 +114,7 @@ static inline struct scatterlist *ah_req_sg(struct crypto_ahash *ahash,
 			     __alignof__(struct scatterlist));
 }
 
-static int zero_out_mutable_opts(struct ipv6_opt_hdr *opthdr)
+static bool zero_out_mutable_opts(struct ipv6_opt_hdr *opthdr)
 {
 	u8 *opt = (u8 *)opthdr;
 	int len = ipv6_optlen(opthdr);
@@ -125,7 +128,7 @@ static int zero_out_mutable_opts(struct ipv6_opt_hdr *opthdr)
 
 		switch (opt[off]) {
 
-		case IPV6_TLV_PAD0:
+		case IPV6_TLV_PAD1:
 			optlen = 1;
 			break;
 		default:
@@ -143,10 +146,10 @@ static int zero_out_mutable_opts(struct ipv6_opt_hdr *opthdr)
 		len -= optlen;
 	}
 	if (len == 0)
-		return 1;
+		return true;
 
 bad:
-	return 0;
+	return false;
 }
 
 #if defined(CONFIG_IPV6_MIP6) || defined(CONFIG_IPV6_MIP6_MODULE)
@@ -169,7 +172,7 @@ static void ipv6_rearrange_destopt(struct ipv6hdr *iph, struct ipv6_opt_hdr *des
 
 		switch (opt[off]) {
 
-		case IPV6_TLV_PAD0:
+		case IPV6_TLV_PAD1:
 			optlen = 1;
 			break;
 		default:
@@ -189,13 +192,13 @@ static void ipv6_rearrange_destopt(struct ipv6hdr *iph, struct ipv6_opt_hdr *des
 
 				hao = (struct ipv6_destopt_hao *)&opt[off];
 				if (hao->length != sizeof(hao->addr)) {
-					if (net_ratelimit())
-						printk(KERN_WARNING "destopt hao: invalid header length: %u\n", hao->length);
+					net_warn_ratelimited("destopt hao: invalid header length: %u\n",
+							     hao->length);
 					goto bad;
 				}
-				ipv6_addr_copy(&final_addr, &hao->addr);
-				ipv6_addr_copy(&hao->addr, &iph->saddr);
-				ipv6_addr_copy(&iph->saddr, &final_addr);
+				final_addr = hao->addr;
+				hao->addr = iph->saddr;
+				iph->saddr = final_addr;
 			}
 			break;
 		}
@@ -241,13 +244,13 @@ static void ipv6_rearrange_rthdr(struct ipv6hdr *iph, struct ipv6_rt_hdr *rthdr)
 	segments = rthdr->hdrlen >> 1;
 
 	addrs = ((struct rt0_hdr *)rthdr)->addr;
-	ipv6_addr_copy(&final_addr, addrs + segments - 1);
+	final_addr = addrs[segments - 1];
 
 	addrs += segments - segments_left;
 	memmove(addrs + 1, addrs, (segments_left - 1) * sizeof(*addrs));
 
-	ipv6_addr_copy(addrs, &iph->daddr);
-	ipv6_addr_copy(&iph->daddr, &final_addr);
+	addrs[0] = iph->daddr;
+	iph->daddr = final_addr;
 }
 
 static int ipv6_clear_mutable_options(struct ipv6hdr *iph, int len, int dir)
@@ -323,8 +326,6 @@ static void ah6_output_done(struct crypto_async_request *base, int err)
 		memcpy(&top_iph->daddr, iph_ext, extlen);
 #endif
 	}
-
-	err = ah->nexthdr;
 
 	kfree(AH_SKB_CB(skb)->tmp);
 	xfrm_output_resume(skb, err);
@@ -409,7 +410,7 @@ static int ah6_output(struct xfrm_state *x, struct sk_buff *skb)
 
 	ah->reserved = 0;
 	ah->spi = x->id.spi;
-	ah->seq_no = htonl(XFRM_SKB_CB(skb)->seq.output);
+	ah->seq_no = htonl(XFRM_SKB_CB(skb)->seq.output.low);
 
 	sg_init_table(sg, nfrags);
 	skb_to_sgvec(skb, sg, 0, skb->len);
@@ -466,12 +467,12 @@ static void ah6_input_done(struct crypto_async_request *base, int err)
 	if (err)
 		goto out;
 
+	err = ah->nexthdr;
+
 	skb->network_header += ah_hlen;
 	memcpy(skb_network_header(skb), work_iph, hdr_len);
 	__skb_pull(skb, ah_hlen + hdr_len);
 	skb_set_transport_header(skb, -hdr_len);
-
-	err = ah->nexthdr;
 out:
 	kfree(AH_SKB_CB(skb)->tmp);
 	xfrm_input_resume(skb, err);
@@ -538,13 +539,15 @@ static int ah6_input(struct xfrm_state *x, struct sk_buff *skb)
 	if (!pskb_may_pull(skb, ah_hlen))
 		goto out;
 
-	ip6h = ipv6_hdr(skb);
-
-	skb_push(skb, hdr_len);
 
 	if ((err = skb_cow_data(skb, 0, &trailer)) < 0)
 		goto out;
 	nfrags = err;
+
+	ah = (struct ip_auth_hdr *)skb->data;
+	ip6h = ipv6_hdr(skb);
+
+	skb_push(skb, hdr_len);
 
 	work_iph = ah_alloc_tmp(ahash, nfrags, hdr_len + ahp->icv_trunc_len);
 	if (!work_iph)
@@ -581,8 +584,6 @@ static int ah6_input(struct xfrm_state *x, struct sk_buff *skb)
 		if (err == -EINPROGRESS)
 			goto out;
 
-		if (err == -EBUSY)
-			err = NET_XMIT_DROP;
 		goto out_free;
 	}
 
@@ -612,16 +613,18 @@ static void ah6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 	struct xfrm_state *x;
 
 	if (type != ICMPV6_DEST_UNREACH &&
-	    type != ICMPV6_PKT_TOOBIG)
+	    type != ICMPV6_PKT_TOOBIG &&
+	    type != NDISC_REDIRECT)
 		return;
 
 	x = xfrm_state_lookup(net, skb->mark, (xfrm_address_t *)&iph->daddr, ah->spi, IPPROTO_AH, AF_INET6);
 	if (!x)
 		return;
 
-	NETDEBUG(KERN_DEBUG "pmtu discovery on SA AH/%08x/%pI6\n",
-		 ntohl(ah->spi), &iph->daddr);
-
+	if (type == NDISC_REDIRECT)
+		ip6_redirect(skb, net, 0, 0);
+	else
+		ip6_update_pmtu(skb, net, info, 0, 0);
 	xfrm_state_put(x);
 }
 
@@ -661,9 +664,9 @@ static int ah6_init_state(struct xfrm_state *x)
 
 	if (aalg_desc->uinfo.auth.icv_fullbits/8 !=
 	    crypto_ahash_digestsize(ahash)) {
-		printk(KERN_INFO "AH: %s digestsize %u != %hu\n",
-		       x->aalg->alg_name, crypto_ahash_digestsize(ahash),
-		       aalg_desc->uinfo.auth.icv_fullbits/8);
+		pr_info("AH: %s digestsize %u != %hu\n",
+			x->aalg->alg_name, crypto_ahash_digestsize(ahash),
+			aalg_desc->uinfo.auth.icv_fullbits/8);
 		goto error;
 	}
 
@@ -729,12 +732,12 @@ static const struct inet6_protocol ah6_protocol = {
 static int __init ah6_init(void)
 {
 	if (xfrm_register_type(&ah6_type, AF_INET6) < 0) {
-		printk(KERN_INFO "ipv6 ah init: can't add xfrm type\n");
+		pr_info("%s: can't add xfrm type\n", __func__);
 		return -EAGAIN;
 	}
 
 	if (inet6_add_protocol(&ah6_protocol, IPPROTO_AH) < 0) {
-		printk(KERN_INFO "ipv6 ah init: can't add protocol\n");
+		pr_info("%s: can't add protocol\n", __func__);
 		xfrm_unregister_type(&ah6_type, AF_INET6);
 		return -EAGAIN;
 	}
@@ -745,10 +748,10 @@ static int __init ah6_init(void)
 static void __exit ah6_fini(void)
 {
 	if (inet6_del_protocol(&ah6_protocol, IPPROTO_AH) < 0)
-		printk(KERN_INFO "ipv6 ah close: can't remove protocol\n");
+		pr_info("%s: can't remove protocol\n", __func__);
 
 	if (xfrm_unregister_type(&ah6_type, AF_INET6) < 0)
-		printk(KERN_INFO "ipv6 ah close: can't remove xfrm type\n");
+		pr_info("%s: can't remove xfrm type\n", __func__);
 
 }
 

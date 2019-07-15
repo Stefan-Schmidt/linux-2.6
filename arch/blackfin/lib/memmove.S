@@ -1,7 +1,7 @@
 /*
  * Copyright 2005-2009 Analog Devices Inc.
  *
- * Licensed under the ADI BSD license or the GPL-2 (or later)
+ * Licensed under the Clear BSD license or the GPL-2 (or later)
  */
 
 #include <linux/linkage.h>
@@ -60,7 +60,7 @@ ENTRY(_memmove)
 	[P0++] = R1;
 
 	CC = P2 == 0;             /* any remaining bytes? */
-	P3 = I0;                  /* Ammend P3 to updated ptr. */
+	P3 = I0;                  /* Amend P3 to updated ptr. */
 	IF !CC JUMP .Lbytes;
 	P3 = I1;
 	RTS;

@@ -40,18 +40,48 @@
 unsigned int drm_debug = 0;	/* 1 to enable debug output */
 EXPORT_SYMBOL(drm_debug);
 
+unsigned int drm_vblank_offdelay = 5000;    /* Default to 5000 msecs. */
+EXPORT_SYMBOL(drm_vblank_offdelay);
+
+unsigned int drm_timestamp_precision = 20;  /* Default to 20 usecs. */
+EXPORT_SYMBOL(drm_timestamp_precision);
+
 MODULE_AUTHOR(CORE_AUTHOR);
 MODULE_DESCRIPTION(CORE_DESC);
 MODULE_LICENSE("GPL and additional rights");
 MODULE_PARM_DESC(debug, "Enable debug output");
+MODULE_PARM_DESC(vblankoffdelay, "Delay until vblank irq auto-disable [msecs]");
+MODULE_PARM_DESC(timestamp_precision_usec, "Max. error on timestamps [usecs]");
 
 module_param_named(debug, drm_debug, int, 0600);
+module_param_named(vblankoffdelay, drm_vblank_offdelay, int, 0600);
+module_param_named(timestamp_precision_usec, drm_timestamp_precision, int, 0600);
 
 struct idr drm_minors_idr;
 
 struct class *drm_class;
 struct proc_dir_entry *drm_proc_root;
 struct dentry *drm_debugfs_root;
+
+int drm_err(const char *func, const char *format, ...)
+{
+	struct va_format vaf;
+	va_list args;
+	int r;
+
+	va_start(args, format);
+
+	vaf.fmt = format;
+	vaf.va = &args;
+
+	r = printk(KERN_ERR "[" DRM_NAME ":%s] *ERROR* %pV", func, &vaf);
+
+	va_end(args);
+
+	return r;
+}
+EXPORT_SYMBOL(drm_err);
+
 void drm_ut_debug_printk(unsigned int request_level,
 			 const char *prefix,
 			 const char *function_name,
@@ -68,6 +98,7 @@ void drm_ut_debug_printk(unsigned int request_level,
 	}
 }
 EXPORT_SYMBOL(drm_ut_debug_printk);
+
 static int drm_minor_get_id(struct drm_device *dev, int type)
 {
 	int new_id;
@@ -91,11 +122,10 @@ again:
 	ret = idr_get_new_above(&drm_minors_idr, NULL,
 				base, &new_id);
 	mutex_unlock(&dev->struct_mutex);
-	if (ret == -EAGAIN) {
+	if (ret == -EAGAIN)
 		goto again;
-	} else if (ret) {
+	else if (ret)
 		return ret;
-	}
 
 	if (new_id >= limit) {
 		idr_remove(&drm_minors_idr, new_id);
@@ -180,7 +210,7 @@ EXPORT_SYMBOL(drm_master_put);
 int drm_setmaster_ioctl(struct drm_device *dev, void *data,
 			struct drm_file *file_priv)
 {
-	int ret = 0;
+	int ret;
 
 	if (file_priv->is_master)
 		return 0;
@@ -259,23 +289,12 @@ int drm_fill_in_dev(struct drm_device *dev,
 
 	dev->driver = driver;
 
-	if (drm_core_has_AGP(dev)) {
-		if (drm_device_is_agp(dev))
-			dev->agp = drm_agp_init(dev);
-		if (drm_core_check_feature(dev, DRIVER_REQUIRE_AGP)
-		    && (dev->agp == NULL)) {
-			DRM_ERROR("Cannot initialize the agpgart module.\n");
-			retcode = -EINVAL;
+	if (dev->driver->bus->agp_init) {
+		retcode = dev->driver->bus->agp_init(dev);
+		if (retcode)
 			goto error_out_unreg;
-		}
-		if (drm_core_has_MTRR(dev)) {
-			if (dev->agp)
-				dev->agp->agp_mtrr =
-				    mtrr_add(dev->agp->agp_info.aper_base,
-					     dev->agp->agp_info.aper_size *
-					     1024 * 1024, MTRR_TYPE_WRCOMB, 1);
-		}
 	}
+
 
 
 	retcode = drm_ctxbitmap_init(dev);
@@ -299,6 +318,7 @@ int drm_fill_in_dev(struct drm_device *dev,
 	drm_lastclose(dev);
 	return retcode;
 }
+EXPORT_SYMBOL(drm_fill_in_dev);
 
 
 /**
@@ -377,6 +397,7 @@ err_idr:
 	*minor = NULL;
 	return ret;
 }
+EXPORT_SYMBOL(drm_get_minor);
 
 /**
  * Put a secondary minor number.
@@ -408,6 +429,12 @@ int drm_put_minor(struct drm_minor **minor_p)
 	*minor_p = NULL;
 	return 0;
 }
+EXPORT_SYMBOL(drm_put_minor);
+
+static void drm_unplug_minor(struct drm_minor *minor)
+{
+	drm_sysfs_device_remove(minor);
+}
 
 /**
  * Called via drm_exit() at module unload time or when pci device is
@@ -415,7 +442,6 @@ int drm_put_minor(struct drm_minor **minor_p)
  *
  * Cleans up all DRM device, calling drm_lastclose().
  *
- * \sa drm_init
  */
 void drm_put_dev(struct drm_device *dev)
 {
@@ -465,6 +491,7 @@ void drm_put_dev(struct drm_device *dev)
 
 	drm_put_minor(&dev->primary);
 
+	list_del(&dev->driver_item);
 	if (dev->devname) {
 		kfree(dev->devname);
 		dev->devname = NULL;
@@ -472,3 +499,21 @@ void drm_put_dev(struct drm_device *dev)
 	kfree(dev);
 }
 EXPORT_SYMBOL(drm_put_dev);
+
+void drm_unplug_dev(struct drm_device *dev)
+{
+	/* for a USB device */
+	if (drm_core_check_feature(dev, DRIVER_MODESET))
+		drm_unplug_minor(dev->control);
+	drm_unplug_minor(dev->primary);
+
+	mutex_lock(&drm_global_mutex);
+
+	drm_device_set_unplugged(dev);
+
+	if (dev->open_count == 0) {
+		drm_put_dev(dev);
+	}
+	mutex_unlock(&drm_global_mutex);
+}
+EXPORT_SYMBOL(drm_unplug_dev);

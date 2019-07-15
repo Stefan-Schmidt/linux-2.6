@@ -28,7 +28,7 @@
 #include <net/inet6_connection_sock.h>
 
 int inet6_csk_bind_conflict(const struct sock *sk,
-			    const struct inet_bind_bucket *tb)
+			    const struct inet_bind_bucket *tb, bool relax)
 {
 	const struct sock *sk2;
 	const struct hlist_node *node;
@@ -54,24 +54,49 @@ int inet6_csk_bind_conflict(const struct sock *sk,
 
 EXPORT_SYMBOL_GPL(inet6_csk_bind_conflict);
 
+struct dst_entry *inet6_csk_route_req(struct sock *sk,
+				      struct flowi6 *fl6,
+				      const struct request_sock *req)
+{
+	struct inet6_request_sock *treq = inet6_rsk(req);
+	struct ipv6_pinfo *np = inet6_sk(sk);
+	struct in6_addr *final_p, final;
+	struct dst_entry *dst;
+
+	memset(fl6, 0, sizeof(*fl6));
+	fl6->flowi6_proto = IPPROTO_TCP;
+	fl6->daddr = treq->rmt_addr;
+	final_p = fl6_update_dst(fl6, np->opt, &final);
+	fl6->saddr = treq->loc_addr;
+	fl6->flowi6_oif = treq->iif;
+	fl6->flowi6_mark = sk->sk_mark;
+	fl6->fl6_dport = inet_rsk(req)->rmt_port;
+	fl6->fl6_sport = inet_rsk(req)->loc_port;
+	security_req_classify_flow(req, flowi6_to_flowi(fl6));
+
+	dst = ip6_dst_lookup_flow(sk, fl6, final_p, false);
+	if (IS_ERR(dst))
+		return NULL;
+
+	return dst;
+}
+
 /*
  * request_sock (formerly open request) hash tables.
  */
 static u32 inet6_synq_hash(const struct in6_addr *raddr, const __be16 rport,
-			   const u32 rnd, const u16 synq_hsize)
+			   const u32 rnd, const u32 synq_hsize)
 {
-	u32 a = (__force u32)raddr->s6_addr32[0];
-	u32 b = (__force u32)raddr->s6_addr32[1];
-	u32 c = (__force u32)raddr->s6_addr32[2];
+	u32 c;
 
-	a += JHASH_GOLDEN_RATIO;
-	b += JHASH_GOLDEN_RATIO;
-	c += rnd;
-	__jhash_mix(a, b, c);
+	c = jhash_3words((__force u32)raddr->s6_addr32[0],
+			 (__force u32)raddr->s6_addr32[1],
+			 (__force u32)raddr->s6_addr32[2],
+			 rnd);
 
-	a += (__force u32)raddr->s6_addr32[3];
-	b += (__force u32)rport;
-	__jhash_mix(a, b, c);
+	c = jhash_2words((__force u32)raddr->s6_addr32[3],
+			 (__force u32)rport,
+			 c);
 
 	return c & (synq_hsize - 1);
 }
@@ -132,7 +157,7 @@ void inet6_csk_addr2sockaddr(struct sock *sk, struct sockaddr * uaddr)
 	struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *) uaddr;
 
 	sin6->sin6_family = AF_INET6;
-	ipv6_addr_copy(&sin6->sin6_addr, &np->daddr);
+	sin6->sin6_addr = np->daddr;
 	sin6->sin6_port	= inet_sk(sk)->inet_dport;
 	/* We do not store received flowlabel for TCP */
 	sin6->sin6_flowinfo = 0;
@@ -146,90 +171,87 @@ EXPORT_SYMBOL_GPL(inet6_csk_addr2sockaddr);
 
 static inline
 void __inet6_csk_dst_store(struct sock *sk, struct dst_entry *dst,
-			   struct in6_addr *daddr, struct in6_addr *saddr)
+			   const struct in6_addr *daddr,
+			   const struct in6_addr *saddr)
 {
 	__ip6_dst_store(sk, dst, daddr, saddr);
-
-#ifdef CONFIG_XFRM
-	{
-		struct rt6_info *rt = (struct rt6_info  *)dst;
-		rt->rt6i_flow_cache_genid = atomic_read(&flow_cache_genid);
-	}
-#endif
 }
 
 static inline
 struct dst_entry *__inet6_csk_dst_check(struct sock *sk, u32 cookie)
 {
+	return __sk_dst_check(sk, cookie);
+}
+
+static struct dst_entry *inet6_csk_route_socket(struct sock *sk,
+						struct flowi6 *fl6)
+{
+	struct inet_sock *inet = inet_sk(sk);
+	struct ipv6_pinfo *np = inet6_sk(sk);
+	struct in6_addr *final_p, final;
 	struct dst_entry *dst;
 
-	dst = __sk_dst_check(sk, cookie);
+	memset(fl6, 0, sizeof(*fl6));
+	fl6->flowi6_proto = sk->sk_protocol;
+	fl6->daddr = np->daddr;
+	fl6->saddr = np->saddr;
+	fl6->flowlabel = np->flow_label;
+	IP6_ECN_flow_xmit(sk, fl6->flowlabel);
+	fl6->flowi6_oif = sk->sk_bound_dev_if;
+	fl6->flowi6_mark = sk->sk_mark;
+	fl6->fl6_sport = inet->inet_sport;
+	fl6->fl6_dport = inet->inet_dport;
+	security_sk_classify_flow(sk, flowi6_to_flowi(fl6));
 
-#ifdef CONFIG_XFRM
-	if (dst) {
-		struct rt6_info *rt = (struct rt6_info *)dst;
-		if (rt->rt6i_flow_cache_genid != atomic_read(&flow_cache_genid)) {
-			__sk_dst_reset(sk);
-			dst = NULL;
-		}
+	final_p = fl6_update_dst(fl6, np->opt, &final);
+
+	dst = __inet6_csk_dst_check(sk, np->dst_cookie);
+	if (!dst) {
+		dst = ip6_dst_lookup_flow(sk, fl6, final_p, false);
+
+		if (!IS_ERR(dst))
+			__inet6_csk_dst_store(sk, dst, NULL, NULL);
 	}
-#endif
-
 	return dst;
 }
 
-int inet6_csk_xmit(struct sk_buff *skb)
+int inet6_csk_xmit(struct sk_buff *skb, struct flowi *fl_unused)
 {
 	struct sock *sk = skb->sk;
-	struct inet_sock *inet = inet_sk(sk);
 	struct ipv6_pinfo *np = inet6_sk(sk);
-	struct flowi fl;
+	struct flowi6 fl6;
 	struct dst_entry *dst;
-	struct in6_addr *final_p, final;
+	int res;
 
-	memset(&fl, 0, sizeof(fl));
-	fl.proto = sk->sk_protocol;
-	ipv6_addr_copy(&fl.fl6_dst, &np->daddr);
-	ipv6_addr_copy(&fl.fl6_src, &np->saddr);
-	fl.fl6_flowlabel = np->flow_label;
-	IP6_ECN_flow_xmit(sk, fl.fl6_flowlabel);
-	fl.oif = sk->sk_bound_dev_if;
-	fl.mark = sk->sk_mark;
-	fl.fl_ip_sport = inet->inet_sport;
-	fl.fl_ip_dport = inet->inet_dport;
-	security_sk_classify_flow(sk, &fl);
-
-	final_p = fl6_update_dst(&fl, np->opt, &final);
-
-	dst = __inet6_csk_dst_check(sk, np->dst_cookie);
-
-	if (dst == NULL) {
-		int err = ip6_dst_lookup(sk, &dst, &fl);
-
-		if (err) {
-			sk->sk_err_soft = -err;
-			kfree_skb(skb);
-			return err;
-		}
-
-		if (final_p)
-			ipv6_addr_copy(&fl.fl6_dst, final_p);
-
-		if ((err = xfrm_lookup(sock_net(sk), &dst, &fl, sk, 0)) < 0) {
-			sk->sk_route_caps = 0;
-			kfree_skb(skb);
-			return err;
-		}
-
-		__inet6_csk_dst_store(sk, dst, NULL, NULL);
+	dst = inet6_csk_route_socket(sk, &fl6);
+	if (IS_ERR(dst)) {
+		sk->sk_err_soft = -PTR_ERR(dst);
+		sk->sk_route_caps = 0;
+		kfree_skb(skb);
+		return PTR_ERR(dst);
 	}
 
-	skb_dst_set(skb, dst_clone(dst));
+	rcu_read_lock();
+	skb_dst_set_noref(skb, dst);
 
 	/* Restore final destination back after routing done */
-	ipv6_addr_copy(&fl.fl6_dst, &np->daddr);
+	fl6.daddr = np->daddr;
 
-	return ip6_xmit(sk, skb, &fl, np->opt);
+	res = ip6_xmit(sk, skb, &fl6, np->opt, np->tclass);
+	rcu_read_unlock();
+	return res;
 }
-
 EXPORT_SYMBOL_GPL(inet6_csk_xmit);
+
+struct dst_entry *inet6_csk_update_pmtu(struct sock *sk, u32 mtu)
+{
+	struct flowi6 fl6;
+	struct dst_entry *dst = inet6_csk_route_socket(sk, &fl6);
+
+	if (IS_ERR(dst))
+		return NULL;
+	dst->ops->update_pmtu(dst, sk, NULL, mtu);
+
+	return inet6_csk_route_socket(sk, &fl6);
+}
+EXPORT_SYMBOL_GPL(inet6_csk_update_pmtu);

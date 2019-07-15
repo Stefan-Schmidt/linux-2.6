@@ -1,6 +1,6 @@
 /*
  * QLogic iSCSI HBA Driver
- * Copyright (c)  2003-2006 QLogic Corporation
+ * Copyright (c)  2003-2010 QLogic Corporation
  *
  * See LICENSE.qla4xxx for copyright and licensing details.
  */
@@ -20,12 +20,12 @@ void qla4xxx_dump_buffer(void *b, uint32_t size)
 	printk("------------------------------------------------------------"
 	       "--\n");
 	for (cnt = 0; cnt < size; c++) {
-		printk(KERN_INFO "%02x", *c);
+		printk("%02x", *c);
 		if (!(++cnt % 16))
-			printk(KERN_INFO "\n");
+			printk("\n");
 
 		else
-			printk(KERN_INFO "  ");
+			printk("  ");
 	}
 	printk(KERN_INFO "\n");
 }

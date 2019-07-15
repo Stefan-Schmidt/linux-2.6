@@ -1,5 +1,5 @@
 /*
- * SH7750/SH7751 Setup
+ * SH7091/SH7750/SH7750S/SH7750R/SH7751/SH7751R Setup
  *
  *  Copyright (C) 2006  Paul Mundt
  *  Copyright (C) 2006  Jamie Lenehan
@@ -13,7 +13,9 @@
 #include <linux/serial.h>
 #include <linux/io.h>
 #include <linux/sh_timer.h>
+#include <linux/sh_intc.h>
 #include <linux/serial_sci.h>
+#include <generated/machtypes.h>
 
 static struct resource rtc_resources[] = {
 	[0] = {
@@ -23,7 +25,7 @@ static struct resource rtc_resources[] = {
 	},
 	[1] = {
 		/* Shared Period/Carry/Alarm IRQ */
-		.start	= 20,
+		.start	= evt2irq(0x480),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -35,33 +37,39 @@ static struct platform_device rtc_device = {
 	.resource	= rtc_resources,
 };
 
-static struct plat_sci_port scif0_platform_data = {
+static struct plat_sci_port sci_platform_data = {
 	.mapbase	= 0xffe00000,
+	.port_reg	= 0xffe0001C,
 	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_TE | SCSCR_RE,
+	.scbrr_algo_id	= SCBRR_ALGO_2,
 	.type		= PORT_SCI,
-	.irqs		= { 23, 23, 23, 0 },
+	.irqs		= SCIx_IRQ_MUXED(evt2irq(0x4e0)),
+	.regshift	= 2,
 };
 
-static struct platform_device scif0_device = {
+static struct platform_device sci_device = {
 	.name		= "sh-sci",
 	.id		= 0,
 	.dev		= {
-		.platform_data	= &scif0_platform_data,
+		.platform_data	= &sci_platform_data,
 	},
 };
 
-static struct plat_sci_port scif1_platform_data = {
+static struct plat_sci_port scif_platform_data = {
 	.mapbase	= 0xffe80000,
 	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_TE | SCSCR_RE | SCSCR_REIE,
+	.scbrr_algo_id	= SCBRR_ALGO_2,
 	.type		= PORT_SCIF,
-	.irqs		= { 40, 40, 40, 40 },
+	.irqs		= SCIx_IRQ_MUXED(evt2irq(0x700)),
 };
 
-static struct platform_device scif1_device = {
+static struct platform_device scif_device = {
 	.name		= "sh-sci",
 	.id		= 1,
 	.dev		= {
-		.platform_data	= &scif1_platform_data,
+		.platform_data	= &scif_platform_data,
 	},
 };
 
@@ -78,7 +86,7 @@ static struct resource tmu0_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 16,
+		.start	= evt2irq(0x400),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -106,7 +114,7 @@ static struct resource tmu1_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 17,
+		.start	= evt2irq(0x420),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -133,7 +141,7 @@ static struct resource tmu2_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 18,
+		.start	= evt2irq(0x440),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -165,7 +173,7 @@ static struct resource tmu3_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 72,
+		.start	= evt2irq(0xb00),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -192,7 +200,7 @@ static struct resource tmu4_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 76,
+		.start	= evt2irq(0xb80),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -210,8 +218,6 @@ static struct platform_device tmu4_device = {
 #endif
 
 static struct platform_device *sh7750_devices[] __initdata = {
-	&scif0_device,
-	&scif1_device,
 	&rtc_device,
 	&tmu0_device,
 	&tmu1_device,
@@ -226,14 +232,19 @@ static struct platform_device *sh7750_devices[] __initdata = {
 
 static int __init sh7750_devices_setup(void)
 {
+	if (mach_is_rts7751r2d()) {
+		platform_device_register(&scif_device);
+	} else {
+		platform_device_register(&sci_device);
+		platform_device_register(&scif_device);
+	}
+
 	return platform_add_devices(sh7750_devices,
 				    ARRAY_SIZE(sh7750_devices));
 }
 arch_initcall(sh7750_devices_setup);
 
 static struct platform_device *sh7750_early_devices[] __initdata = {
-	&scif0_device,
-	&scif1_device,
 	&tmu0_device,
 	&tmu1_device,
 	&tmu2_device,
@@ -247,6 +258,19 @@ static struct platform_device *sh7750_early_devices[] __initdata = {
 
 void __init plat_early_device_setup(void)
 {
+	struct platform_device *dev[1];
+
+	if (mach_is_rts7751r2d()) {
+		scif_platform_data.scscr |= SCSCR_CKE1;
+		dev[0] = &scif_device;
+		early_platform_add_devices(dev, 1);
+	} else {
+		dev[0] = &sci_device;
+		early_platform_add_devices(dev, 1);
+		dev[0] = &scif_device;
+		early_platform_add_devices(dev, 1);
+	}
+
 	early_platform_add_devices(sh7750_early_devices,
 				   ARRAY_SIZE(sh7750_early_devices));
 }

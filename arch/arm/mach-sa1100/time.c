@@ -16,7 +16,14 @@
 #include <linux/clockchips.h>
 
 #include <asm/mach/time.h>
+#include <asm/sched_clock.h>
 #include <mach/hardware.h>
+#include <mach/irqs.h>
+
+static u32 notrace sa1100_read_sched_clock(void)
+{
+	return readl_relaxed(OSCR);
+}
 
 #define MIN_OSCR_DELTA 2
 
@@ -25,8 +32,8 @@ static irqreturn_t sa1100_ost0_interrupt(int irq, void *dev_id)
 	struct clock_event_device *c = dev_id;
 
 	/* Disarm the compare/match, signal the event. */
-	OIER &= ~OIER_E0;
-	OSSR = OSSR_M0;
+	writel_relaxed(readl_relaxed(OIER) & ~OIER_E0, OIER);
+	writel_relaxed(OSSR_M0, OSSR);
 	c->event_handler(c);
 
 	return IRQ_HANDLED;
@@ -37,10 +44,10 @@ sa1100_osmr0_set_next_event(unsigned long delta, struct clock_event_device *c)
 {
 	unsigned long next, oscr;
 
-	OIER |= OIER_E0;
-	next = OSCR + delta;
-	OSMR0 = next;
-	oscr = OSCR;
+	writel_relaxed(readl_relaxed(OIER) | OIER_E0, OIER);
+	next = readl_relaxed(OSCR) + delta;
+	writel_relaxed(next, OSMR0);
+	oscr = readl_relaxed(OSCR);
 
 	return (signed)(next - oscr) <= MIN_OSCR_DELTA ? -ETIME : 0;
 }
@@ -52,8 +59,8 @@ sa1100_osmr0_set_mode(enum clock_event_mode mode, struct clock_event_device *c)
 	case CLOCK_EVT_MODE_ONESHOT:
 	case CLOCK_EVT_MODE_UNUSED:
 	case CLOCK_EVT_MODE_SHUTDOWN:
-		OIER &= ~OIER_E0;
-		OSSR = OSSR_M0;
+		writel_relaxed(readl_relaxed(OIER) & ~OIER_E0, OIER);
+		writel_relaxed(OSSR_M0, OSSR);
 		break;
 
 	case CLOCK_EVT_MODE_RESUME:
@@ -65,24 +72,9 @@ sa1100_osmr0_set_mode(enum clock_event_mode mode, struct clock_event_device *c)
 static struct clock_event_device ckevt_sa1100_osmr0 = {
 	.name		= "osmr0",
 	.features	= CLOCK_EVT_FEAT_ONESHOT,
-	.shift		= 32,
 	.rating		= 200,
 	.set_next_event	= sa1100_osmr0_set_next_event,
 	.set_mode	= sa1100_osmr0_set_mode,
-};
-
-static cycle_t sa1100_read_oscr(struct clocksource *s)
-{
-	return OSCR;
-}
-
-static struct clocksource cksrc_sa1100_oscr = {
-	.name		= "oscr",
-	.rating		= 200,
-	.read		= sa1100_read_oscr,
-	.mask		= CLOCKSOURCE_MASK(32),
-	.shift		= 20,
-	.flags		= CLOCK_SOURCE_IS_CONTINUOUS,
 };
 
 static struct irqaction sa1100_timer_irq = {
@@ -94,23 +86,22 @@ static struct irqaction sa1100_timer_irq = {
 
 static void __init sa1100_timer_init(void)
 {
-	OIER = 0;		/* disable any timer interrupts */
-	OSSR = 0xf;		/* clear status on all timers */
+	writel_relaxed(0, OIER);
+	writel_relaxed(OSSR_M0 | OSSR_M1 | OSSR_M2 | OSSR_M3, OSSR);
 
-	ckevt_sa1100_osmr0.mult =
-		div_sc(3686400, NSEC_PER_SEC, ckevt_sa1100_osmr0.shift);
+	setup_sched_clock(sa1100_read_sched_clock, 32, 3686400);
+
+	clockevents_calc_mult_shift(&ckevt_sa1100_osmr0, 3686400, 4);
 	ckevt_sa1100_osmr0.max_delta_ns =
 		clockevent_delta2ns(0x7fffffff, &ckevt_sa1100_osmr0);
 	ckevt_sa1100_osmr0.min_delta_ns =
 		clockevent_delta2ns(MIN_OSCR_DELTA * 2, &ckevt_sa1100_osmr0) + 1;
 	ckevt_sa1100_osmr0.cpumask = cpumask_of(0);
 
-	cksrc_sa1100_oscr.mult =
-		clocksource_hz2mult(CLOCK_TICK_RATE, cksrc_sa1100_oscr.shift);
-
 	setup_irq(IRQ_OST0, &sa1100_timer_irq);
 
-	clocksource_register(&cksrc_sa1100_oscr);
+	clocksource_mmio_init(OSCR, "oscr", CLOCK_TICK_RATE, 200, 32,
+		clocksource_mmio_readl_up);
 	clockevents_register_device(&ckevt_sa1100_osmr0);
 }
 
@@ -119,26 +110,26 @@ unsigned long osmr[4], oier;
 
 static void sa1100_timer_suspend(void)
 {
-	osmr[0] = OSMR0;
-	osmr[1] = OSMR1;
-	osmr[2] = OSMR2;
-	osmr[3] = OSMR3;
-	oier = OIER;
+	osmr[0] = readl_relaxed(OSMR0);
+	osmr[1] = readl_relaxed(OSMR1);
+	osmr[2] = readl_relaxed(OSMR2);
+	osmr[3] = readl_relaxed(OSMR3);
+	oier = readl_relaxed(OIER);
 }
 
 static void sa1100_timer_resume(void)
 {
-	OSSR = 0x0f;
-	OSMR0 = osmr[0];
-	OSMR1 = osmr[1];
-	OSMR2 = osmr[2];
-	OSMR3 = osmr[3];
-	OIER = oier;
+	writel_relaxed(0x0f, OSSR);
+	writel_relaxed(osmr[0], OSMR0);
+	writel_relaxed(osmr[1], OSMR1);
+	writel_relaxed(osmr[2], OSMR2);
+	writel_relaxed(osmr[3], OSMR3);
+	writel_relaxed(oier, OIER);
 
 	/*
 	 * OSMR0 is the system timer: make sure OSCR is sufficiently behind
 	 */
-	OSCR = OSMR0 - LATCH;
+	writel_relaxed(OSMR0 - LATCH, OSCR);
 }
 #else
 #define sa1100_timer_suspend NULL

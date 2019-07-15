@@ -19,7 +19,6 @@
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
-#include <sound/soc-dapm.h>
 #include <sound/initval.h>
 
 #include <sound/uda134x.h>
@@ -160,8 +159,7 @@ static int uda134x_mute(struct snd_soc_dai *dai, int mute)
 static int uda134x_startup(struct snd_pcm_substream *substream,
 	struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec =rtd->codec;
+	struct snd_soc_codec *codec = dai->codec;
 	struct uda134x_priv *uda134x = snd_soc_codec_get_drvdata(codec);
 	struct snd_pcm_runtime *master_runtime;
 
@@ -192,8 +190,7 @@ static int uda134x_startup(struct snd_pcm_substream *substream,
 static void uda134x_shutdown(struct snd_pcm_substream *substream,
 	struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_codec *codec = dai->codec;
 	struct uda134x_priv *uda134x = snd_soc_codec_get_drvdata(codec);
 
 	if (uda134x->master_substream == substream)
@@ -389,7 +386,7 @@ static int uda134x_set_bias_level(struct snd_soc_codec *codec,
 			pd->power(0);
 		break;
 	}
-	codec->bias_level = level;
+	codec->dapm.bias_level = level;
 	return 0;
 }
 
@@ -453,7 +450,7 @@ SOC_ENUM("PCM Playback De-emphasis", uda134x_mixer_enum[1]),
 SOC_SINGLE("DC Filter Enable Switch", UDA134X_STATUS0, 0, 1, 0),
 };
 
-static struct snd_soc_dai_ops uda134x_dai_ops = {
+static const struct snd_soc_dai_ops uda134x_dai_ops = {
 	.startup	= uda134x_startup,
 	.shutdown	= uda134x_shutdown,
 	.hw_params	= uda134x_hw_params,
@@ -487,7 +484,8 @@ static struct snd_soc_dai_driver uda134x_dai = {
 static int uda134x_soc_probe(struct snd_soc_codec *codec)
 {
 	struct uda134x_priv *uda134x;
-	struct uda134x_platform_data *pd = dev_get_drvdata(codec->card->dev);
+	struct uda134x_platform_data *pd = codec->card->dev->platform_data;
+
 	int ret;
 
 	printk(KERN_INFO "UDA134X SoC Audio Codec\n");
@@ -531,15 +529,15 @@ static int uda134x_soc_probe(struct snd_soc_codec *codec)
 	switch (pd->model) {
 	case UDA134X_UDA1340:
 	case UDA134X_UDA1344:
-		ret = snd_soc_add_controls(codec, uda1340_snd_controls,
+		ret = snd_soc_add_codec_controls(codec, uda1340_snd_controls,
 					ARRAY_SIZE(uda1340_snd_controls));
 	break;
 	case UDA134X_UDA1341:
-		ret = snd_soc_add_controls(codec, uda1341_snd_controls,
+		ret = snd_soc_add_codec_controls(codec, uda1341_snd_controls,
 					ARRAY_SIZE(uda1341_snd_controls));
 	break;
 	case UDA134X_UDA1345:
-		ret = snd_soc_add_controls(codec, uda1345_snd_controls,
+		ret = snd_soc_add_codec_controls(codec, uda1345_snd_controls,
 					ARRAY_SIZE(uda1345_snd_controls));
 	break;
 	default:
@@ -571,8 +569,7 @@ static int uda134x_soc_remove(struct snd_soc_codec *codec)
 }
 
 #if defined(CONFIG_PM)
-static int uda134x_soc_suspend(struct snd_soc_codec *codec,
-						pm_message_t state)
+static int uda134x_soc_suspend(struct snd_soc_codec *codec)
 {
 	uda134x_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
 	uda134x_set_bias_level(codec, SND_SOC_BIAS_OFF);
@@ -597,12 +594,11 @@ static struct snd_soc_codec_driver soc_codec_dev_uda134x = {
 	.resume =       uda134x_soc_resume,
 	.reg_cache_size = sizeof(uda134x_reg),
 	.reg_word_size = sizeof(u8),
+	.reg_cache_default = uda134x_reg,
 	.reg_cache_step = 1,
 	.read = uda134x_read_reg_cache,
 	.write = uda134x_write,
-#ifdef POWER_OFF_ON_STANDBY
 	.set_bias_level = uda134x_set_bias_level,
-#endif
 };
 
 static int __devinit uda134x_codec_probe(struct platform_device *pdev)
@@ -626,17 +622,7 @@ static struct platform_driver uda134x_codec_driver = {
 	.remove = __devexit_p(uda134x_codec_remove),
 };
 
-static int __init uda134x_codec_init(void)
-{
-	return platform_driver_register(&uda134x_codec_driver);
-}
-module_init(uda134x_codec_init);
-
-static void __exit uda134x_codec_exit(void)
-{
-	platform_driver_unregister(&uda134x_codec_driver);
-}
-module_exit(uda134x_codec_exit);
+module_platform_driver(uda134x_codec_driver);
 
 MODULE_DESCRIPTION("UDA134X ALSA soc codec driver");
 MODULE_AUTHOR("Zoltan Devai, Christian Pellegrin <chripell@evolware.org>");

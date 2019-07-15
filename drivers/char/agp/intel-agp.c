@@ -12,6 +12,7 @@
 #include <asm/smp.h>
 #include "agp.h"
 #include "intel-agp.h"
+#include <drm/intel-gtt.h>
 
 int intel_agp_enabled;
 EXPORT_SYMBOL(intel_agp_enabled);
@@ -717,8 +718,8 @@ static const struct intel_agp_driver_description {
 	{ PCI_DEVICE_ID_INTEL_82820_UP_HB, "i820", &intel_820_driver },
 	{ PCI_DEVICE_ID_INTEL_82830_HB, "830M", &intel_830mp_driver },
 	{ PCI_DEVICE_ID_INTEL_82840_HB, "i840", &intel_840_driver },
-	{ PCI_DEVICE_ID_INTEL_82845_HB, "845G", &intel_845_driver },
-	{ PCI_DEVICE_ID_INTEL_82845G_HB, "830M", &intel_845_driver },
+	{ PCI_DEVICE_ID_INTEL_82845_HB, "i845", &intel_845_driver },
+	{ PCI_DEVICE_ID_INTEL_82845G_HB, "845G", &intel_845_driver },
 	{ PCI_DEVICE_ID_INTEL_82850_HB, "i850", &intel_850_driver },
 	{ PCI_DEVICE_ID_INTEL_82854_HB, "854", &intel_845_driver },
 	{ PCI_DEVICE_ID_INTEL_82855PM_HB, "855PM", &intel_845_driver },
@@ -747,7 +748,7 @@ static int __devinit agp_intel_probe(struct pci_dev *pdev,
 
 	bridge->capndx = cap_ptr;
 
-	if (intel_gmch_probe(pdev, bridge))
+	if (intel_gmch_probe(pdev, NULL, bridge))
 		goto found_gmch;
 
 	for (i = 0; intel_agp_chipsets[i].name != NULL; i++) {
@@ -774,20 +775,14 @@ static int __devinit agp_intel_probe(struct pci_dev *pdev,
 	dev_info(&pdev->dev, "Intel %s Chipset\n", intel_agp_chipsets[i].name);
 
 	/*
-	* If the device has not been properly setup, the following will catch
-	* the problem and should stop the system from crashing.
-	* 20030610 - hamish@zot.org
-	*/
-	if (pci_enable_device(pdev)) {
-		dev_err(&pdev->dev, "can't enable PCI device\n");
-		agp_put_bridge(bridge);
-		return -ENODEV;
-	}
-
-	/*
 	* The following fixes the case where the BIOS has "forgotten" to
 	* provide an address range for the GART.
 	* 20030610 - hamish@zot.org
+	* This happens before pci_enable_device() intentionally;
+	* calling pci_enable_device() before assigning the resource
+	* will result in the GART being disabled on machines with such
+	* BIOSs (the GART ends up with a BAR starting at 0, which
+	* conflicts a lot of other devices).
 	*/
 	r = &pdev->resource[0];
 	if (!r->start && r->end) {
@@ -796,6 +791,17 @@ static int __devinit agp_intel_probe(struct pci_dev *pdev,
 			agp_put_bridge(bridge);
 			return -ENODEV;
 		}
+	}
+
+	/*
+	* If the device has not been properly setup, the following will catch
+	* the problem and should stop the system from crashing.
+	* 20030610 - hamish@zot.org
+	*/
+	if (pci_enable_device(pdev)) {
+		dev_err(&pdev->dev, "can't enable PCI device\n");
+		agp_put_bridge(bridge);
+		return -ENODEV;
 	}
 
 	/* Fill in the mode register */
@@ -819,7 +825,7 @@ static void __devexit agp_intel_remove(struct pci_dev *pdev)
 
 	agp_remove_bridge(bridge);
 
-	intel_gmch_remove(pdev);
+	intel_gmch_remove();
 
 	agp_put_bridge(bridge);
 }
@@ -828,13 +834,8 @@ static void __devexit agp_intel_remove(struct pci_dev *pdev)
 static int agp_intel_resume(struct pci_dev *pdev)
 {
 	struct agp_bridge_data *bridge = pci_get_drvdata(pdev);
-	int ret_val;
 
 	bridge->driver->configure();
-
-	ret_val = agp_rebind_memory();
-	if (ret_val != 0)
-		return ret_val;
 
 	return 0;
 }
@@ -850,6 +851,7 @@ static struct pci_device_id agp_intel_pci_table[] = {
 	.subvendor	= PCI_ANY_ID,			\
 	.subdevice	= PCI_ANY_ID,			\
 	}
+	ID(PCI_DEVICE_ID_INTEL_82441), /* for HAS2 support */
 	ID(PCI_DEVICE_ID_INTEL_82443LX_0),
 	ID(PCI_DEVICE_ID_INTEL_82443BX_0),
 	ID(PCI_DEVICE_ID_INTEL_82443GX_0),
@@ -897,12 +899,10 @@ static struct pci_device_id agp_intel_pci_table[] = {
 	ID(PCI_DEVICE_ID_INTEL_B43_HB),
 	ID(PCI_DEVICE_ID_INTEL_B43_1_HB),
 	ID(PCI_DEVICE_ID_INTEL_IRONLAKE_D_HB),
+	ID(PCI_DEVICE_ID_INTEL_IRONLAKE_D2_HB),
 	ID(PCI_DEVICE_ID_INTEL_IRONLAKE_M_HB),
 	ID(PCI_DEVICE_ID_INTEL_IRONLAKE_MA_HB),
 	ID(PCI_DEVICE_ID_INTEL_IRONLAKE_MC2_HB),
-	ID(PCI_DEVICE_ID_INTEL_SANDYBRIDGE_HB),
-	ID(PCI_DEVICE_ID_INTEL_SANDYBRIDGE_M_HB),
-	ID(PCI_DEVICE_ID_INTEL_SANDYBRIDGE_S_HB),
 	{ }
 };
 

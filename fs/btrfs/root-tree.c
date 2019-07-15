@@ -16,56 +16,52 @@
  * Boston, MA 021110-1307, USA.
  */
 
+#include <linux/uuid.h>
 #include "ctree.h"
 #include "transaction.h"
 #include "disk-io.h"
 #include "print-tree.h"
 
 /*
- *  search forward for a root, starting with objectid 'search_start'
- *  if a root key is found, the objectid we find is filled into 'found_objectid'
- *  and 0 is returned.  < 0 is returned on error, 1 if there is nothing
- *  left in the tree.
+ * Read a root item from the tree. In case we detect a root item smaller then
+ * sizeof(root_item), we know it's an old version of the root structure and
+ * initialize all new fields to zero. The same happens if we detect mismatching
+ * generation numbers as then we know the root was once mounted with an older
+ * kernel that was not aware of the root item structure change.
  */
-int btrfs_search_root(struct btrfs_root *root, u64 search_start,
-		      u64 *found_objectid)
+void btrfs_read_root_item(struct btrfs_root *root,
+			 struct extent_buffer *eb, int slot,
+			 struct btrfs_root_item *item)
 {
-	struct btrfs_path *path;
-	struct btrfs_key search_key;
-	int ret;
+	uuid_le uuid;
+	int len;
+	int need_reset = 0;
 
-	root = root->fs_info->tree_root;
-	search_key.objectid = search_start;
-	search_key.type = (u8)-1;
-	search_key.offset = (u64)-1;
+	len = btrfs_item_size_nr(eb, slot);
+	read_extent_buffer(eb, item, btrfs_item_ptr_offset(eb, slot),
+			min_t(int, len, (int)sizeof(*item)));
+	if (len < sizeof(*item))
+		need_reset = 1;
+	if (!need_reset && btrfs_root_generation(item)
+		!= btrfs_root_generation_v2(item)) {
+		if (btrfs_root_generation_v2(item) != 0) {
+			printk(KERN_WARNING "btrfs: mismatching "
+					"generation and generation_v2 "
+					"found in root item. This root "
+					"was probably mounted with an "
+					"older kernel. Resetting all "
+					"new fields.\n");
+		}
+		need_reset = 1;
+	}
+	if (need_reset) {
+		memset(&item->generation_v2, 0,
+			sizeof(*item) - offsetof(struct btrfs_root_item,
+					generation_v2));
 
-	path = btrfs_alloc_path();
-	BUG_ON(!path);
-again:
-	ret = btrfs_search_slot(NULL, root, &search_key, path, 0, 0);
-	if (ret < 0)
-		goto out;
-	if (ret == 0) {
-		ret = 1;
-		goto out;
+		uuid_le_gen(&uuid);
+		memcpy(item->uuid, uuid.b, BTRFS_UUID_SIZE);
 	}
-	if (path->slots[0] >= btrfs_header_nritems(path->nodes[0])) {
-		ret = btrfs_next_leaf(root, path);
-		if (ret)
-			goto out;
-	}
-	btrfs_item_key_to_cpu(path->nodes[0], &search_key, path->slots[0]);
-	if (search_key.type != BTRFS_ROOT_ITEM_KEY) {
-		search_key.offset++;
-		btrfs_release_path(root, path);
-		goto again;
-	}
-	ret = 0;
-	*found_objectid = search_key.objectid;
-
-out:
-	btrfs_free_path(path);
-	return ret;
 }
 
 /*
@@ -88,7 +84,8 @@ int btrfs_find_last_root(struct btrfs_root *root, u64 objectid,
 	search_key.offset = (u64)-1;
 
 	path = btrfs_alloc_path();
-	BUG_ON(!path);
+	if (!path)
+		return -ENOMEM;
 	ret = btrfs_search_slot(NULL, root, &search_key, path, 0, 0);
 	if (ret < 0)
 		goto out;
@@ -107,23 +104,22 @@ int btrfs_find_last_root(struct btrfs_root *root, u64 objectid,
 		goto out;
 	}
 	if (item)
-		read_extent_buffer(l, item, btrfs_item_ptr_offset(l, slot),
-				   sizeof(*item));
+		btrfs_read_root_item(root, l, slot, item);
 	if (key)
 		memcpy(key, &found_key, sizeof(found_key));
+
 	ret = 0;
 out:
 	btrfs_free_path(path);
 	return ret;
 }
 
-int btrfs_set_root_node(struct btrfs_root_item *item,
-			struct extent_buffer *node)
+void btrfs_set_root_node(struct btrfs_root_item *item,
+			 struct extent_buffer *node)
 {
 	btrfs_set_root_bytenr(item, node->start);
 	btrfs_set_root_level(item, btrfs_header_level(node));
 	btrfs_set_root_generation(item, btrfs_header_generation(node));
-	return 0;
 }
 
 /*
@@ -138,12 +134,15 @@ int btrfs_update_root(struct btrfs_trans_handle *trans, struct btrfs_root
 	int ret;
 	int slot;
 	unsigned long ptr;
+	int old_len;
 
 	path = btrfs_alloc_path();
-	BUG_ON(!path);
+	if (!path)
+		return -ENOMEM;
+
 	ret = btrfs_search_slot(trans, root, key, path, 0, 1);
 	if (ret < 0)
-		goto out;
+		goto out_abort;
 
 	if (ret != 0) {
 		btrfs_print_leaf(root, path->nodes[0]);
@@ -156,20 +155,57 @@ int btrfs_update_root(struct btrfs_trans_handle *trans, struct btrfs_root
 	l = path->nodes[0];
 	slot = path->slots[0];
 	ptr = btrfs_item_ptr_offset(l, slot);
+	old_len = btrfs_item_size_nr(l, slot);
+
+	/*
+	 * If this is the first time we update the root item which originated
+	 * from an older kernel, we need to enlarge the item size to make room
+	 * for the added fields.
+	 */
+	if (old_len < sizeof(*item)) {
+		btrfs_release_path(path);
+		ret = btrfs_search_slot(trans, root, key, path,
+				-1, 1);
+		if (ret < 0)
+			goto out_abort;
+		ret = btrfs_del_item(trans, root, path);
+		if (ret < 0)
+			goto out_abort;
+		btrfs_release_path(path);
+		ret = btrfs_insert_empty_item(trans, root, path,
+				key, sizeof(*item));
+		if (ret < 0)
+			goto out_abort;
+		l = path->nodes[0];
+		slot = path->slots[0];
+		ptr = btrfs_item_ptr_offset(l, slot);
+	}
+
+	/*
+	 * Update generation_v2 so at the next mount we know the new root
+	 * fields are valid.
+	 */
+	btrfs_set_root_generation_v2(item, btrfs_root_generation(item));
+
 	write_extent_buffer(l, item, ptr, sizeof(*item));
 	btrfs_mark_buffer_dirty(path->nodes[0]);
 out:
 	btrfs_free_path(path);
 	return ret;
+
+out_abort:
+	btrfs_abort_transaction(trans, root, ret);
+	goto out;
 }
 
-int btrfs_insert_root(struct btrfs_trans_handle *trans, struct btrfs_root
-		      *root, struct btrfs_key *key, struct btrfs_root_item
-		      *item)
+int btrfs_insert_root(struct btrfs_trans_handle *trans, struct btrfs_root *root,
+		      struct btrfs_key *key, struct btrfs_root_item *item)
 {
-	int ret;
-	ret = btrfs_insert_item(trans, root, key, item, sizeof(*item));
-	return ret;
+	/*
+	 * Make sure generation v1 and v2 match. See update_root for details.
+	 */
+	btrfs_set_root_generation_v2(item, btrfs_root_generation(item));
+	return btrfs_insert_item(trans, root, key, item, sizeof(*item));
 }
 
 /*
@@ -229,7 +265,7 @@ again:
 
 		memcpy(&found_key, &key, sizeof(key));
 		key.offset++;
-		btrfs_release_path(root, path);
+		btrfs_release_path(path);
 		dead_root =
 			btrfs_read_fs_root_no_radix(root->fs_info->tree_root,
 						    &found_key);
@@ -291,7 +327,7 @@ int btrfs_find_orphan_roots(struct btrfs_root *tree_root)
 		}
 
 		btrfs_item_key_to_cpu(leaf, &key, path->slots[0]);
-		btrfs_release_path(tree_root, path);
+		btrfs_release_path(path);
 
 		if (key.objectid != BTRFS_ORPHAN_OBJECTID ||
 		    key.type != BTRFS_ORPHAN_ITEM_KEY)
@@ -332,7 +368,8 @@ int btrfs_del_root(struct btrfs_trans_handle *trans, struct btrfs_root *root,
 	struct extent_buffer *leaf;
 
 	path = btrfs_alloc_path();
-	BUG_ON(!path);
+	if (!path)
+		return -ENOMEM;
 	ret = btrfs_search_slot(trans, root, key, path, -1, 1);
 	if (ret < 0)
 		goto out;
@@ -383,18 +420,22 @@ again:
 		*sequence = btrfs_root_ref_sequence(leaf, ref);
 
 		ret = btrfs_del_item(trans, tree_root, path);
-		BUG_ON(ret);
+		if (ret) {
+			err = ret;
+			goto out;
+		}
 	} else
 		err = -ENOENT;
 
 	if (key.type == BTRFS_ROOT_BACKREF_KEY) {
-		btrfs_release_path(tree_root, path);
+		btrfs_release_path(path);
 		key.objectid = ref_id;
 		key.type = BTRFS_ROOT_REF_KEY;
 		key.offset = root_id;
 		goto again;
 	}
 
+out:
 	btrfs_free_path(path);
 	return err;
 }
@@ -426,6 +467,8 @@ int btrfs_find_root_ref(struct btrfs_root *tree_root,
  *
  * For a back ref the root_id is the id of the subvol or snapshot and
  * ref_id is the id of the tree referencing it.
+ *
+ * Will return 0, -ENOMEM, or anything from the CoW path
  */
 int btrfs_add_root_ref(struct btrfs_trans_handle *trans,
 		       struct btrfs_root *tree_root,
@@ -449,7 +492,11 @@ int btrfs_add_root_ref(struct btrfs_trans_handle *trans,
 again:
 	ret = btrfs_insert_empty_item(trans, tree_root, path, &key,
 				      sizeof(*ref) + name_len);
-	BUG_ON(ret);
+	if (ret) {
+		btrfs_abort_transaction(trans, tree_root, ret);
+		btrfs_free_path(path);
+		return ret;
+	}
 
 	leaf = path->nodes[0];
 	ref = btrfs_item_ptr(leaf, path->slots[0], struct btrfs_root_ref);
@@ -461,7 +508,7 @@ again:
 	btrfs_mark_buffer_dirty(leaf);
 
 	if (key.type == BTRFS_ROOT_BACKREF_KEY) {
-		btrfs_release_path(tree_root, path);
+		btrfs_release_path(path);
 		key.objectid = ref_id;
 		key.type = BTRFS_ROOT_REF_KEY;
 		key.offset = root_id;
@@ -470,4 +517,35 @@ again:
 
 	btrfs_free_path(path);
 	return 0;
+}
+
+/*
+ * Old btrfs forgets to init root_item->flags and root_item->byte_limit
+ * for subvolumes. To work around this problem, we steal a bit from
+ * root_item->inode_item->flags, and use it to indicate if those fields
+ * have been properly initialized.
+ */
+void btrfs_check_and_init_root_item(struct btrfs_root_item *root_item)
+{
+	u64 inode_flags = le64_to_cpu(root_item->inode.flags);
+
+	if (!(inode_flags & BTRFS_INODE_ROOT_ITEM_INIT)) {
+		inode_flags |= BTRFS_INODE_ROOT_ITEM_INIT;
+		root_item->inode.flags = cpu_to_le64(inode_flags);
+		root_item->flags = 0;
+		root_item->byte_limit = 0;
+	}
+}
+
+void btrfs_update_root_times(struct btrfs_trans_handle *trans,
+			     struct btrfs_root *root)
+{
+	struct btrfs_root_item *item = &root->root_item;
+	struct timespec ct = CURRENT_TIME;
+
+	spin_lock(&root->root_times_lock);
+	item->ctransid = cpu_to_le64(trans->transid);
+	item->ctime.sec = cpu_to_le64(ct.tv_sec);
+	item->ctime.nsec = cpu_to_le32(ct.tv_nsec);
+	spin_unlock(&root->root_times_lock);
 }

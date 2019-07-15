@@ -18,6 +18,7 @@
 #include <linux/slab.h>
 #include <linux/workqueue.h>
 #include <linux/mfd/88pm860x.h>
+#include <linux/module.h>
 
 #define LED_PWM_SHIFT		(3)
 #define LED_PWM_MASK		(0x1F)
@@ -113,31 +114,66 @@ static inline int __blink_ctl_mask(int port)
 	return ret;
 }
 
+static int led_power_set(struct pm860x_chip *chip, int port, int on)
+{
+	int ret = -EINVAL;
+
+	switch (port) {
+	case PM8606_LED1_RED:
+	case PM8606_LED1_GREEN:
+	case PM8606_LED1_BLUE:
+		ret = on ? pm8606_osc_enable(chip, RGB1_ENABLE) :
+			pm8606_osc_disable(chip, RGB1_ENABLE);
+		break;
+	case PM8606_LED2_RED:
+	case PM8606_LED2_GREEN:
+	case PM8606_LED2_BLUE:
+		ret = on ? pm8606_osc_enable(chip, RGB2_ENABLE) :
+			pm8606_osc_disable(chip, RGB2_ENABLE);
+		break;
+	}
+	return ret;
+}
+
 static void pm860x_led_work(struct work_struct *work)
 {
 
 	struct pm860x_led *led;
 	struct pm860x_chip *chip;
-	int mask;
+	unsigned char buf[3];
+	int mask, ret;
 
 	led = container_of(work, struct pm860x_led, work);
 	chip = led->chip;
 	mutex_lock(&led->lock);
 	if ((led->current_brightness == 0) && led->brightness) {
+		led_power_set(chip, led->port, 1);
 		if (led->iset) {
 			pm860x_set_bits(led->i2c, __led_off(led->port),
 					LED_CURRENT_MASK, led->iset);
 		}
+		pm860x_set_bits(led->i2c, __blink_off(led->port),
+				LED_BLINK_MASK, LED_ON_CONTINUOUS);
 		mask = __blink_ctl_mask(led->port);
 		pm860x_set_bits(led->i2c, PM8606_WLED3B, mask, mask);
-	} else if (led->brightness == 0) {
-		pm860x_set_bits(led->i2c, __led_off(led->port),
-				LED_CURRENT_MASK, 0);
-		mask = __blink_ctl_mask(led->port);
-		pm860x_set_bits(led->i2c, PM8606_WLED3B, mask, 0);
 	}
 	pm860x_set_bits(led->i2c, __led_off(led->port), LED_PWM_MASK,
 			led->brightness);
+
+	if (led->brightness == 0) {
+		pm860x_bulk_read(led->i2c, __led_off(led->port), 3, buf);
+		ret = buf[0] & LED_PWM_MASK;
+		ret |= buf[1] & LED_PWM_MASK;
+		ret |= buf[2] & LED_PWM_MASK;
+		if (ret == 0) {
+			/* unset current since no led is lighting */
+			pm860x_set_bits(led->i2c, __led_off(led->port),
+					LED_CURRENT_MASK, 0);
+			mask = __blink_ctl_mask(led->port);
+			pm860x_set_bits(led->i2c, PM8606_WLED3B, mask, 0);
+			led_power_set(chip, led->port, 0);
+		}
+	}
 	led->current_brightness = led->brightness;
 	dev_dbg(chip->dev, "Update LED. (reg:%d, brightness:%d)\n",
 		__led_off(led->port), led->brightness);
@@ -153,29 +189,9 @@ static void pm860x_led_set(struct led_classdev *cdev,
 	schedule_work(&data->work);
 }
 
-static int __check_device(struct pm860x_led_pdata *pdata, char *name)
-{
-	struct pm860x_led_pdata *p = pdata;
-	int ret = -EINVAL;
-
-	while (p && p->id) {
-		if ((p->id != PM8606_ID_LED) || (p->flags < 0))
-			break;
-
-		if (!strncmp(name, pm860x_led_name[p->flags],
-			MFD_NAME_SIZE)) {
-			ret = (int)p->flags;
-			break;
-		}
-		p++;
-	}
-	return ret;
-}
-
 static int pm860x_led_probe(struct platform_device *pdev)
 {
 	struct pm860x_chip *chip = dev_get_drvdata(pdev->dev.parent);
-	struct pm860x_platform_data *pm860x_pdata;
 	struct pm860x_led_pdata *pdata;
 	struct pm860x_led *data;
 	struct resource *res;
@@ -187,26 +203,23 @@ static int pm860x_led_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	if (pdev->dev.parent->platform_data) {
-		pm860x_pdata = pdev->dev.parent->platform_data;
-		pdata = pm860x_pdata->led;
-	} else {
+	pdata = pdev->dev.platform_data;
+	if (pdata == NULL) {
 		dev_err(&pdev->dev, "No platform data!\n");
 		return -EINVAL;
 	}
 
-	data = kzalloc(sizeof(struct pm860x_led), GFP_KERNEL);
+	data = devm_kzalloc(&pdev->dev, sizeof(struct pm860x_led), GFP_KERNEL);
 	if (data == NULL)
 		return -ENOMEM;
-	strncpy(data->name, res->name, MFD_NAME_SIZE);
+	strncpy(data->name, res->name, MFD_NAME_SIZE - 1);
 	dev_set_drvdata(&pdev->dev, data);
 	data->chip = chip;
 	data->i2c = (chip->id == CHIP_PM8606) ? chip->client : chip->companion;
 	data->iset = pdata->iset;
-	data->port = __check_device(pdata, data->name);
+	data->port = pdata->flags;
 	if (data->port < 0) {
 		dev_err(&pdev->dev, "check device failed\n");
-		kfree(data);
 		return -EINVAL;
 	}
 
@@ -219,12 +232,10 @@ static int pm860x_led_probe(struct platform_device *pdev)
 	ret = led_classdev_register(chip->dev, &data->cdev);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "Failed to register LED: %d\n", ret);
-		goto out;
+		return ret;
 	}
+	pm860x_led_set(&data->cdev, 0);
 	return 0;
-out:
-	kfree(data);
-	return ret;
 }
 
 static int pm860x_led_remove(struct platform_device *pdev)
@@ -232,7 +243,6 @@ static int pm860x_led_remove(struct platform_device *pdev)
 	struct pm860x_led *data = platform_get_drvdata(pdev);
 
 	led_classdev_unregister(&data->cdev);
-	kfree(data);
 
 	return 0;
 }
@@ -246,17 +256,7 @@ static struct platform_driver pm860x_led_driver = {
 	.remove	= pm860x_led_remove,
 };
 
-static int __devinit pm860x_led_init(void)
-{
-	return platform_driver_register(&pm860x_led_driver);
-}
-module_init(pm860x_led_init);
-
-static void __devexit pm860x_led_exit(void)
-{
-	platform_driver_unregister(&pm860x_led_driver);
-}
-module_exit(pm860x_led_exit);
+module_platform_driver(pm860x_led_driver);
 
 MODULE_DESCRIPTION("LED driver for Marvell PM860x");
 MODULE_AUTHOR("Haojian Zhuang <haojian.zhuang@marvell.com>");

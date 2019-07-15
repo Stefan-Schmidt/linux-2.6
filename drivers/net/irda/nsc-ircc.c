@@ -52,6 +52,7 @@
 #include <linux/ioport.h>
 #include <linux/delay.h>
 #include <linux/init.h>
+#include <linux/interrupt.h>
 #include <linux/rtnetlink.h>
 #include <linux/dma-mapping.h>
 #include <linux/pnp.h>
@@ -716,7 +717,7 @@ static int nsc_ircc_probe_338(nsc_chip_t *chip, chipio_t *info)
 	int reg, com = 0;
 	int pnp;
 
-	/* Read funtion enable register (FER) */
+	/* Read function enable register (FER) */
 	outb(CFG_338_FER, cfg_base);
 	reg = inb(cfg_base+1);
 
@@ -1663,7 +1664,7 @@ static int nsc_ircc_dma_xmit_complete(struct nsc_ircc_cb *self)
 	switch_bank(iobase, BANK0);
         outb(inb(iobase+MCR) & ~MCR_DMA_EN, iobase+MCR);
 	
-	/* Check for underrrun! */
+	/* Check for underrun! */
 	if (inb(iobase+ASCR) & ASCR_TXUR) {
 		self->netdev->stats.tx_errors++;
 		self->netdev->stats.tx_fifo_errors++;

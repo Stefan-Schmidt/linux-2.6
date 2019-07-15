@@ -67,6 +67,7 @@
 #include <linux/buffer_head.h>		/* for sync_blockdev() */
 #include <linux/bio.h>
 #include <linux/freezer.h>
+#include <linux/export.h>
 #include <linux/delay.h>
 #include <linux/mutex.h>
 #include <linux/seq_file.h>
@@ -1120,14 +1121,11 @@ int lmLogOpen(struct super_block *sb)
 	 * file systems to log may have n-to-1 relationship;
 	 */
 
-	bdev = open_by_devnum(sbi->logdev, FMODE_READ|FMODE_WRITE);
+	bdev = blkdev_get_by_dev(sbi->logdev, FMODE_READ|FMODE_WRITE|FMODE_EXCL,
+				 log);
 	if (IS_ERR(bdev)) {
-		rc = -PTR_ERR(bdev);
+		rc = PTR_ERR(bdev);
 		goto free;
-	}
-
-	if ((rc = bd_claim(bdev, log))) {
-		goto close;
 	}
 
 	log->bdev = bdev;
@@ -1137,7 +1135,7 @@ int lmLogOpen(struct super_block *sb)
 	 * initialize log:
 	 */
 	if ((rc = lmLogInit(log)))
-		goto unclaim;
+		goto close;
 
 	list_add(&log->journal_list, &jfs_external_logs);
 
@@ -1163,11 +1161,8 @@ journal_found:
 	list_del(&log->journal_list);
 	lbmLogShutdown(log);
 
-      unclaim:
-	bd_release(bdev);
-
       close:		/* close external log device */
-	blkdev_put(bdev, FMODE_READ|FMODE_WRITE);
+	blkdev_put(bdev, FMODE_READ|FMODE_WRITE|FMODE_EXCL);
 
       free:		/* free log descriptor */
 	mutex_unlock(&jfs_log_mutex);
@@ -1512,8 +1507,7 @@ int lmLogClose(struct super_block *sb)
 	bdev = log->bdev;
 	rc = lmLogShutdown(log);
 
-	bd_release(bdev);
-	blkdev_put(bdev, FMODE_READ|FMODE_WRITE);
+	blkdev_put(bdev, FMODE_READ|FMODE_WRITE|FMODE_EXCL);
 
 	kfree(log);
 
@@ -2355,7 +2349,7 @@ int jfsIOWait(void *arg)
 
 		if (freezing(current)) {
 			spin_unlock_irq(&log_redrive_lock);
-			refrigerator();
+			try_to_freeze();
 		} else {
 			set_current_state(TASK_INTERRUPTIBLE);
 			spin_unlock_irq(&log_redrive_lock);

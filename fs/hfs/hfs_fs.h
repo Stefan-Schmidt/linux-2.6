@@ -14,6 +14,7 @@
 #include <linux/mutex.h>
 #include <linux/buffer_head.h>
 #include <linux/fs.h>
+#include <linux/workqueue.h>
 
 #include <asm/byteorder.h>
 #include <asm/uaccess.h>
@@ -137,16 +138,15 @@ struct hfs_sb_info {
 	gid_t s_gid;				/* The gid of all files */
 
 	int session, part;
-
 	struct nls_table *nls_io, *nls_disk;
-
 	struct mutex bitmap_lock;
-
 	unsigned long flags;
-
 	u16 blockoffset;
-
 	int fs_div;
+	struct super_block *sb;
+	int work_queued;		/* non-zero delayed work is queued */
+	struct delayed_work mdb_work;	/* MDB flush delayed work */
+	spinlock_t work_lock;		/* protects mdb_work and work_queued */
 };
 
 #define HFS_FLG_BITMAP_DIRTY	0
@@ -184,7 +184,7 @@ extern int hfs_get_block(struct inode *, sector_t, struct buffer_head *, int);
 extern const struct address_space_operations hfs_aops;
 extern const struct address_space_operations hfs_btree_aops;
 
-extern struct inode *hfs_new_inode(struct inode *, struct qstr *, int);
+extern struct inode *hfs_new_inode(struct inode *, struct qstr *, umode_t);
 extern void hfs_inode_write_fork(struct inode *, struct hfs_extent *, __be32 *, __be32 *);
 extern int hfs_write_inode(struct inode *, struct writeback_control *);
 extern int hfs_inode_setattr(struct dentry *, struct iattr *);
@@ -213,14 +213,21 @@ extern int hfs_part_find(struct super_block *, sector_t *, sector_t *);
 /* string.c */
 extern const struct dentry_operations hfs_dentry_operations;
 
-extern int hfs_hash_dentry(struct dentry *, struct qstr *);
+extern int hfs_hash_dentry(const struct dentry *, const struct inode *,
+		struct qstr *);
 extern int hfs_strcmp(const unsigned char *, unsigned int,
 		      const unsigned char *, unsigned int);
-extern int hfs_compare_dentry(struct dentry *, struct qstr *, struct qstr *);
+extern int hfs_compare_dentry(const struct dentry *parent,
+		const struct inode *pinode,
+		const struct dentry *dentry, const struct inode *inode,
+		unsigned int len, const char *str, const struct qstr *name);
 
 /* trans.c */
 extern void hfs_asc2mac(struct super_block *, struct hfs_name *, struct qstr *);
 extern int hfs_mac2asc(struct super_block *, char *, const struct hfs_name *);
+
+/* super.c */
+extern void hfs_mark_mdb_dirty(struct super_block *sb);
 
 extern struct timezone sys_tz;
 
@@ -249,7 +256,7 @@ static inline const char *hfs_mdb_name(struct super_block *sb)
 static inline void hfs_bitmap_dirty(struct super_block *sb)
 {
 	set_bit(HFS_FLG_BITMAP_DIRTY, &HFS_SB(sb)->flags);
-	sb->s_dirt = 1;
+	hfs_mark_mdb_dirty(sb);
 }
 
 #define sb_bread512(sb, sec, data) ({			\

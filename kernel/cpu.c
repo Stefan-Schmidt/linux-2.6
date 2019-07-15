@@ -10,11 +10,17 @@
 #include <linux/sched.h>
 #include <linux/unistd.h>
 #include <linux/cpu.h>
-#include <linux/module.h>
+#include <linux/oom.h>
+#include <linux/rcupdate.h>
+#include <linux/export.h>
+#include <linux/bug.h>
 #include <linux/kthread.h>
 #include <linux/stop_machine.h>
 #include <linux/mutex.h>
 #include <linux/gfp.h>
+#include <linux/suspend.h>
+
+#include "smpboot.h"
 
 #ifdef CONFIG_SMP
 /* Serializes the updates to cpu_online_mask, cpu_present_mask */
@@ -126,7 +132,7 @@ static void cpu_hotplug_done(void)
 #else /* #if CONFIG_HOTPLUG_CPU */
 static void cpu_hotplug_begin(void) {}
 static void cpu_hotplug_done(void) {}
-#endif	/* #esle #if CONFIG_HOTPLUG_CPU */
+#endif	/* #else #if CONFIG_HOTPLUG_CPU */
 
 /* Need to know about CPUs going up/down? */
 int __ref register_cpu_notifier(struct notifier_block *nb)
@@ -160,7 +166,6 @@ static void cpu_notify_nofail(unsigned long val, void *v)
 {
 	BUG_ON(cpu_notify(val, v));
 }
-
 EXPORT_SYMBOL(register_cpu_notifier);
 
 void __ref unregister_cpu_notifier(struct notifier_block *nb)
@@ -171,6 +176,47 @@ void __ref unregister_cpu_notifier(struct notifier_block *nb)
 }
 EXPORT_SYMBOL(unregister_cpu_notifier);
 
+/**
+ * clear_tasks_mm_cpumask - Safely clear tasks' mm_cpumask for a CPU
+ * @cpu: a CPU id
+ *
+ * This function walks all processes, finds a valid mm struct for each one and
+ * then clears a corresponding bit in mm's cpumask.  While this all sounds
+ * trivial, there are various non-obvious corner cases, which this function
+ * tries to solve in a safe manner.
+ *
+ * Also note that the function uses a somewhat relaxed locking scheme, so it may
+ * be called only for an already offlined CPU.
+ */
+void clear_tasks_mm_cpumask(int cpu)
+{
+	struct task_struct *p;
+
+	/*
+	 * This function is called after the cpu is taken down and marked
+	 * offline, so its not like new tasks will ever get this cpu set in
+	 * their mm mask. -- Peter Zijlstra
+	 * Thus, we may use rcu_read_lock() here, instead of grabbing
+	 * full-fledged tasklist_lock.
+	 */
+	WARN_ON(cpu_online(cpu));
+	rcu_read_lock();
+	for_each_process(p) {
+		struct task_struct *t;
+
+		/*
+		 * Main thread might exit, but other threads may still have
+		 * a valid mm. Find one.
+		 */
+		t = find_lock_task_mm(p);
+		if (!t)
+			continue;
+		cpumask_clear_cpu(cpu, mm_cpumask(t->mm));
+		task_unlock(t);
+	}
+	rcu_read_unlock();
+}
+
 static inline void check_for_tasks(int cpu)
 {
 	struct task_struct *p;
@@ -178,8 +224,7 @@ static inline void check_for_tasks(int cpu)
 	write_lock_irq(&tasklist_lock);
 	for_each_process(p) {
 		if (task_cpu(p) == cpu && p->state == TASK_RUNNING &&
-		    (!cputime_eq(p->utime, cputime_zero) ||
-		     !cputime_eq(p->stime, cputime_zero)))
+		    (p->utime || p->stime))
 			printk(KERN_WARNING "Task %s (pid = %d) is on cpu %d "
 				"(state = %ld, flags = %x)\n",
 				p->comm, task_pid_nr(p), cpu,
@@ -189,7 +234,6 @@ static inline void check_for_tasks(int cpu)
 }
 
 struct take_cpu_down_param {
-	struct task_struct *caller;
 	unsigned long mod;
 	void *hcpu;
 };
@@ -198,7 +242,6 @@ struct take_cpu_down_param {
 static int __ref take_cpu_down(void *_param)
 {
 	struct take_cpu_down_param *param = _param;
-	unsigned int cpu = (unsigned long)param->hcpu;
 	int err;
 
 	/* Ensure this CPU doesn't handle any more interrupts. */
@@ -207,12 +250,6 @@ static int __ref take_cpu_down(void *_param)
 		return err;
 
 	cpu_notify(CPU_DYING | param->mod, param->hcpu);
-
-	if (task_cpu(param->caller) == cpu)
-		move_task_off_dead_cpu(cpu, param->caller);
-	/* Force idle task to run as soon as we yield: it should
-	   immediately notice cpu is offline and die quickly. */
-	sched_idle_next();
 	return 0;
 }
 
@@ -223,7 +260,6 @@ static int __ref _cpu_down(unsigned int cpu, int tasks_frozen)
 	void *hcpu = (void *)(long)cpu;
 	unsigned long mod = tasks_frozen ? CPU_TASKS_FROZEN : 0;
 	struct take_cpu_down_param tcd_param = {
-		.caller = current,
 		.mod = mod,
 		.hcpu = hcpu,
 	};
@@ -235,6 +271,7 @@ static int __ref _cpu_down(unsigned int cpu, int tasks_frozen)
 		return -EINVAL;
 
 	cpu_hotplug_begin();
+
 	err = __cpu_notify(CPU_DOWN_PREPARE | mod, hcpu, -1, &nr_calls);
 	if (err) {
 		nr_calls--;
@@ -253,9 +290,15 @@ static int __ref _cpu_down(unsigned int cpu, int tasks_frozen)
 	}
 	BUG_ON(cpu_online(cpu));
 
-	/* Wait for it to sleep (leaving idle task). */
+	/*
+	 * The migration_call() CPU_DYING callback will have removed all
+	 * runnable tasks from the cpu, there's only the idle task left now
+	 * that the migration thread is done doing the stop_machine thing.
+	 *
+	 * Wait for the stop thread to go away.
+	 */
 	while (!idle_cpu(cpu))
-		yield();
+		cpu_relax();
 
 	/* This actually kills the CPU. */
 	__cpu_die(cpu);
@@ -298,21 +341,29 @@ static int __cpuinit _cpu_up(unsigned int cpu, int tasks_frozen)
 	int ret, nr_calls = 0;
 	void *hcpu = (void *)(long)cpu;
 	unsigned long mod = tasks_frozen ? CPU_TASKS_FROZEN : 0;
+	struct task_struct *idle;
 
 	if (cpu_online(cpu) || !cpu_present(cpu))
 		return -EINVAL;
 
 	cpu_hotplug_begin();
+
+	idle = idle_thread_get(cpu);
+	if (IS_ERR(idle)) {
+		ret = PTR_ERR(idle);
+		goto out;
+	}
+
 	ret = __cpu_notify(CPU_UP_PREPARE | mod, hcpu, -1, &nr_calls);
 	if (ret) {
 		nr_calls--;
-		printk("%s: attempt to bring up CPU %u failed\n",
+		printk(KERN_WARNING "%s: attempt to bring up CPU %u failed\n",
 				__func__, cpu);
 		goto out_notify;
 	}
 
 	/* Arch-specific enabling code. */
-	ret = __cpu_up(cpu);
+	ret = __cpu_up(cpu, idle);
 	if (ret != 0)
 		goto out_notify;
 	BUG_ON(!cpu_online(cpu));
@@ -323,6 +374,7 @@ static int __cpuinit _cpu_up(unsigned int cpu, int tasks_frozen)
 out_notify:
 	if (ret != 0)
 		__cpu_notify(CPU_UP_CANCELED | mod, hcpu, nr_calls, NULL);
+out:
 	cpu_hotplug_done();
 
 	return ret;
@@ -364,7 +416,7 @@ int __cpuinit cpu_up(unsigned int cpu)
 
 	if (pgdat->node_zonelists->_zonerefs->zone == NULL) {
 		mutex_lock(&zonelists_mutex);
-		build_all_zonelists(NULL);
+		build_all_zonelists(NULL, NULL);
 		mutex_unlock(&zonelists_mutex);
 	}
 #endif
@@ -382,9 +434,18 @@ out:
 	cpu_maps_update_done();
 	return err;
 }
+EXPORT_SYMBOL_GPL(cpu_up);
 
 #ifdef CONFIG_PM_SLEEP_SMP
 static cpumask_var_t frozen_cpus;
+
+void __weak arch_disable_nonboot_cpus_begin(void)
+{
+}
+
+void __weak arch_disable_nonboot_cpus_end(void)
+{
+}
 
 int disable_nonboot_cpus(void)
 {
@@ -397,6 +458,7 @@ int disable_nonboot_cpus(void)
 	 * with the userspace trying to use the CPU hotplug at the same time
 	 */
 	cpumask_clear(frozen_cpus);
+	arch_disable_nonboot_cpus_begin();
 
 	printk("Disabling non-boot CPUs ...\n");
 	for_each_online_cpu(cpu) {
@@ -411,6 +473,8 @@ int disable_nonboot_cpus(void)
 			break;
 		}
 	}
+
+	arch_disable_nonboot_cpus_end();
 
 	if (!error) {
 		BUG_ON(num_online_cpus() > 1);
@@ -441,14 +505,14 @@ void __ref enable_nonboot_cpus(void)
 	if (cpumask_empty(frozen_cpus))
 		goto out;
 
-	printk("Enabling non-boot CPUs ...\n");
+	printk(KERN_INFO "Enabling non-boot CPUs ...\n");
 
 	arch_enable_nonboot_cpus_begin();
 
 	for_each_cpu(cpu, frozen_cpus) {
 		error = _cpu_up(cpu, 1);
 		if (!error) {
-			printk("CPU%d is up\n", cpu);
+			printk(KERN_INFO "CPU%d is up\n", cpu);
 			continue;
 		}
 		printk(KERN_WARNING "Error taking CPU%d up: %d\n", cpu, error);
@@ -461,13 +525,86 @@ out:
 	cpu_maps_update_done();
 }
 
-static int alloc_frozen_cpus(void)
+static int __init alloc_frozen_cpus(void)
 {
 	if (!alloc_cpumask_var(&frozen_cpus, GFP_KERNEL|__GFP_ZERO))
 		return -ENOMEM;
 	return 0;
 }
 core_initcall(alloc_frozen_cpus);
+
+/*
+ * Prevent regular CPU hotplug from racing with the freezer, by disabling CPU
+ * hotplug when tasks are about to be frozen. Also, don't allow the freezer
+ * to continue until any currently running CPU hotplug operation gets
+ * completed.
+ * To modify the 'cpu_hotplug_disabled' flag, we need to acquire the
+ * 'cpu_add_remove_lock'. And this same lock is also taken by the regular
+ * CPU hotplug path and released only after it is complete. Thus, we
+ * (and hence the freezer) will block here until any currently running CPU
+ * hotplug operation gets completed.
+ */
+void cpu_hotplug_disable_before_freeze(void)
+{
+	cpu_maps_update_begin();
+	cpu_hotplug_disabled = 1;
+	cpu_maps_update_done();
+}
+
+
+/*
+ * When tasks have been thawed, re-enable regular CPU hotplug (which had been
+ * disabled while beginning to freeze tasks).
+ */
+void cpu_hotplug_enable_after_thaw(void)
+{
+	cpu_maps_update_begin();
+	cpu_hotplug_disabled = 0;
+	cpu_maps_update_done();
+}
+
+/*
+ * When callbacks for CPU hotplug notifications are being executed, we must
+ * ensure that the state of the system with respect to the tasks being frozen
+ * or not, as reported by the notification, remains unchanged *throughout the
+ * duration* of the execution of the callbacks.
+ * Hence we need to prevent the freezer from racing with regular CPU hotplug.
+ *
+ * This synchronization is implemented by mutually excluding regular CPU
+ * hotplug and Suspend/Hibernate call paths by hooking onto the Suspend/
+ * Hibernate notifications.
+ */
+static int
+cpu_hotplug_pm_callback(struct notifier_block *nb,
+			unsigned long action, void *ptr)
+{
+	switch (action) {
+
+	case PM_SUSPEND_PREPARE:
+	case PM_HIBERNATION_PREPARE:
+		cpu_hotplug_disable_before_freeze();
+		break;
+
+	case PM_POST_SUSPEND:
+	case PM_POST_HIBERNATION:
+		cpu_hotplug_enable_after_thaw();
+		break;
+
+	default:
+		return NOTIFY_DONE;
+	}
+
+	return NOTIFY_OK;
+}
+
+
+static int __init cpu_hotplug_pm_sync_init(void)
+{
+	pm_notifier(cpu_hotplug_pm_callback, 0);
+	return 0;
+}
+core_initcall(cpu_hotplug_pm_sync_init);
+
 #endif /* CONFIG_PM_SLEEP_SMP */
 
 /**
@@ -500,7 +637,7 @@ void __cpuinit notify_cpu_starting(unsigned int cpu)
  */
 
 /* cpu_bit_bitmap[0] is empty - so we can back into it */
-#define MASK_DECLARE_1(x)	[x+1][0] = 1UL << (x)
+#define MASK_DECLARE_1(x)	[x+1][0] = (1UL << (x))
 #define MASK_DECLARE_2(x)	MASK_DECLARE_1(x), MASK_DECLARE_1(x+1)
 #define MASK_DECLARE_4(x)	MASK_DECLARE_2(x), MASK_DECLARE_2(x+2)
 #define MASK_DECLARE_8(x)	MASK_DECLARE_4(x), MASK_DECLARE_4(x+4)

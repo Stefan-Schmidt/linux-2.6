@@ -9,12 +9,15 @@
 #include <linux/mm.h>
 #include <linux/pm.h>
 #include <linux/memblock.h>
+#include <linux/cpuidle.h>
+#include <linux/cpufreq.h>
 
 #include <asm/elf.h>
 #include <asm/vdso.h>
 #include <asm/e820.h>
 #include <asm/setup.h>
 #include <asm/acpi.h>
+#include <asm/numa.h>
 #include <asm/xen/hypervisor.h>
 #include <asm/xen/hypercall.h>
 
@@ -23,9 +26,7 @@
 #include <xen/interface/callback.h>
 #include <xen/interface/memory.h>
 #include <xen/interface/physdev.h>
-#include <xen/interface/memory.h>
 #include <xen/features.h>
-
 #include "xen-ops.h"
 #include "vdso.h"
 
@@ -37,7 +38,10 @@ extern void xen_syscall_target(void);
 extern void xen_syscall32_target(void);
 
 /* Amount of extra memory space we add to the e820 ranges */
-phys_addr_t xen_extra_mem_start, xen_extra_mem_size;
+struct xen_memory_region xen_extra_mem[XEN_EXTRA_MEM_MAX_REGIONS] __initdata;
+
+/* Number of pages released from the initial allocation. */
+unsigned long xen_released_pages;
 
 /* 
  * The maximum amount of extra memory compared to the base size.  The
@@ -51,90 +55,262 @@ phys_addr_t xen_extra_mem_start, xen_extra_mem_size;
  */
 #define EXTRA_MEM_RATIO		(10)
 
-static __init void xen_add_extra_mem(unsigned long pages)
+static void __init xen_add_extra_mem(u64 start, u64 size)
 {
-	u64 size = (u64)pages * PAGE_SIZE;
-	u64 extra_start = xen_extra_mem_start + xen_extra_mem_size;
+	unsigned long pfn;
+	int i;
 
-	if (!pages)
-		return;
+	for (i = 0; i < XEN_EXTRA_MEM_MAX_REGIONS; i++) {
+		/* Add new region. */
+		if (xen_extra_mem[i].size == 0) {
+			xen_extra_mem[i].start = start;
+			xen_extra_mem[i].size  = size;
+			break;
+		}
+		/* Append to existing region. */
+		if (xen_extra_mem[i].start + xen_extra_mem[i].size == start) {
+			xen_extra_mem[i].size += size;
+			break;
+		}
+	}
+	if (i == XEN_EXTRA_MEM_MAX_REGIONS)
+		printk(KERN_WARNING "Warning: not enough extra memory regions\n");
 
-	e820_add_region(extra_start, size, E820_RAM);
-	sanitize_e820_map(e820.map, ARRAY_SIZE(e820.map), &e820.nr_map);
+	memblock_reserve(start, size);
 
-	memblock_x86_reserve_range(extra_start, extra_start + size, "XEN EXTRA");
+	xen_max_p2m_pfn = PFN_DOWN(start + size);
+	for (pfn = PFN_DOWN(start); pfn < xen_max_p2m_pfn; pfn++) {
+		unsigned long mfn = pfn_to_mfn(pfn);
 
-	xen_extra_mem_size += size;
+		if (WARN(mfn == pfn, "Trying to over-write 1-1 mapping (pfn: %lx)\n", pfn))
+			continue;
+		WARN(mfn != INVALID_P2M_ENTRY, "Trying to remove %lx which has %lx mfn!\n",
+			pfn, mfn);
 
-	xen_max_p2m_pfn = PFN_DOWN(extra_start + size);
+		__set_phys_to_machine(pfn, INVALID_P2M_ENTRY);
+	}
 }
 
-static unsigned long __init xen_release_chunk(phys_addr_t start_addr,
-					      phys_addr_t end_addr)
+static unsigned long __init xen_do_chunk(unsigned long start,
+					 unsigned long end, bool release)
 {
 	struct xen_memory_reservation reservation = {
 		.address_bits = 0,
 		.extent_order = 0,
 		.domid        = DOMID_SELF
 	};
-	unsigned long start, end;
 	unsigned long len = 0;
 	unsigned long pfn;
 	int ret;
 
-	start = PFN_UP(start_addr);
-	end = PFN_DOWN(end_addr);
-
-	if (end <= start)
-		return 0;
-
-	printk(KERN_INFO "xen_release_chunk: looking at area pfn %lx-%lx: ",
-	       start, end);
-	for(pfn = start; pfn < end; pfn++) {
+	for (pfn = start; pfn < end; pfn++) {
+		unsigned long frame;
 		unsigned long mfn = pfn_to_mfn(pfn);
 
-		/* Make sure pfn exists to start with */
-		if (mfn == INVALID_P2M_ENTRY || mfn_to_pfn(mfn) != pfn)
-			continue;
-
-		set_xen_guest_handle(reservation.extent_start, &mfn);
+		if (release) {
+			/* Make sure pfn exists to start with */
+			if (mfn == INVALID_P2M_ENTRY || mfn_to_pfn(mfn) != pfn)
+				continue;
+			frame = mfn;
+		} else {
+			if (mfn != INVALID_P2M_ENTRY)
+				continue;
+			frame = pfn;
+		}
+		set_xen_guest_handle(reservation.extent_start, &frame);
 		reservation.nr_extents = 1;
 
-		ret = HYPERVISOR_memory_op(XENMEM_decrease_reservation,
+		ret = HYPERVISOR_memory_op(release ? XENMEM_decrease_reservation : XENMEM_populate_physmap,
 					   &reservation);
-		WARN(ret != 1, "Failed to release memory %lx-%lx err=%d\n",
-		     start, end, ret);
+		WARN(ret != 1, "Failed to %s pfn %lx err=%d\n",
+		     release ? "release" : "populate", pfn, ret);
+
 		if (ret == 1) {
-			set_phys_to_machine(pfn, INVALID_P2M_ENTRY);
+			if (!early_set_phys_to_machine(pfn, release ? INVALID_P2M_ENTRY : frame)) {
+				if (release)
+					break;
+				set_xen_guest_handle(reservation.extent_start, &frame);
+				reservation.nr_extents = 1;
+				ret = HYPERVISOR_memory_op(XENMEM_decrease_reservation,
+							   &reservation);
+				break;
+			}
 			len++;
-		}
+		} else
+			break;
 	}
-	printk(KERN_CONT "%ld pages freed\n", len);
+	if (len)
+		printk(KERN_INFO "%s %lx-%lx pfn range: %lu pages %s\n",
+		       release ? "Freeing" : "Populating",
+		       start, end, len,
+		       release ? "freed" : "added");
 
 	return len;
 }
 
-static unsigned long __init xen_return_unused_memory(unsigned long max_pfn,
-						     const struct e820map *e820)
+static unsigned long __init xen_release_chunk(unsigned long start,
+					      unsigned long end)
 {
-	phys_addr_t max_addr = PFN_PHYS(max_pfn);
-	phys_addr_t last_end = 0;
+	return xen_do_chunk(start, end, true);
+}
+
+static unsigned long __init xen_populate_chunk(
+	const struct e820entry *list, size_t map_size,
+	unsigned long max_pfn, unsigned long *last_pfn,
+	unsigned long credits_left)
+{
+	const struct e820entry *entry;
+	unsigned int i;
+	unsigned long done = 0;
+	unsigned long dest_pfn;
+
+	for (i = 0, entry = list; i < map_size; i++, entry++) {
+		unsigned long s_pfn;
+		unsigned long e_pfn;
+		unsigned long pfns;
+		long capacity;
+
+		if (credits_left <= 0)
+			break;
+
+		if (entry->type != E820_RAM)
+			continue;
+
+		e_pfn = PFN_DOWN(entry->addr + entry->size);
+
+		/* We only care about E820 after the xen_start_info->nr_pages */
+		if (e_pfn <= max_pfn)
+			continue;
+
+		s_pfn = PFN_UP(entry->addr);
+		/* If the E820 falls within the nr_pages, we want to start
+		 * at the nr_pages PFN.
+		 * If that would mean going past the E820 entry, skip it
+		 */
+		if (s_pfn <= max_pfn) {
+			capacity = e_pfn - max_pfn;
+			dest_pfn = max_pfn;
+		} else {
+			capacity = e_pfn - s_pfn;
+			dest_pfn = s_pfn;
+		}
+
+		if (credits_left < capacity)
+			capacity = credits_left;
+
+		pfns = xen_do_chunk(dest_pfn, dest_pfn + capacity, false);
+		done += pfns;
+		*last_pfn = (dest_pfn + pfns);
+		if (pfns < capacity)
+			break;
+		credits_left -= pfns;
+	}
+	return done;
+}
+
+static void __init xen_set_identity_and_release_chunk(
+	unsigned long start_pfn, unsigned long end_pfn, unsigned long nr_pages,
+	unsigned long *released, unsigned long *identity)
+{
+	unsigned long pfn;
+
+	/*
+	 * If the PFNs are currently mapped, the VA mapping also needs
+	 * to be updated to be 1:1.
+	 */
+	for (pfn = start_pfn; pfn <= max_pfn_mapped && pfn < end_pfn; pfn++)
+		(void)HYPERVISOR_update_va_mapping(
+			(unsigned long)__va(pfn << PAGE_SHIFT),
+			mfn_pte(pfn, PAGE_KERNEL_IO), 0);
+
+	if (start_pfn < nr_pages)
+		*released += xen_release_chunk(
+			start_pfn, min(end_pfn, nr_pages));
+
+	*identity += set_phys_range_identity(start_pfn, end_pfn);
+}
+
+static unsigned long __init xen_set_identity_and_release(
+	const struct e820entry *list, size_t map_size, unsigned long nr_pages)
+{
+	phys_addr_t start = 0;
 	unsigned long released = 0;
+	unsigned long identity = 0;
+	const struct e820entry *entry;
 	int i;
 
-	for (i = 0; i < e820->nr_map && last_end < max_addr; i++) {
-		phys_addr_t end = e820->map[i].addr;
-		end = min(max_addr, end);
+	/*
+	 * Combine non-RAM regions and gaps until a RAM region (or the
+	 * end of the map) is reached, then set the 1:1 map and
+	 * release the pages (if available) in those non-RAM regions.
+	 *
+	 * The combined non-RAM regions are rounded to a whole number
+	 * of pages so any partial pages are accessible via the 1:1
+	 * mapping.  This is needed for some BIOSes that put (for
+	 * example) the DMI tables in a reserved region that begins on
+	 * a non-page boundary.
+	 */
+	for (i = 0, entry = list; i < map_size; i++, entry++) {
+		phys_addr_t end = entry->addr + entry->size;
+		if (entry->type == E820_RAM || i == map_size - 1) {
+			unsigned long start_pfn = PFN_DOWN(start);
+			unsigned long end_pfn = PFN_UP(end);
 
-		released += xen_release_chunk(last_end, end);
-		last_end = e820->map[i].addr + e820->map[i].size;
+			if (entry->type == E820_RAM)
+				end_pfn = PFN_UP(entry->addr);
+
+			if (start_pfn < end_pfn)
+				xen_set_identity_and_release_chunk(
+					start_pfn, end_pfn, nr_pages,
+					&released, &identity);
+
+			start = end;
+		}
 	}
 
-	if (last_end < max_addr)
-		released += xen_release_chunk(last_end, max_addr);
+	if (released)
+		printk(KERN_INFO "Released %lu pages of unused memory\n", released);
+	if (identity)
+		printk(KERN_INFO "Set %ld page(s) to 1-1 mapping\n", identity);
 
-	printk(KERN_INFO "released %ld pages of unused memory\n", released);
 	return released;
+}
+
+static unsigned long __init xen_get_max_pages(void)
+{
+	unsigned long max_pages = MAX_DOMAIN_PAGES;
+	domid_t domid = DOMID_SELF;
+	int ret;
+
+	/*
+	 * For the initial domain we use the maximum reservation as
+	 * the maximum page.
+	 *
+	 * For guest domains the current maximum reservation reflects
+	 * the current maximum rather than the static maximum. In this
+	 * case the e820 map provided to us will cover the static
+	 * maximum region.
+	 */
+	if (xen_initial_domain()) {
+		ret = HYPERVISOR_memory_op(XENMEM_maximum_reservation, &domid);
+		if (ret > 0)
+			max_pages = ret;
+	}
+
+	return min(max_pages, MAX_DOMAIN_PAGES);
+}
+
+static void xen_align_and_add_e820_region(u64 start, u64 size, int type)
+{
+	u64 end = start + size;
+
+	/* Align RAM regions to page boundaries. */
+	if (type == E820_RAM) {
+		start = PAGE_ALIGN(start);
+		end &= ~((u64)PAGE_SIZE - 1);
+	}
+
+	e820_add_region(start, end - start, type);
 }
 
 /**
@@ -148,8 +324,10 @@ char * __init xen_memory_setup(void)
 	unsigned long long mem_end;
 	int rc;
 	struct xen_memory_map memmap;
+	unsigned long max_pages;
+	unsigned long last_pfn = 0;
 	unsigned long extra_pages = 0;
-	unsigned long extra_limit;
+	unsigned long populated;
 	int i;
 	int op;
 
@@ -164,6 +342,7 @@ char * __init xen_memory_setup(void)
 		XENMEM_memory_map;
 	rc = HYPERVISOR_memory_op(op, &memmap);
 	if (rc == -ENOSYS) {
+		BUG_ON(xen_initial_domain());
 		memmap.nr_entries = 1;
 		map[0].addr = 0ULL;
 		map[0].size = mem_end;
@@ -174,57 +353,34 @@ char * __init xen_memory_setup(void)
 	}
 	BUG_ON(rc);
 
-	e820.nr_map = 0;
-	xen_extra_mem_start = mem_end;
-	for (i = 0; i < memmap.nr_entries; i++) {
-		unsigned long long end = map[i].addr + map[i].size;
+	/* Make sure the Xen-supplied memory map is well-ordered. */
+	sanitize_e820_map(map, memmap.nr_entries, &memmap.nr_entries);
 
-		if (map[i].type == E820_RAM) {
-			if (map[i].addr < mem_end && end > mem_end) {
-				/* Truncate region to max_mem. */
-				u64 delta = end - mem_end;
+	max_pages = xen_get_max_pages();
+	if (max_pages > max_pfn)
+		extra_pages += max_pages - max_pfn;
 
-				map[i].size -= delta;
-				extra_pages += PFN_DOWN(delta);
+	/*
+	 * Set P2M for all non-RAM pages and E820 gaps to be identity
+	 * type PFNs.  Any RAM pages that would be made inaccesible by
+	 * this are first released.
+	 */
+	xen_released_pages = xen_set_identity_and_release(
+		map, memmap.nr_entries, max_pfn);
 
-				end = mem_end;
-			}
-		}
+	/*
+	 * Populate back the non-RAM pages and E820 gaps that had been
+	 * released. */
+	populated = xen_populate_chunk(map, memmap.nr_entries,
+			max_pfn, &last_pfn, xen_released_pages);
 
-		if (end > xen_extra_mem_start)
-			xen_extra_mem_start = end;
+	xen_released_pages -= populated;
+	extra_pages += xen_released_pages;
 
-		/* If region is non-RAM or below mem_end, add what remains */
-		if ((map[i].type != E820_RAM || map[i].addr < mem_end) &&
-		    map[i].size > 0)
-			e820_add_region(map[i].addr, map[i].size, map[i].type);
+	if (last_pfn > max_pfn) {
+		max_pfn = min(MAX_DOMAIN_PAGES, last_pfn);
+		mem_end = PFN_PHYS(max_pfn);
 	}
-
-	/*
-	 * Even though this is normal, usable memory under Xen, reserve
-	 * ISA memory anyway because too many things think they can poke
-	 * about in there.
-	 *
-	 * In a dom0 kernel, this region is identity mapped with the
-	 * hardware ISA area, so it really is out of bounds.
-	 */
-	e820_add_region(ISA_START_ADDRESS, ISA_END_ADDRESS - ISA_START_ADDRESS,
-			E820_RESERVED);
-
-	/*
-	 * Reserve Xen bits:
-	 *  - mfn_list
-	 *  - xen_start_info
-	 * See comment above "struct start_info" in <xen/interface/xen.h>
-	 */
-	memblock_x86_reserve_range(__pa(xen_start_info->mfn_list),
-		      __pa(xen_start_info->pt_base),
-			"XEN START INFO");
-
-	sanitize_e820_map(e820.map, ARRAY_SIZE(e820.map), &e820.nr_map);
-
-	extra_pages += xen_return_unused_memory(xen_start_info->nr_pages, &e820);
-
 	/*
 	 * Clamp the amount of extra memory to a EXTRA_MEM_RATIO
 	 * factor the base size.  On non-highmem systems, the base
@@ -236,32 +392,53 @@ char * __init xen_memory_setup(void)
 	 * the initial memory is also very large with respect to
 	 * lowmem, but we won't try to deal with that here.
 	 */
-	extra_limit = min(EXTRA_MEM_RATIO * min(max_pfn, PFN_DOWN(MAXMEM)),
-			  max_pfn + extra_pages);
+	extra_pages = min(EXTRA_MEM_RATIO * min(max_pfn, PFN_DOWN(MAXMEM)),
+			  extra_pages);
+	i = 0;
+	while (i < memmap.nr_entries) {
+		u64 addr = map[i].addr;
+		u64 size = map[i].size;
+		u32 type = map[i].type;
 
-	if (extra_limit >= max_pfn)
-		extra_pages = extra_limit - max_pfn;
-	else
-		extra_pages = 0;
+		if (type == E820_RAM) {
+			if (addr < mem_end) {
+				size = min(size, mem_end - addr);
+			} else if (extra_pages) {
+				size = min(size, (u64)extra_pages * PAGE_SIZE);
+				extra_pages -= size / PAGE_SIZE;
+				xen_add_extra_mem(addr, size);
+			} else
+				type = E820_UNUSABLE;
+		}
 
-	if (!xen_initial_domain())
-		xen_add_extra_mem(extra_pages);
+		xen_align_and_add_e820_region(addr, size, type);
+
+		map[i].addr += size;
+		map[i].size -= size;
+		if (map[i].size == 0)
+			i++;
+	}
+
+	/*
+	 * In domU, the ISA region is normal, usable memory, but we
+	 * reserve ISA memory anyway because too many things poke
+	 * about in there.
+	 */
+	e820_add_region(ISA_START_ADDRESS, ISA_END_ADDRESS - ISA_START_ADDRESS,
+			E820_RESERVED);
+
+	/*
+	 * Reserve Xen bits:
+	 *  - mfn_list
+	 *  - xen_start_info
+	 * See comment above "struct start_info" in <xen/interface/xen.h>
+	 */
+	memblock_reserve(__pa(xen_start_info->mfn_list),
+			 xen_start_info->pt_base - xen_start_info->mfn_list);
+
+	sanitize_e820_map(e820.map, ARRAY_SIZE(e820.map), &e820.nr_map);
 
 	return "Xen";
-}
-
-static void xen_idle(void)
-{
-	local_irq_disable();
-
-	if (need_resched())
-		local_irq_enable();
-	else {
-		current_thread_info()->status &= ~TS_POLLING;
-		smp_mb__after_clear_bit();
-		safe_halt();
-		current_thread_info()->status |= TS_POLLING;
-	}
 }
 
 /*
@@ -280,7 +457,7 @@ static void __init fiddle_vdso(void)
 #endif
 }
 
-static __cpuinit int register_callback(unsigned type, const void *func)
+static int __cpuinit register_callback(unsigned type, const void *func)
 {
 	struct callback_register callback = {
 		.type = type,
@@ -333,9 +510,6 @@ void __cpuinit xen_enable_syscall(void)
 
 void __init xen_arch_setup(void)
 {
-	struct physdev_set_iopl set_iopl;
-	int rc;
-
 	xen_panic_handler_init();
 
 	HYPERVISOR_vm_assist(VMASST_CMD_enable, VMASST_TYPE_4gb_segments);
@@ -352,11 +526,6 @@ void __init xen_arch_setup(void)
 	xen_enable_sysenter();
 	xen_enable_syscall();
 
-	set_iopl.iopl = 1;
-	rc = HYPERVISOR_physdev_op(PHYSDEVOP_set_iopl, &set_iopl);
-	if (rc != 0)
-		printk(KERN_INFO "physdev_op failed %d\n", rc);
-
 #ifdef CONFIG_ACPI
 	if (!(xen_start_info->flags & SIF_INITDOMAIN)) {
 		printk(KERN_INFO "ACPI in unprivileged domain disabled\n");
@@ -368,7 +537,15 @@ void __init xen_arch_setup(void)
 	       MAX_GUEST_CMDLINE > COMMAND_LINE_SIZE ?
 	       COMMAND_LINE_SIZE : MAX_GUEST_CMDLINE);
 
-	pm_idle = xen_idle;
-
+	/* Set up idle, making sure it calls safe_halt() pvop */
+#ifdef CONFIG_X86_32
+	boot_cpu_data.hlt_works_ok = 1;
+#endif
+	disable_cpuidle();
+	disable_cpufreq();
+	WARN_ON(set_pm_idle_to_default());
 	fiddle_vdso();
+#ifdef CONFIG_NUMA
+	numa_off = 1;
+#endif
 }

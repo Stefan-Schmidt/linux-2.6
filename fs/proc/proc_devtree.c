@@ -101,6 +101,11 @@ void proc_device_tree_update_prop(struct proc_dir_entry *pde,
 {
 	struct proc_dir_entry *ent;
 
+	if (!oldprop) {
+		proc_device_tree_add_prop(pde, newprop);
+		return;
+	}
+
 	for (ent = pde->subdir; ent != NULL; ent = ent->next)
 		if (ent->data == oldprop)
 			break;
@@ -233,7 +238,7 @@ void __init proc_device_tree_init(void)
 		return;
 	root = of_find_node_by_path("/");
 	if (root == NULL) {
-		printk(KERN_ERR "/proc/device-tree: can't find root\n");
+		pr_debug("/proc/device-tree: can't find root\n");
 		return;
 	}
 	proc_device_tree_add_node(root, proc_device_tree);

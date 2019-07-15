@@ -19,6 +19,8 @@
  *
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #define MODULE_NAME "spca501"
 
 #include "gspca.h"
@@ -45,91 +47,6 @@ struct sd {
 #define SmileIntlCamera 4
 #define ThreeComHomeConnectLite 5
 #define ViewQuestM318B 6
-};
-
-/* V4L2 controls supported by the driver */
-static int sd_setbrightness(struct gspca_dev *gspca_dev, __s32 val);
-static int sd_getbrightness(struct gspca_dev *gspca_dev, __s32 *val);
-static int sd_setcontrast(struct gspca_dev *gspca_dev, __s32 val);
-static int sd_getcontrast(struct gspca_dev *gspca_dev, __s32 *val);
-static int sd_setcolors(struct gspca_dev *gspca_dev, __s32 val);
-static int sd_getcolors(struct gspca_dev *gspca_dev, __s32 *val);
-static int sd_setblue_balance(struct gspca_dev *gspca_dev, __s32 val);
-static int sd_getblue_balance(struct gspca_dev *gspca_dev, __s32 *val);
-static int sd_setred_balance(struct gspca_dev *gspca_dev, __s32 val);
-static int sd_getred_balance(struct gspca_dev *gspca_dev, __s32 *val);
-
-static const struct ctrl sd_ctrls[] = {
-#define MY_BRIGHTNESS 0
-	{
-	    {
-		.id      = V4L2_CID_BRIGHTNESS,
-		.type    = V4L2_CTRL_TYPE_INTEGER,
-		.name    = "Brightness",
-		.minimum = 0,
-		.maximum = 127,
-		.step    = 1,
-		.default_value = 0,
-	    },
-	    .set = sd_setbrightness,
-	    .get = sd_getbrightness,
-	},
-#define MY_CONTRAST 1
-	{
-	    {
-		.id      = V4L2_CID_CONTRAST,
-		.type    = V4L2_CTRL_TYPE_INTEGER,
-		.name    = "Contrast",
-		.minimum = 0,
-		.maximum = 64725,
-		.step    = 1,
-		.default_value = 64725,
-	    },
-	    .set = sd_setcontrast,
-	    .get = sd_getcontrast,
-	},
-#define MY_COLOR 2
-	{
-	    {
-		.id      = V4L2_CID_SATURATION,
-		.type    = V4L2_CTRL_TYPE_INTEGER,
-		.name    = "Color",
-		.minimum = 0,
-		.maximum = 63,
-		.step    = 1,
-		.default_value = 20,
-	    },
-	    .set = sd_setcolors,
-	    .get = sd_getcolors,
-	},
-#define MY_BLUE_BALANCE 3
-	{
-	    {
-		.id      = V4L2_CID_BLUE_BALANCE,
-		.type    = V4L2_CTRL_TYPE_INTEGER,
-		.name    = "Blue Balance",
-		.minimum = 0,
-		.maximum = 127,
-		.step    = 1,
-		.default_value = 0,
-	    },
-	    .set = sd_setblue_balance,
-	    .get = sd_getblue_balance,
-	},
-#define MY_RED_BALANCE 4
-	{
-	    {
-		.id      = V4L2_CID_RED_BALANCE,
-		.type    = V4L2_CTRL_TYPE_INTEGER,
-		.name    = "Red Balance",
-		.minimum = 0,
-		.maximum = 127,
-		.step    = 1,
-		.default_value = 0,
-	    },
-	    .set = sd_setred_balance,
-	    .get = sd_getred_balance,
-	},
 };
 
 static const struct v4l2_pix_format vga_mode[] = {
@@ -1852,7 +1769,7 @@ static int reg_write(struct usb_device *dev,
 	PDEBUG(D_USBO, "reg write: 0x%02x 0x%02x 0x%02x",
 		req, index, value);
 	if (ret < 0)
-		err("reg write: error %d", ret);
+		pr_err("reg write: error %d\n", ret);
 	return ret;
 }
 
@@ -1876,42 +1793,32 @@ static int write_vector(struct gspca_dev *gspca_dev,
 	return 0;
 }
 
-static void setbrightness(struct gspca_dev *gspca_dev)
+static void setbrightness(struct gspca_dev *gspca_dev, s32 val)
 {
-	struct sd *sd = (struct sd *) gspca_dev;
-
-	reg_write(gspca_dev->dev, SPCA501_REG_CCDSP, 0x12, sd->brightness);
+	reg_write(gspca_dev->dev, SPCA501_REG_CCDSP, 0x12, val);
 }
 
-static void setcontrast(struct gspca_dev *gspca_dev)
+static void setcontrast(struct gspca_dev *gspca_dev, s32 val)
 {
-	struct sd *sd = (struct sd *) gspca_dev;
-
 	reg_write(gspca_dev->dev, 0x00, 0x00,
-				  (sd->contrast >> 8) & 0xff);
+				  (val >> 8) & 0xff);
 	reg_write(gspca_dev->dev, 0x00, 0x01,
-				  sd->contrast & 0xff);
+				  val & 0xff);
 }
 
-static void setcolors(struct gspca_dev *gspca_dev)
+static void setcolors(struct gspca_dev *gspca_dev, s32 val)
 {
-	struct sd *sd = (struct sd *) gspca_dev;
-
-	reg_write(gspca_dev->dev, SPCA501_REG_CCDSP, 0x0c, sd->colors);
+	reg_write(gspca_dev->dev, SPCA501_REG_CCDSP, 0x0c, val);
 }
 
-static void setblue_balance(struct gspca_dev *gspca_dev)
+static void setblue_balance(struct gspca_dev *gspca_dev, s32 val)
 {
-	struct sd *sd = (struct sd *) gspca_dev;
-
-	reg_write(gspca_dev->dev, SPCA501_REG_CCDSP, 0x11, sd->blue_balance);
+	reg_write(gspca_dev->dev, SPCA501_REG_CCDSP, 0x11, val);
 }
 
-static void setred_balance(struct gspca_dev *gspca_dev)
+static void setred_balance(struct gspca_dev *gspca_dev, s32 val)
 {
-	struct sd *sd = (struct sd *) gspca_dev;
-
-	reg_write(gspca_dev->dev, SPCA501_REG_CCDSP, 0x13, sd->red_balance);
+	reg_write(gspca_dev->dev, SPCA501_REG_CCDSP, 0x13, val);
 }
 
 /* this function is called at probe time */
@@ -1925,9 +1832,6 @@ static int sd_config(struct gspca_dev *gspca_dev,
 	cam->cam_mode = vga_mode;
 	cam->nmodes = ARRAY_SIZE(vga_mode);
 	sd->subtype = id->driver_info;
-	sd->brightness = sd_ctrls[MY_BRIGHTNESS].qctrl.default_value;
-	sd->contrast = sd_ctrls[MY_CONTRAST].qctrl.default_value;
-	sd->colors = sd_ctrls[MY_COLOR].qctrl.default_value;
 
 	return 0;
 }
@@ -2006,13 +1910,6 @@ static int sd_start(struct gspca_dev *gspca_dev)
 	}
 	reg_write(dev, SPCA501_REG_CTLRL, 0x01, 0x02);
 
-	/* HDG atleast the Intel CreateAndShare needs to have one of its
-	 * brightness / contrast / color set otherwise it assumes what seems
-	 * max contrast. Note that strange enough setting any of these is
-	 * enough to fix the max contrast problem, to be sure we set all 3 */
-	setbrightness(gspca_dev);
-	setcontrast(gspca_dev);
-	setcolors(gspca_dev);
 	return 0;
 }
 
@@ -2051,103 +1948,70 @@ static void sd_pkt_scan(struct gspca_dev *gspca_dev,
 	gspca_frame_add(gspca_dev, INTER_PACKET, data, len);
 }
 
-static int sd_setbrightness(struct gspca_dev *gspca_dev, __s32 val)
+static int sd_s_ctrl(struct v4l2_ctrl *ctrl)
 {
-	struct sd *sd = (struct sd *) gspca_dev;
+	struct gspca_dev *gspca_dev =
+		container_of(ctrl->handler, struct gspca_dev, ctrl_handler);
 
-	sd->brightness = val;
-	if (gspca_dev->streaming)
-		setbrightness(gspca_dev);
-	return 0;
+	gspca_dev->usb_err = 0;
+
+	if (!gspca_dev->streaming)
+		return 0;
+
+	switch (ctrl->id) {
+	case V4L2_CID_BRIGHTNESS:
+		setbrightness(gspca_dev, ctrl->val);
+		break;
+	case V4L2_CID_CONTRAST:
+		setcontrast(gspca_dev, ctrl->val);
+		break;
+	case V4L2_CID_SATURATION:
+		setcolors(gspca_dev, ctrl->val);
+		break;
+	case V4L2_CID_BLUE_BALANCE:
+		setblue_balance(gspca_dev, ctrl->val);
+		break;
+	case V4L2_CID_RED_BALANCE:
+		setred_balance(gspca_dev, ctrl->val);
+		break;
+	}
+	return gspca_dev->usb_err;
 }
 
-static int sd_getbrightness(struct gspca_dev *gspca_dev, __s32 *val)
+static const struct v4l2_ctrl_ops sd_ctrl_ops = {
+	.s_ctrl = sd_s_ctrl,
+};
+
+static int sd_init_controls(struct gspca_dev *gspca_dev)
 {
-	struct sd *sd = (struct sd *) gspca_dev;
+	struct v4l2_ctrl_handler *hdl = &gspca_dev->ctrl_handler;
 
-	*val = sd->brightness;
-	return 0;
-}
+	gspca_dev->vdev.ctrl_handler = hdl;
+	v4l2_ctrl_handler_init(hdl, 5);
+	v4l2_ctrl_new_std(hdl, &sd_ctrl_ops,
+			V4L2_CID_BRIGHTNESS, 0, 127, 1, 0);
+	v4l2_ctrl_new_std(hdl, &sd_ctrl_ops,
+			V4L2_CID_CONTRAST, 0, 64725, 1, 64725);
+	v4l2_ctrl_new_std(hdl, &sd_ctrl_ops,
+			V4L2_CID_SATURATION, 0, 63, 1, 20);
+	v4l2_ctrl_new_std(hdl, &sd_ctrl_ops,
+			V4L2_CID_BLUE_BALANCE, 0, 127, 1, 0);
+	v4l2_ctrl_new_std(hdl, &sd_ctrl_ops,
+			V4L2_CID_RED_BALANCE, 0, 127, 1, 0);
 
-static int sd_setcontrast(struct gspca_dev *gspca_dev, __s32 val)
-{
-	struct sd *sd = (struct sd *) gspca_dev;
-
-	sd->contrast = val;
-	if (gspca_dev->streaming)
-		setcontrast(gspca_dev);
-	return 0;
-}
-
-static int sd_getcontrast(struct gspca_dev *gspca_dev, __s32 *val)
-{
-	struct sd *sd = (struct sd *) gspca_dev;
-
-	*val = sd->contrast;
-	return 0;
-}
-
-static int sd_setcolors(struct gspca_dev *gspca_dev, __s32 val)
-{
-	struct sd *sd = (struct sd *) gspca_dev;
-
-	sd->colors = val;
-	if (gspca_dev->streaming)
-		setcolors(gspca_dev);
-	return 0;
-}
-
-static int sd_getcolors(struct gspca_dev *gspca_dev, __s32 *val)
-{
-	struct sd *sd = (struct sd *) gspca_dev;
-
-	*val = sd->colors;
-	return 0;
-}
-
-static int sd_setblue_balance(struct gspca_dev *gspca_dev, __s32 val)
-{
-	struct sd *sd = (struct sd *) gspca_dev;
-
-	sd->blue_balance = val;
-	if (gspca_dev->streaming)
-		setblue_balance(gspca_dev);
-	return 0;
-}
-
-static int sd_getblue_balance(struct gspca_dev *gspca_dev, __s32 *val)
-{
-	struct sd *sd = (struct sd *) gspca_dev;
-
-	*val = sd->blue_balance;
-	return 0;
-}
-
-static int sd_setred_balance(struct gspca_dev *gspca_dev, __s32 val)
-{
-	struct sd *sd = (struct sd *) gspca_dev;
-
-	sd->red_balance = val;
-	if (gspca_dev->streaming)
-		setred_balance(gspca_dev);
-	return 0;
-}
-
-static int sd_getred_balance(struct gspca_dev *gspca_dev, __s32 *val)
-{
-	struct sd *sd = (struct sd *) gspca_dev;
-
-	*val = sd->red_balance;
+	if (hdl->error) {
+		pr_err("Could not initialize controls\n");
+		return hdl->error;
+	}
 	return 0;
 }
 
 /* sub-driver description */
 static const struct sd_desc sd_desc = {
 	.name = MODULE_NAME,
-	.ctrls = sd_ctrls,
-	.nctrls = ARRAY_SIZE(sd_ctrls),
 	.config = sd_config,
 	.init = sd_init,
+	.init_controls = sd_init_controls,
 	.start = sd_start,
 	.stopN = sd_stopN,
 	.stop0 = sd_stop0,
@@ -2155,7 +2019,7 @@ static const struct sd_desc sd_desc = {
 };
 
 /* -- module initialisation -- */
-static const __devinitdata struct usb_device_id device_table[] = {
+static const struct usb_device_id device_table[] = {
 	{USB_DEVICE(0x040a, 0x0002), .driver_info = KodakDVC325},
 	{USB_DEVICE(0x0497, 0xc001), .driver_info = SmileIntlCamera},
 	{USB_DEVICE(0x0506, 0x00df), .driver_info = ThreeComHomeConnectLite},
@@ -2183,18 +2047,8 @@ static struct usb_driver sd_driver = {
 #ifdef CONFIG_PM
 	.suspend = gspca_suspend,
 	.resume = gspca_resume,
+	.reset_resume = gspca_resume,
 #endif
 };
 
-/* -- module insert / remove -- */
-static int __init sd_mod_init(void)
-{
-	return usb_register(&sd_driver);
-}
-static void __exit sd_mod_exit(void)
-{
-	usb_deregister(&sd_driver);
-}
-
-module_init(sd_mod_init);
-module_exit(sd_mod_exit);
+module_usb_driver(sd_driver);

@@ -19,6 +19,8 @@
  *
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #define MODULE_NAME "spca505"
 
 #include "gspca.h"
@@ -31,32 +33,9 @@ MODULE_LICENSE("GPL");
 struct sd {
 	struct gspca_dev gspca_dev;		/* !! must be the first item */
 
-	u8 brightness;
-
 	u8 subtype;
 #define IntelPCCameraPro 0
 #define Nxultra 1
-};
-
-/* V4L2 controls supported by the driver */
-static int sd_setbrightness(struct gspca_dev *gspca_dev, __s32 val);
-static int sd_getbrightness(struct gspca_dev *gspca_dev, __s32 *val);
-
-static const struct ctrl sd_ctrls[] = {
-	{
-	    {
-		.id      = V4L2_CID_BRIGHTNESS,
-		.type    = V4L2_CTRL_TYPE_INTEGER,
-		.name    = "Brightness",
-		.minimum = 0,
-		.maximum = 255,
-		.step    = 1,
-#define BRIGHTNESS_DEF 127
-		.default_value = BRIGHTNESS_DEF,
-	    },
-	    .set = sd_setbrightness,
-	    .get = sd_getbrightness,
-	},
 };
 
 static const struct v4l2_pix_format vga_mode[] = {
@@ -578,7 +557,7 @@ static int reg_write(struct usb_device *dev,
 	PDEBUG(D_USBO, "reg write: 0x%02x,0x%02x:0x%02x, %d",
 		req, index, value, ret);
 	if (ret < 0)
-		err("reg write: error %d", ret);
+		pr_err("reg write: error %d\n", ret);
 	return ret;
 }
 
@@ -631,7 +610,6 @@ static int sd_config(struct gspca_dev *gspca_dev,
 		cam->nmodes = ARRAY_SIZE(vga_mode);
 	else			/* no 640x480 for IntelPCCameraPro */
 		cam->nmodes = ARRAY_SIZE(vga_mode) - 1;
-	sd->brightness = BRIGHTNESS_DEF;
 
 	return 0;
 }
@@ -649,11 +627,8 @@ static int sd_init(struct gspca_dev *gspca_dev)
 	return 0;
 }
 
-static void setbrightness(struct gspca_dev *gspca_dev)
+static void setbrightness(struct gspca_dev *gspca_dev, s32 brightness)
 {
-	struct sd *sd = (struct sd *) gspca_dev;
-	u8 brightness = sd->brightness;
-
 	reg_write(gspca_dev->dev, 0x05, 0x00, (255 - brightness) >> 6);
 	reg_write(gspca_dev->dev, 0x05, 0x01, (255 - brightness) << 2);
 }
@@ -685,8 +660,8 @@ static int sd_start(struct gspca_dev *gspca_dev)
 		return ret;
 	}
 	if (ret != 0x0101) {
-		err("After vector read returns 0x%04x should be 0x0101",
-			ret);
+		pr_err("After vector read returns 0x%04x should be 0x0101\n",
+		       ret);
 	}
 
 	ret = reg_write(gspca_dev->dev, 0x06, 0x16, 0x0a);
@@ -704,13 +679,9 @@ static int sd_start(struct gspca_dev *gspca_dev)
 	reg_write(dev, SPCA50X_REG_COMPRESS, 0x06, mode_tb[mode][1]);
 	reg_write(dev, SPCA50X_REG_COMPRESS, 0x07, mode_tb[mode][2]);
 
-	ret = reg_write(dev, SPCA50X_REG_USB,
+	return reg_write(dev, SPCA50X_REG_USB,
 			 SPCA50X_USB_CTRL,
 			 SPCA50X_CUSB_ENABLE);
-
-	setbrightness(gspca_dev);
-
-	return ret;
 }
 
 static void sd_stopN(struct gspca_dev *gspca_dev)
@@ -754,30 +725,49 @@ static void sd_pkt_scan(struct gspca_dev *gspca_dev,
 	}
 }
 
-static int sd_setbrightness(struct gspca_dev *gspca_dev, __s32 val)
+static int sd_s_ctrl(struct v4l2_ctrl *ctrl)
 {
-	struct sd *sd = (struct sd *) gspca_dev;
+	struct gspca_dev *gspca_dev =
+		container_of(ctrl->handler, struct gspca_dev, ctrl_handler);
 
-	sd->brightness = val;
-	if (gspca_dev->streaming)
-		setbrightness(gspca_dev);
-	return 0;
+	gspca_dev->usb_err = 0;
+
+	if (!gspca_dev->streaming)
+		return 0;
+
+	switch (ctrl->id) {
+	case V4L2_CID_BRIGHTNESS:
+		setbrightness(gspca_dev, ctrl->val);
+		break;
+	}
+	return gspca_dev->usb_err;
 }
 
-static int sd_getbrightness(struct gspca_dev *gspca_dev, __s32 *val)
-{
-	struct sd *sd = (struct sd *) gspca_dev;
+static const struct v4l2_ctrl_ops sd_ctrl_ops = {
+	.s_ctrl = sd_s_ctrl,
+};
 
-	*val = sd->brightness;
+static int sd_init_controls(struct gspca_dev *gspca_dev)
+{
+	struct v4l2_ctrl_handler *hdl = &gspca_dev->ctrl_handler;
+
+	gspca_dev->vdev.ctrl_handler = hdl;
+	v4l2_ctrl_handler_init(hdl, 5);
+	v4l2_ctrl_new_std(hdl, &sd_ctrl_ops,
+			V4L2_CID_BRIGHTNESS, 0, 255, 1, 127);
+
+	if (hdl->error) {
+		pr_err("Could not initialize controls\n");
+		return hdl->error;
+	}
 	return 0;
 }
 
 /* sub-driver description */
 static const struct sd_desc sd_desc = {
 	.name = MODULE_NAME,
-	.ctrls = sd_ctrls,
-	.nctrls = ARRAY_SIZE(sd_ctrls),
 	.config = sd_config,
+	.init_controls = sd_init_controls,
 	.init = sd_init,
 	.start = sd_start,
 	.stopN = sd_stopN,
@@ -786,7 +776,7 @@ static const struct sd_desc sd_desc = {
 };
 
 /* -- module initialisation -- */
-static const __devinitdata struct usb_device_id device_table[] = {
+static const struct usb_device_id device_table[] = {
 	{USB_DEVICE(0x041e, 0x401d), .driver_info = Nxultra},
 	{USB_DEVICE(0x0733, 0x0430), .driver_info = IntelPCCameraPro},
 /*fixme: may be UsbGrabberPV321 BRIDGE_SPCA506 SENSOR_SAA7113 */
@@ -810,18 +800,8 @@ static struct usb_driver sd_driver = {
 #ifdef CONFIG_PM
 	.suspend = gspca_suspend,
 	.resume = gspca_resume,
+	.reset_resume = gspca_resume,
 #endif
 };
 
-/* -- module insert / remove -- */
-static int __init sd_mod_init(void)
-{
-	return usb_register(&sd_driver);
-}
-static void __exit sd_mod_exit(void)
-{
-	usb_deregister(&sd_driver);
-}
-
-module_init(sd_mod_init);
-module_exit(sd_mod_exit);
+module_usb_driver(sd_driver);

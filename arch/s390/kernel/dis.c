@@ -1,6 +1,4 @@
 /*
- * arch/s390/kernel/dis.c
- *
  * Disassemble s390 instructions.
  *
  * Copyright IBM Corp. 2007
@@ -24,15 +22,14 @@
 #include <linux/kprobes.h>
 #include <linux/kdebug.h>
 
-#include <asm/system.h>
 #include <asm/uaccess.h>
 #include <asm/io.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <asm/mathemu.h>
 #include <asm/cpcmd.h>
-#include <asm/s390_ext.h>
 #include <asm/lowcore.h>
 #include <asm/debug.h>
+#include <asm/irq.h>
 
 #ifndef CONFIG_64BIT
 #define ONELONG "%08lx: "
@@ -614,6 +611,7 @@ static struct insn opcode_b2[] = {
 	{ "sie", 0x14, INSTR_S_RD },
 	{ "pc", 0x18, INSTR_S_RD },
 	{ "sac", 0x19, INSTR_S_RD },
+	{ "servc", 0x20, INSTR_RRE_RR },
 	{ "cfc", 0x1a, INSTR_S_RD },
 	{ "ipte", 0x21, INSTR_RRE_RR },
 	{ "ipm", 0x22, INSTR_RRE_R0 },
@@ -672,6 +670,7 @@ static struct insn opcode_b2[] = {
 	{ "rp", 0x77, INSTR_S_RD },
 	{ "stcke", 0x78, INSTR_S_RD },
 	{ "sacf", 0x79, INSTR_S_RD },
+	{ "spp", 0x80, INSTR_S_RD },
 	{ "stsi", 0x7d, INSTR_S_RD },
 	{ "srnm", 0x99, INSTR_S_RD },
 	{ "stfpc", 0x9c, INSTR_S_RD },
@@ -1532,7 +1531,7 @@ static int print_insn(char *buffer, unsigned char *code, unsigned long addr)
 
 void show_code(struct pt_regs *regs)
 {
-	char *mode = (regs->psw.mask & PSW_MASK_PSTATE) ? "User" : "Krnl";
+	char *mode = user_mode(regs) ? "User" : "Krnl";
 	unsigned char code[64];
 	char buffer[64], *ptr;
 	mm_segment_t old_fs;
@@ -1541,7 +1540,7 @@ void show_code(struct pt_regs *regs)
 
 	/* Get a snapshot of the 64 bytes surrounding the fault address. */
 	old_fs = get_fs();
-	set_fs((regs->psw.mask & PSW_MASK_PSTATE) ? USER_DS : KERNEL_DS);
+	set_fs(user_mode(regs) ? USER_DS : KERNEL_DS);
 	for (start = 32; start && regs->psw.addr >= 34 - start; start -= 2) {
 		addr = regs->psw.addr - 34 + start;
 		if (__copy_from_user(code + start - 2,
@@ -1577,10 +1576,15 @@ void show_code(struct pt_regs *regs)
 	ptr += sprintf(ptr, "%s Code:", mode);
 	hops = 0;
 	while (start < end && hops < 8) {
-		*ptr++ = (start == 32) ? '>' : ' ';
+		opsize = insn_length(code[start]);
+		if  (start + opsize == 32)
+			*ptr++ = '#';
+		else if (start == 32)
+			*ptr++ = '>';
+		else
+			*ptr++ = ' ';
 		addr = regs->psw.addr + start - 32;
 		ptr += sprintf(ptr, ONELONG, addr);
-		opsize = insn_length(code[start]);
 		if (start + opsize >= end)
 			break;
 		for (i = 0; i < opsize; i++)

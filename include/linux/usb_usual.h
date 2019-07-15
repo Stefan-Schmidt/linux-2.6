@@ -62,7 +62,11 @@
 	US_FLAG(NO_READ_DISC_INFO,	0x00040000)		\
 		/* cannot handle READ_DISC_INFO */		\
 	US_FLAG(NO_READ_CAPACITY_16,	0x00080000)		\
-		/* cannot handle READ_CAPACITY_16 */
+		/* cannot handle READ_CAPACITY_16 */		\
+	US_FLAG(INITIAL_READ10,	0x00100000)			\
+		/* Initial READ(10) (and others) must be retried */	\
+	US_FLAG(WRITE_CACHE,	0x00200000)			\
+		/* Write Cache status is not available */
 
 #define US_FLAG(name, value)	US_FL_##name = value ,
 enum { US_DO_ALL_FLAGS };

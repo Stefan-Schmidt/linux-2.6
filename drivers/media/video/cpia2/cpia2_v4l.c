@@ -29,8 +29,7 @@
  *		Alan Cox <alan@lxorguk.ukuu.org.uk>
  ****************************************************************************/
 
-#include <linux/version.h>
-
+#define CPIA_VERSION "3.0.1"
 
 #include <linux/module.h>
 #include <linux/time.h>
@@ -40,15 +39,15 @@
 #include <linux/videodev2.h>
 #include <linux/stringify.h>
 #include <media/v4l2-ioctl.h>
+#include <media/v4l2-event.h>
 
 #include "cpia2.h"
-#include "cpia2dev.h"
 
 static int video_nr = -1;
 module_param(video_nr, int, 0);
-MODULE_PARM_DESC(video_nr,"video device to register (0=/dev/video0, etc)");
+MODULE_PARM_DESC(video_nr, "video device to register (0=/dev/video0, etc)");
 
-static int buffer_size = 68*1024;
+static int buffer_size = 68 * 1024;
 module_param(buffer_size, int, 0);
 MODULE_PARM_DESC(buffer_size, "Size for each frame buffer in bytes (default 68k)");
 
@@ -63,172 +62,19 @@ MODULE_PARM_DESC(alternate, "USB Alternate (" __stringify(USBIF_ISO_1) "-"
 		 __stringify(USBIF_ISO_6) ", default "
 		 __stringify(DEFAULT_ALT) ")");
 
-static int flicker_freq = 60;
-module_param(flicker_freq, int, 0);
-MODULE_PARM_DESC(flicker_freq, "Flicker frequency (" __stringify(50) "or"
-		 __stringify(60) ", default "
-		 __stringify(60) ")");
-
-static int flicker_mode = NEVER_FLICKER;
+static int flicker_mode;
 module_param(flicker_mode, int, 0);
-MODULE_PARM_DESC(flicker_mode,
-		 "Flicker supression (" __stringify(NEVER_FLICKER) "or"
-		 __stringify(ANTI_FLICKER_ON) ", default "
-		 __stringify(NEVER_FLICKER) ")");
+MODULE_PARM_DESC(flicker_mode, "Flicker frequency (0 (disabled), " __stringify(50) " or "
+		 __stringify(60) ", default 0)");
 
 MODULE_AUTHOR("Steve Miller (STMicroelectronics) <steve.miller@st.com>");
 MODULE_DESCRIPTION("V4L-driver for STMicroelectronics CPiA2 based cameras");
 MODULE_SUPPORTED_DEVICE("video");
 MODULE_LICENSE("GPL");
+MODULE_VERSION(CPIA_VERSION);
 
 #define ABOUT "V4L-Driver for Vision CPiA2 based cameras"
-
-struct control_menu_info {
-	int value;
-	char name[32];
-};
-
-static struct control_menu_info framerate_controls[] =
-{
-	{ CPIA2_VP_FRAMERATE_6_25, "6.25 fps" },
-	{ CPIA2_VP_FRAMERATE_7_5,  "7.5 fps"  },
-	{ CPIA2_VP_FRAMERATE_12_5, "12.5 fps" },
-	{ CPIA2_VP_FRAMERATE_15,   "15 fps"   },
-	{ CPIA2_VP_FRAMERATE_25,   "25 fps"   },
-	{ CPIA2_VP_FRAMERATE_30,   "30 fps"   },
-};
-#define NUM_FRAMERATE_CONTROLS (ARRAY_SIZE(framerate_controls))
-
-static struct control_menu_info flicker_controls[] =
-{
-	{ NEVER_FLICKER, "Off" },
-	{ FLICKER_50,    "50 Hz" },
-	{ FLICKER_60,    "60 Hz"  },
-};
-#define NUM_FLICKER_CONTROLS (ARRAY_SIZE(flicker_controls))
-
-static struct control_menu_info lights_controls[] =
-{
-	{ 0,   "Off" },
-	{ 64,  "Top" },
-	{ 128, "Bottom"  },
-	{ 192, "Both"  },
-};
-#define NUM_LIGHTS_CONTROLS (ARRAY_SIZE(lights_controls))
-#define GPIO_LIGHTS_MASK 192
-
-static struct v4l2_queryctrl controls[] = {
-	{
-		.id            = V4L2_CID_BRIGHTNESS,
-		.type          = V4L2_CTRL_TYPE_INTEGER,
-		.name          = "Brightness",
-		.minimum       = 0,
-		.maximum       = 255,
-		.step          = 1,
-		.default_value = DEFAULT_BRIGHTNESS,
-	},
-	{
-		.id            = V4L2_CID_CONTRAST,
-		.type          = V4L2_CTRL_TYPE_INTEGER,
-		.name          = "Contrast",
-		.minimum       = 0,
-		.maximum       = 255,
-		.step          = 1,
-		.default_value = DEFAULT_CONTRAST,
-	},
-	{
-		.id            = V4L2_CID_SATURATION,
-		.type          = V4L2_CTRL_TYPE_INTEGER,
-		.name          = "Saturation",
-		.minimum       = 0,
-		.maximum       = 255,
-		.step          = 1,
-		.default_value = DEFAULT_SATURATION,
-	},
-	{
-		.id            = V4L2_CID_HFLIP,
-		.type          = V4L2_CTRL_TYPE_BOOLEAN,
-		.name          = "Mirror Horizontally",
-		.minimum       = 0,
-		.maximum       = 1,
-		.step          = 1,
-		.default_value = 0,
-	},
-	{
-		.id            = V4L2_CID_VFLIP,
-		.type          = V4L2_CTRL_TYPE_BOOLEAN,
-		.name          = "Flip Vertically",
-		.minimum       = 0,
-		.maximum       = 1,
-		.step          = 1,
-		.default_value = 0,
-	},
-	{
-		.id            = CPIA2_CID_TARGET_KB,
-		.type          = V4L2_CTRL_TYPE_INTEGER,
-		.name          = "Target KB",
-		.minimum       = 0,
-		.maximum       = 255,
-		.step          = 1,
-		.default_value = DEFAULT_TARGET_KB,
-	},
-	{
-		.id            = CPIA2_CID_GPIO,
-		.type          = V4L2_CTRL_TYPE_INTEGER,
-		.name          = "GPIO",
-		.minimum       = 0,
-		.maximum       = 255,
-		.step          = 1,
-		.default_value = 0,
-	},
-	{
-		.id            = CPIA2_CID_FLICKER_MODE,
-		.type          = V4L2_CTRL_TYPE_MENU,
-		.name          = "Flicker Reduction",
-		.minimum       = 0,
-		.maximum       = NUM_FLICKER_CONTROLS-1,
-		.step          = 1,
-		.default_value = 0,
-	},
-	{
-		.id            = CPIA2_CID_FRAMERATE,
-		.type          = V4L2_CTRL_TYPE_MENU,
-		.name          = "Framerate",
-		.minimum       = 0,
-		.maximum       = NUM_FRAMERATE_CONTROLS-1,
-		.step          = 1,
-		.default_value = NUM_FRAMERATE_CONTROLS-1,
-	},
-	{
-		.id            = CPIA2_CID_USB_ALT,
-		.type          = V4L2_CTRL_TYPE_INTEGER,
-		.name          = "USB Alternate",
-		.minimum       = USBIF_ISO_1,
-		.maximum       = USBIF_ISO_6,
-		.step          = 1,
-		.default_value = DEFAULT_ALT,
-	},
-	{
-		.id            = CPIA2_CID_LIGHTS,
-		.type          = V4L2_CTRL_TYPE_MENU,
-		.name          = "Lights",
-		.minimum       = 0,
-		.maximum       = NUM_LIGHTS_CONTROLS-1,
-		.step          = 1,
-		.default_value = 0,
-	},
-	{
-		.id            = CPIA2_CID_RESET_CAMERA,
-		.type          = V4L2_CTRL_TYPE_BUTTON,
-		.name          = "Reset Camera",
-		.minimum       = 0,
-		.maximum       = 0,
-		.step          = 0,
-		.default_value = 0,
-	},
-};
-#define NUM_CONTROLS (ARRAY_SIZE(controls))
-
+#define CPIA2_CID_USB_ALT (V4L2_CID_USER_BASE | 0xf000)
 
 /******************************************************************************
  *
@@ -238,59 +84,29 @@ static struct v4l2_queryctrl controls[] = {
 static int cpia2_open(struct file *file)
 {
 	struct camera_data *cam = video_drvdata(file);
-	int retval = 0;
+	int retval = v4l2_fh_open(file);
 
-	if (!cam) {
-		ERR("Internal error, camera_data not found!\n");
-		return -ENODEV;
-	}
+	if (retval)
+		return retval;
 
-	if(mutex_lock_interruptible(&cam->busy_lock))
-		return -ERESTARTSYS;
-
-	if(!cam->present) {
-		retval = -ENODEV;
-		goto err_return;
-	}
-
-	if (cam->open_count > 0) {
-		goto skip_init;
-	}
-
-	if (cpia2_allocate_buffers(cam)) {
-		retval = -ENOMEM;
-		goto err_return;
-	}
-
-	/* reset the camera */
-	if (cpia2_reset_camera(cam) < 0) {
-		retval = -EIO;
-		goto err_return;
-	}
-
-	cam->APP_len = 0;
-	cam->COM_len = 0;
-
-skip_init:
-	{
-		struct cpia2_fh *fh = kmalloc(sizeof(*fh),GFP_KERNEL);
-		if(!fh) {
-			retval = -ENOMEM;
-			goto err_return;
+	if (v4l2_fh_is_singular_file(file)) {
+		if (cpia2_allocate_buffers(cam)) {
+			v4l2_fh_release(file);
+			return -ENOMEM;
 		}
-		file->private_data = fh;
-		fh->prio = V4L2_PRIORITY_UNSET;
-		v4l2_prio_open(&cam->prio, &fh->prio);
-		fh->mmapped = 0;
-	}
 
-	++cam->open_count;
+		/* reset the camera */
+		if (cpia2_reset_camera(cam) < 0) {
+			v4l2_fh_release(file);
+			return -EIO;
+		}
+
+		cam->APP_len = 0;
+		cam->COM_len = 0;
+	}
 
 	cpia2_dbg_dump_registers(cam);
-
-err_return:
-	mutex_unlock(&cam->busy_lock);
-	return retval;
+	return 0;
 }
 
 /******************************************************************************
@@ -302,46 +118,22 @@ static int cpia2_close(struct file *file)
 {
 	struct video_device *dev = video_devdata(file);
 	struct camera_data *cam = video_get_drvdata(dev);
-	struct cpia2_fh *fh = file->private_data;
 
-	mutex_lock(&cam->busy_lock);
-
-	if (cam->present &&
-	    (cam->open_count == 1
-	     || fh->prio == V4L2_PRIORITY_RECORD
-	    )) {
+	if (video_is_registered(&cam->vdev) && v4l2_fh_is_singular_file(file)) {
 		cpia2_usb_stream_stop(cam);
 
-		if(cam->open_count == 1) {
-			/* save camera state for later open */
-			cpia2_save_camera_state(cam);
+		/* save camera state for later open */
+		cpia2_save_camera_state(cam);
 
-			cpia2_set_low_power(cam);
-			cpia2_free_buffers(cam);
-		}
-	}
-
-	{
-		if(fh->mmapped)
-			cam->mmapped = 0;
-		v4l2_prio_close(&cam->prio, fh->prio);
-		file->private_data = NULL;
-		kfree(fh);
-	}
-
-	if (--cam->open_count == 0) {
+		cpia2_set_low_power(cam);
 		cpia2_free_buffers(cam);
-		if (!cam->present) {
-			video_unregister_device(dev);
-			mutex_unlock(&cam->busy_lock);
-			kfree(cam);
-			return 0;
-		}
 	}
 
-	mutex_unlock(&cam->busy_lock);
-
-	return 0;
+	if (cam->stream_fh == file->private_data) {
+		cam->stream_fh = NULL;
+		cam->mmapped = 0;
+	}
+	return v4l2_fh_release(file);
 }
 
 /******************************************************************************
@@ -355,15 +147,8 @@ static ssize_t cpia2_v4l_read(struct file *file, char __user *buf, size_t count,
 	struct camera_data *cam = video_drvdata(file);
 	int noblock = file->f_flags&O_NONBLOCK;
 
-	struct cpia2_fh *fh = file->private_data;
-
 	if(!cam)
 		return -EINVAL;
-
-	/* Priority check */
-	if(fh->prio != V4L2_PRIORITY_RECORD) {
-		return -EBUSY;
-	}
 
 	return cpia2_read(cam, buf, count, noblock);
 }
@@ -377,15 +162,6 @@ static ssize_t cpia2_v4l_read(struct file *file, char __user *buf, size_t count,
 static unsigned int cpia2_v4l_poll(struct file *filp, struct poll_table_struct *wait)
 {
 	struct camera_data *cam = video_drvdata(filp);
-	struct cpia2_fh *fh = filp->private_data;
-
-	if(!cam)
-		return POLLERR;
-
-	/* Priority check */
-	if(fh->prio != V4L2_PRIORITY_RECORD) {
-		return POLLERR;
-	}
 
 	return cpia2_poll(cam, filp, wait);
 }
@@ -405,56 +181,16 @@ static int sync(struct camera_data *cam, int frame_nr)
 			return 0;
 		}
 
-		mutex_unlock(&cam->busy_lock);
+		mutex_unlock(&cam->v4l2_lock);
 		wait_event_interruptible(cam->wq_stream,
 					 !cam->streaming ||
 					 frame->status == FRAME_READY);
-		mutex_lock(&cam->busy_lock);
+		mutex_lock(&cam->v4l2_lock);
 		if (signal_pending(current))
 			return -ERESTARTSYS;
-		if(!cam->present)
+		if (!video_is_registered(&cam->vdev))
 			return -ENOTTY;
 	}
-}
-
-/******************************************************************************
- *
- *  ioctl_get_mbuf
- *
- *****************************************************************************/
-#ifdef CONFIG_VIDEO_V4L1_COMPAT
-static int ioctl_get_mbuf(void *arg, struct camera_data *cam)
-{
-	struct video_mbuf *vm;
-	int i;
-	vm = arg;
-
-	memset(vm, 0, sizeof(*vm));
-	vm->size = cam->frame_size*cam->num_frames;
-	vm->frames = cam->num_frames;
-	for (i = 0; i < cam->num_frames; i++)
-		vm->offsets[i] = cam->frame_size * i;
-
-	return 0;
-}
-#endif
-
-/******************************************************************************
- *
- *  ioctl_set_gpio
- *
- *****************************************************************************/
-
-static int ioctl_set_gpio(void *arg, struct camera_data *cam)
-{
-	__u32 gpio_val;
-
-	gpio_val = *(__u32*) arg;
-
-	if (gpio_val &~ 0xFFU)
-		return -EINVAL;
-
-	return cpia2_set_gpio(cam, (unsigned char)gpio_val);
 }
 
 /******************************************************************************
@@ -465,11 +201,10 @@ static int ioctl_set_gpio(void *arg, struct camera_data *cam)
  *
  *****************************************************************************/
 
-static int ioctl_querycap(void *arg, struct camera_data *cam)
+static int cpia2_querycap(struct file *file, void *fh, struct v4l2_capability *vc)
 {
-	struct v4l2_capability *vc = arg;
+	struct camera_data *cam = video_drvdata(file);
 
-	memset(vc, 0, sizeof(*vc));
 	strcpy(vc->driver, "cpia2");
 
 	if (cam->params.pnp_id.product == 0x151)
@@ -484,7 +219,7 @@ static int ioctl_querycap(void *arg, struct camera_data *cam)
 		strcat(vc->card, " (676/");
 		break;
 	default:
-		strcat(vc->card, " (???/");
+		strcat(vc->card, " (XXX/");
 		break;
 	}
 	switch (cam->params.version.sensor_flags) {
@@ -504,19 +239,18 @@ static int ioctl_querycap(void *arg, struct camera_data *cam)
 		strcat(vc->card, "500)");
 		break;
 	default:
-		strcat(vc->card, "???)");
+		strcat(vc->card, "XXX)");
 		break;
 	}
 
 	if (usb_make_path(cam->dev, vc->bus_info, sizeof(vc->bus_info)) <0)
 		memset(vc->bus_info,0, sizeof(vc->bus_info));
 
-	vc->version = KERNEL_VERSION(CPIA2_MAJ_VER, CPIA2_MIN_VER,
-				     CPIA2_PATCH_VER);
-
-	vc->capabilities = V4L2_CAP_VIDEO_CAPTURE |
+	vc->device_caps = V4L2_CAP_VIDEO_CAPTURE |
 			   V4L2_CAP_READWRITE |
 			   V4L2_CAP_STREAMING;
+	vc->capabilities = vc->device_caps |
+			   V4L2_CAP_DEVICE_CAPS;
 
 	return 0;
 }
@@ -529,20 +263,24 @@ static int ioctl_querycap(void *arg, struct camera_data *cam)
  *
  *****************************************************************************/
 
-static int ioctl_input(unsigned int ioclt_nr,void *arg,struct camera_data *cam)
+static int cpia2_enum_input(struct file *file, void *fh, struct v4l2_input *i)
 {
-	struct v4l2_input *i = arg;
-
-	if(ioclt_nr  != VIDIOC_G_INPUT) {
-		if (i->index != 0)
-		       return -EINVAL;
-	}
-
-	memset(i, 0, sizeof(*i));
+	if (i->index)
+		return -EINVAL;
 	strcpy(i->name, "Camera");
 	i->type = V4L2_INPUT_TYPE_CAMERA;
-
 	return 0;
+}
+
+static int cpia2_g_input(struct file *file, void *fh, unsigned int *i)
+{
+	*i = 0;
+	return 0;
+}
+
+static int cpia2_s_input(struct file *file, void *fh, unsigned int i)
+{
+	return i ? -EINVAL : 0;
 }
 
 /******************************************************************************
@@ -553,9 +291,9 @@ static int ioctl_input(unsigned int ioclt_nr,void *arg,struct camera_data *cam)
  *
  *****************************************************************************/
 
-static int ioctl_enum_fmt(void *arg,struct camera_data *cam)
+static int cpia2_enum_fmt_vid_cap(struct file *file, void *fh,
+					    struct v4l2_fmtdesc *f)
 {
-	struct v4l2_fmtdesc *f = arg;
 	int index = f->index;
 
 	if (index < 0 || index > 1)
@@ -589,12 +327,10 @@ static int ioctl_enum_fmt(void *arg,struct camera_data *cam)
  *
  *****************************************************************************/
 
-static int ioctl_try_fmt(void *arg,struct camera_data *cam)
+static int cpia2_try_fmt_vid_cap(struct file *file, void *fh,
+					  struct v4l2_format *f)
 {
-	struct v4l2_format *f = arg;
-
-	if (f->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
-	       return -EINVAL;
+	struct camera_data *cam = video_drvdata(file);
 
 	if (f->fmt.pix.pixelformat != V4L2_PIX_FMT_MJPEG &&
 	    f->fmt.pix.pixelformat != V4L2_PIX_FMT_JPEG)
@@ -653,20 +389,15 @@ static int ioctl_try_fmt(void *arg,struct camera_data *cam)
  *
  *****************************************************************************/
 
-static int ioctl_set_fmt(void *arg,struct camera_data *cam, struct cpia2_fh *fh)
+static int cpia2_s_fmt_vid_cap(struct file *file, void *_fh,
+					struct v4l2_format *f)
 {
-	struct v4l2_format *f = arg;
+	struct camera_data *cam = video_drvdata(file);
 	int err, frame;
 
-	err = ioctl_try_fmt(arg, cam);
+	err = cpia2_try_fmt_vid_cap(file, _fh, f);
 	if(err != 0)
 		return err;
-
-	/* Ensure that only this process can change the format. */
-	err = v4l2_prio_change(&cam->prio, &fh->prio, V4L2_PRIORITY_RECORD);
-	if(err != 0) {
-		return err;
-	}
 
 	cam->pixelformat = f->fmt.pix.pixelformat;
 
@@ -708,12 +439,10 @@ static int ioctl_set_fmt(void *arg,struct camera_data *cam, struct cpia2_fh *fh)
  *
  *****************************************************************************/
 
-static int ioctl_get_fmt(void *arg,struct camera_data *cam)
+static int cpia2_g_fmt_vid_cap(struct file *file, void *fh,
+					struct v4l2_format *f)
 {
-	struct v4l2_format *f = arg;
-
-	if (f->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
-	       return -EINVAL;
+	struct camera_data *cam = video_drvdata(file);
 
 	f->fmt.pix.width = cam->width;
 	f->fmt.pix.height = cam->height;
@@ -736,9 +465,9 @@ static int ioctl_get_fmt(void *arg,struct camera_data *cam)
  *
  *****************************************************************************/
 
-static int ioctl_cropcap(void *arg,struct camera_data *cam)
+static int cpia2_cropcap(struct file *file, void *fh, struct v4l2_cropcap *c)
 {
-	struct v4l2_cropcap *c = arg;
+	struct camera_data *cam = video_drvdata(file);
 
 	if (c->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 	       return -EINVAL;
@@ -757,243 +486,126 @@ static int ioctl_cropcap(void *arg,struct camera_data *cam)
 	return 0;
 }
 
-/******************************************************************************
- *
- *  ioctl_queryctrl
- *
- *  V4L2 query possible control variables
- *
- *****************************************************************************/
+struct framerate_info {
+	int value;
+	struct v4l2_fract period;
+};
 
-static int ioctl_queryctrl(void *arg,struct camera_data *cam)
+static const struct framerate_info framerate_controls[] = {
+	{ CPIA2_VP_FRAMERATE_6_25, { 4, 25 } },
+	{ CPIA2_VP_FRAMERATE_7_5,  { 2, 15 } },
+	{ CPIA2_VP_FRAMERATE_12_5, { 2, 25 } },
+	{ CPIA2_VP_FRAMERATE_15,   { 1, 15 } },
+	{ CPIA2_VP_FRAMERATE_25,   { 1, 25 } },
+	{ CPIA2_VP_FRAMERATE_30,   { 1, 30 } },
+};
+
+static int cpia2_g_parm(struct file *file, void *fh, struct v4l2_streamparm *p)
 {
-	struct v4l2_queryctrl *c = arg;
+	struct camera_data *cam = video_drvdata(file);
+	struct v4l2_captureparm *cap = &p->parm.capture;
 	int i;
 
-	for(i=0; i<NUM_CONTROLS; ++i) {
-		if(c->id == controls[i].id) {
-			memcpy(c, controls+i, sizeof(*c));
+	if (p->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
+
+	cap->capability = V4L2_CAP_TIMEPERFRAME;
+	cap->readbuffers = cam->num_frames;
+	for (i = 0; i < ARRAY_SIZE(framerate_controls); i++)
+		if (cam->params.vp_params.frame_rate == framerate_controls[i].value) {
+			cap->timeperframe = framerate_controls[i].period;
 			break;
 		}
-	}
+	return 0;
+}
 
-	if(i == NUM_CONTROLS)
+static int cpia2_s_parm(struct file *file, void *fh, struct v4l2_streamparm *p)
+{
+	struct camera_data *cam = video_drvdata(file);
+	struct v4l2_captureparm *cap = &p->parm.capture;
+	struct v4l2_fract tpf = cap->timeperframe;
+	int max = ARRAY_SIZE(framerate_controls) - 1;
+	int ret;
+	int i;
+
+	ret = cpia2_g_parm(file, fh, p);
+	if (ret || !tpf.denominator || !tpf.numerator)
+		return ret;
+
+	/* Maximum 15 fps for this model */
+	if (cam->params.pnp_id.device_type == DEVICE_STV_672 &&
+	    cam->params.version.sensor_flags == CPIA2_VP_SENSOR_FLAGS_500)
+		max -= 2;
+	for (i = 0; i <= max; i++) {
+		struct v4l2_fract f1 = tpf;
+		struct v4l2_fract f2 = framerate_controls[i].period;
+
+		f1.numerator *= f2.denominator;
+		f2.numerator *= f1.denominator;
+		if (f1.numerator >= f2.numerator)
+			break;
+	}
+	if (i > max)
+		i = max;
+	cap->timeperframe = framerate_controls[i].period;
+	return cpia2_set_fps(cam, framerate_controls[i].value);
+}
+
+static const struct {
+	u32 width;
+	u32 height;
+} cpia2_framesizes[] = {
+	{ 640, 480 },
+	{ 352, 288 },
+	{ 320, 240 },
+	{ 288, 216 },
+	{ 256, 192 },
+	{ 224, 168 },
+	{ 192, 144 },
+	{ 176, 144 },
+};
+
+static int cpia2_enum_framesizes(struct file *file, void *fh,
+					 struct v4l2_frmsizeenum *fsize)
+{
+
+	if (fsize->pixel_format != V4L2_PIX_FMT_MJPEG &&
+	    fsize->pixel_format != V4L2_PIX_FMT_JPEG)
 		return -EINVAL;
-
-	/* Some devices have additional limitations */
-	switch(c->id) {
-	case V4L2_CID_BRIGHTNESS:
-		/***
-		 * Don't let the register be set to zero - bug in VP4
-		 * flash of full brightness
-		 ***/
-		if (cam->params.pnp_id.device_type == DEVICE_STV_672)
-			c->minimum = 1;
-		break;
-	case V4L2_CID_VFLIP:
-		// VP5 Only
-		if(cam->params.pnp_id.device_type == DEVICE_STV_672)
-			c->flags |= V4L2_CTRL_FLAG_DISABLED;
-		break;
-	case CPIA2_CID_FRAMERATE:
-		if(cam->params.pnp_id.device_type == DEVICE_STV_672 &&
-		   cam->params.version.sensor_flags==CPIA2_VP_SENSOR_FLAGS_500){
-			// Maximum 15fps
-			for(i=0; i<c->maximum; ++i) {
-				if(framerate_controls[i].value ==
-				   CPIA2_VP_FRAMERATE_15) {
-					c->maximum = i;
-					c->default_value = i;
-				}
-			}
-		}
-		break;
-	case CPIA2_CID_FLICKER_MODE:
-		// Flicker control only valid for 672.
-		if(cam->params.pnp_id.device_type != DEVICE_STV_672)
-			c->flags |= V4L2_CTRL_FLAG_DISABLED;
-		break;
-	case CPIA2_CID_LIGHTS:
-		// Light control only valid for the QX5 Microscope.
-		if(cam->params.pnp_id.product != 0x151)
-			c->flags |= V4L2_CTRL_FLAG_DISABLED;
-		break;
-	default:
-		break;
-	}
+	if (fsize->index >= ARRAY_SIZE(cpia2_framesizes))
+		return -EINVAL;
+	fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
+	fsize->discrete.width = cpia2_framesizes[fsize->index].width;
+	fsize->discrete.height = cpia2_framesizes[fsize->index].height;
 
 	return 0;
 }
 
-/******************************************************************************
- *
- *  ioctl_querymenu
- *
- *  V4L2 query possible control variables
- *
- *****************************************************************************/
-
-static int ioctl_querymenu(void *arg,struct camera_data *cam)
+static int cpia2_enum_frameintervals(struct file *file, void *fh,
+					   struct v4l2_frmivalenum *fival)
 {
-	struct v4l2_querymenu *m = arg;
+	struct camera_data *cam = video_drvdata(file);
+	int max = ARRAY_SIZE(framerate_controls) - 1;
+	int i;
 
-	memset(m->name, 0, sizeof(m->name));
-	m->reserved = 0;
-
-	switch(m->id) {
-	case CPIA2_CID_FLICKER_MODE:
-		if (m->index >= NUM_FLICKER_CONTROLS)
-			return -EINVAL;
-
-		strcpy(m->name, flicker_controls[m->index].name);
-		break;
-	case CPIA2_CID_FRAMERATE:
-	    {
-		int maximum = NUM_FRAMERATE_CONTROLS - 1;
-		if(cam->params.pnp_id.device_type == DEVICE_STV_672 &&
-		   cam->params.version.sensor_flags==CPIA2_VP_SENSOR_FLAGS_500){
-			// Maximum 15fps
-			int i;
-			for(i=0; i<maximum; ++i) {
-				if(framerate_controls[i].value ==
-				   CPIA2_VP_FRAMERATE_15)
-					maximum = i;
-			}
-		}
-		if (m->index > maximum)
-			return -EINVAL;
-
-		strcpy(m->name, framerate_controls[m->index].name);
-		break;
-	    }
-	case CPIA2_CID_LIGHTS:
-		if (m->index >= NUM_LIGHTS_CONTROLS)
-			return -EINVAL;
-
-		strcpy(m->name, lights_controls[m->index].name);
-		break;
-	default:
+	if (fival->pixel_format != V4L2_PIX_FMT_MJPEG &&
+	    fival->pixel_format != V4L2_PIX_FMT_JPEG)
 		return -EINVAL;
-	}
 
-	return 0;
-}
-
-/******************************************************************************
- *
- *  ioctl_g_ctrl
- *
- *  V4L2 get the value of a control variable
- *
- *****************************************************************************/
-
-static int ioctl_g_ctrl(void *arg,struct camera_data *cam)
-{
-	struct v4l2_control *c = arg;
-
-	switch(c->id) {
-	case V4L2_CID_BRIGHTNESS:
-		cpia2_do_command(cam, CPIA2_CMD_GET_VP_BRIGHTNESS,
-				 TRANSFER_READ, 0);
-		c->value = cam->params.color_params.brightness;
-		break;
-	case V4L2_CID_CONTRAST:
-		cpia2_do_command(cam, CPIA2_CMD_GET_CONTRAST,
-				 TRANSFER_READ, 0);
-		c->value = cam->params.color_params.contrast;
-		break;
-	case V4L2_CID_SATURATION:
-		cpia2_do_command(cam, CPIA2_CMD_GET_VP_SATURATION,
-				 TRANSFER_READ, 0);
-		c->value = cam->params.color_params.saturation;
-		break;
-	case V4L2_CID_HFLIP:
-		cpia2_do_command(cam, CPIA2_CMD_GET_USER_EFFECTS,
-				 TRANSFER_READ, 0);
-		c->value = (cam->params.vp_params.user_effects &
-			    CPIA2_VP_USER_EFFECTS_MIRROR) != 0;
-		break;
-	case V4L2_CID_VFLIP:
-		cpia2_do_command(cam, CPIA2_CMD_GET_USER_EFFECTS,
-				 TRANSFER_READ, 0);
-		c->value = (cam->params.vp_params.user_effects &
-			    CPIA2_VP_USER_EFFECTS_FLIP) != 0;
-		break;
-	case CPIA2_CID_TARGET_KB:
-		c->value = cam->params.vc_params.target_kb;
-		break;
-	case CPIA2_CID_GPIO:
-		cpia2_do_command(cam, CPIA2_CMD_GET_VP_GPIO_DATA,
-				 TRANSFER_READ, 0);
-		c->value = cam->params.vp_params.gpio_data;
-		break;
-	case CPIA2_CID_FLICKER_MODE:
-	{
-		int i, mode;
-		cpia2_do_command(cam, CPIA2_CMD_GET_FLICKER_MODES,
-				 TRANSFER_READ, 0);
-		if(cam->params.flicker_control.cam_register &
-		   CPIA2_VP_FLICKER_MODES_NEVER_FLICKER) {
-			mode = NEVER_FLICKER;
-		} else {
-		    if(cam->params.flicker_control.cam_register &
-		       CPIA2_VP_FLICKER_MODES_50HZ) {
-			mode = FLICKER_50;
-		    } else {
-			mode = FLICKER_60;
-		    }
-		}
-		for(i=0; i<NUM_FLICKER_CONTROLS; i++) {
-			if(flicker_controls[i].value == mode) {
-				c->value = i;
-				break;
-			}
-		}
-		if(i == NUM_FLICKER_CONTROLS)
-			return -EINVAL;
-		break;
-	}
-	case CPIA2_CID_FRAMERATE:
-	{
-		int maximum = NUM_FRAMERATE_CONTROLS - 1;
-		int i;
-		for(i=0; i<= maximum; i++) {
-			if(cam->params.vp_params.frame_rate ==
-			   framerate_controls[i].value)
-				break;
-		}
-		if(i > maximum)
-			return -EINVAL;
-		c->value = i;
-		break;
-	}
-	case CPIA2_CID_USB_ALT:
-		c->value = cam->params.camera_state.stream_mode;
-		break;
-	case CPIA2_CID_LIGHTS:
-	{
-		int i;
-		cpia2_do_command(cam, CPIA2_CMD_GET_VP_GPIO_DATA,
-				 TRANSFER_READ, 0);
-		for(i=0; i<NUM_LIGHTS_CONTROLS; i++) {
-			if((cam->params.vp_params.gpio_data&GPIO_LIGHTS_MASK) ==
-			   lights_controls[i].value) {
-				break;
-			}
-		}
-		if(i == NUM_LIGHTS_CONTROLS)
-			return -EINVAL;
-		c->value = i;
-		break;
-	}
-	case CPIA2_CID_RESET_CAMERA:
+	/* Maximum 15 fps for this model */
+	if (cam->params.pnp_id.device_type == DEVICE_STV_672 &&
+	    cam->params.version.sensor_flags == CPIA2_VP_SENSOR_FLAGS_500)
+		max -= 2;
+	if (fival->index > max)
 		return -EINVAL;
-	default:
+	for (i = 0; i < ARRAY_SIZE(cpia2_framesizes); i++)
+		if (fival->width == cpia2_framesizes[i].width &&
+		    fival->height == cpia2_framesizes[i].height)
+			break;
+	if (i == ARRAY_SIZE(cpia2_framesizes))
 		return -EINVAL;
-	}
-
-	DBG("Get control id:%d, value:%d\n", c->id, c->value);
-
+	fival->type = V4L2_FRMIVAL_TYPE_DISCRETE;
+	fival->discrete = framerate_controls[fival->index].period;
 	return 0;
 }
 
@@ -1005,72 +617,54 @@ static int ioctl_g_ctrl(void *arg,struct camera_data *cam)
  *
  *****************************************************************************/
 
-static int ioctl_s_ctrl(void *arg,struct camera_data *cam)
+static int cpia2_s_ctrl(struct v4l2_ctrl *ctrl)
 {
-	struct v4l2_control *c = arg;
-	int i;
-	int retval = 0;
+	struct camera_data *cam =
+		container_of(ctrl->handler, struct camera_data, hdl);
+	static const int flicker_table[] = {
+		NEVER_FLICKER,
+		FLICKER_50,
+		FLICKER_60,
+	};
 
-	DBG("Set control id:%d, value:%d\n", c->id, c->value);
+	DBG("Set control id:%d, value:%d\n", ctrl->id, ctrl->val);
 
-	/* Check that the value is in range */
-	for(i=0; i<NUM_CONTROLS; i++) {
-		if(c->id == controls[i].id) {
-			if(c->value < controls[i].minimum ||
-			   c->value > controls[i].maximum) {
-				return -EINVAL;
-			}
-			break;
-		}
-	}
-	if(i == NUM_CONTROLS)
-		return -EINVAL;
-
-	switch(c->id) {
+	switch (ctrl->id) {
 	case V4L2_CID_BRIGHTNESS:
-		cpia2_set_brightness(cam, c->value);
+		cpia2_set_brightness(cam, ctrl->val);
 		break;
 	case V4L2_CID_CONTRAST:
-		cpia2_set_contrast(cam, c->value);
+		cpia2_set_contrast(cam, ctrl->val);
 		break;
 	case V4L2_CID_SATURATION:
-		cpia2_set_saturation(cam, c->value);
+		cpia2_set_saturation(cam, ctrl->val);
 		break;
 	case V4L2_CID_HFLIP:
-		cpia2_set_property_mirror(cam, c->value);
+		cpia2_set_property_mirror(cam, ctrl->val);
 		break;
 	case V4L2_CID_VFLIP:
-		cpia2_set_property_flip(cam, c->value);
+		cpia2_set_property_flip(cam, ctrl->val);
 		break;
-	case CPIA2_CID_TARGET_KB:
-		retval = cpia2_set_target_kb(cam, c->value);
+	case V4L2_CID_POWER_LINE_FREQUENCY:
+		return cpia2_set_flicker_mode(cam, flicker_table[ctrl->val]);
+	case V4L2_CID_ILLUMINATORS_1:
+		return cpia2_set_gpio(cam, (cam->top_light->val << 6) |
+					   (cam->bottom_light->val << 7));
+	case V4L2_CID_JPEG_ACTIVE_MARKER:
+		cam->params.compression.inhibit_htables =
+			!(ctrl->val & V4L2_JPEG_ACTIVE_MARKER_DHT);
 		break;
-	case CPIA2_CID_GPIO:
-		retval = cpia2_set_gpio(cam, c->value);
-		break;
-	case CPIA2_CID_FLICKER_MODE:
-		retval = cpia2_set_flicker_mode(cam,
-					      flicker_controls[c->value].value);
-		break;
-	case CPIA2_CID_FRAMERATE:
-		retval = cpia2_set_fps(cam, framerate_controls[c->value].value);
+	case V4L2_CID_JPEG_COMPRESSION_QUALITY:
+		cam->params.vc_params.quality = ctrl->val;
 		break;
 	case CPIA2_CID_USB_ALT:
-		retval = cpia2_usb_change_streaming_alternate(cam, c->value);
-		break;
-	case CPIA2_CID_LIGHTS:
-		retval = cpia2_set_gpio(cam, lights_controls[c->value].value);
-		break;
-	case CPIA2_CID_RESET_CAMERA:
-		cpia2_usb_stream_pause(cam);
-		cpia2_reset_camera(cam);
-		cpia2_usb_stream_resume(cam);
+		cam->params.camera_state.stream_mode = ctrl->val;
 		break;
 	default:
-		retval = -EINVAL;
+		return -EINVAL;
 	}
 
-	return retval;
+	return 0;
 }
 
 /******************************************************************************
@@ -1081,9 +675,9 @@ static int ioctl_s_ctrl(void *arg,struct camera_data *cam)
  *
  *****************************************************************************/
 
-static int ioctl_g_jpegcomp(void *arg,struct camera_data *cam)
+static int cpia2_g_jpegcomp(struct file *file, void *fh, struct v4l2_jpegcompression *parms)
 {
-	struct v4l2_jpegcompression *parms = arg;
+	struct camera_data *cam = video_drvdata(file);
 
 	memset(parms, 0, sizeof(*parms));
 
@@ -1122,15 +716,17 @@ static int ioctl_g_jpegcomp(void *arg,struct camera_data *cam)
  *
  *****************************************************************************/
 
-static int ioctl_s_jpegcomp(void *arg,struct camera_data *cam)
+static int cpia2_s_jpegcomp(struct file *file, void *fh, struct v4l2_jpegcompression *parms)
 {
-	struct v4l2_jpegcompression *parms = arg;
+	struct camera_data *cam = video_drvdata(file);
 
 	DBG("S_JPEGCOMP APP_len:%d COM_len:%d\n",
 	    parms->APP_len, parms->COM_len);
 
 	cam->params.compression.inhibit_htables =
 		!(parms->jpeg_markers & V4L2_JPEG_MARKER_DHT);
+	parms->jpeg_markers &= V4L2_JPEG_MARKER_DQT | V4L2_JPEG_MARKER_DRI |
+			       V4L2_JPEG_MARKER_DHT;
 
 	if(parms->APP_len != 0) {
 		if(parms->APP_len > 0 &&
@@ -1171,9 +767,9 @@ static int ioctl_s_jpegcomp(void *arg,struct camera_data *cam)
  *
  *****************************************************************************/
 
-static int ioctl_reqbufs(void *arg,struct camera_data *cam)
+static int cpia2_reqbufs(struct file *file, void *fh, struct v4l2_requestbuffers *req)
 {
-	struct v4l2_requestbuffers *req = arg;
+	struct camera_data *cam = video_drvdata(file);
 
 	if(req->type != V4L2_BUF_TYPE_VIDEO_CAPTURE ||
 	   req->memory != V4L2_MEMORY_MMAP)
@@ -1194,9 +790,9 @@ static int ioctl_reqbufs(void *arg,struct camera_data *cam)
  *
  *****************************************************************************/
 
-static int ioctl_querybuf(void *arg,struct camera_data *cam)
+static int cpia2_querybuf(struct file *file, void *fh, struct v4l2_buffer *buf)
 {
-	struct v4l2_buffer *buf = arg;
+	struct camera_data *cam = video_drvdata(file);
 
 	if(buf->type != V4L2_BUF_TYPE_VIDEO_CAPTURE ||
 	   buf->index > cam->num_frames)
@@ -1242,9 +838,9 @@ static int ioctl_querybuf(void *arg,struct camera_data *cam)
  *
  *****************************************************************************/
 
-static int ioctl_qbuf(void *arg,struct camera_data *cam)
+static int cpia2_qbuf(struct file *file, void *fh, struct v4l2_buffer *buf)
 {
-	struct v4l2_buffer *buf = arg;
+	struct camera_data *cam = video_drvdata(file);
 
 	if(buf->type != V4L2_BUF_TYPE_VIDEO_CAPTURE ||
 	   buf->memory != V4L2_MEMORY_MMAP ||
@@ -1298,9 +894,9 @@ static int find_earliest_filled_buffer(struct camera_data *cam)
  *
  *****************************************************************************/
 
-static int ioctl_dqbuf(void *arg,struct camera_data *cam, struct file *file)
+static int cpia2_dqbuf(struct file *file, void *fh, struct v4l2_buffer *buf)
 {
-	struct v4l2_buffer *buf = arg;
+	struct camera_data *cam = video_drvdata(file);
 	int frame;
 
 	if(buf->type != V4L2_BUF_TYPE_VIDEO_CAPTURE ||
@@ -1315,14 +911,14 @@ static int ioctl_dqbuf(void *arg,struct camera_data *cam, struct file *file)
 	if(frame < 0) {
 		/* Wait for a frame to become available */
 		struct framebuf *cb=cam->curbuff;
-		mutex_unlock(&cam->busy_lock);
+		mutex_unlock(&cam->v4l2_lock);
 		wait_event_interruptible(cam->wq_stream,
-					 !cam->present ||
+					 !video_is_registered(&cam->vdev) ||
 					 (cb=cam->curbuff)->status == FRAME_READY);
-		mutex_lock(&cam->busy_lock);
+		mutex_lock(&cam->v4l2_lock);
 		if (signal_pending(current))
 			return -ERESTARTSYS;
-		if(!cam->present)
+		if (!video_is_registered(&cam->vdev))
 			return -ENOTTY;
 		frame = cb->num;
 	}
@@ -1336,7 +932,7 @@ static int ioctl_dqbuf(void *arg,struct camera_data *cam, struct file *file)
 	buf->sequence = cam->buffers[buf->index].seq;
 	buf->m.offset = cam->buffers[buf->index].data - cam->frame_buffer;
 	buf->length = cam->frame_size;
-	buf->input = 0;
+	buf->reserved2 = 0;
 	buf->reserved = 0;
 	memset(&buf->timecode, 0, sizeof(buf->timecode));
 
@@ -1346,235 +942,39 @@ static int ioctl_dqbuf(void *arg,struct camera_data *cam, struct file *file)
 	return 0;
 }
 
-/******************************************************************************
- *
- *  cpia2_ioctl
- *
- *****************************************************************************/
-static long cpia2_do_ioctl(struct file *file, unsigned int cmd, void *arg)
+static int cpia2_streamon(struct file *file, void *fh, enum v4l2_buf_type type)
 {
 	struct camera_data *cam = video_drvdata(file);
-	long retval = 0;
+	int ret = -EINVAL;
 
-	if (!cam)
-		return -ENOTTY;
+	DBG("VIDIOC_STREAMON, streaming=%d\n", cam->streaming);
+	if (!cam->mmapped || type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
 
-	/* make this _really_ smp-safe */
-	if (mutex_lock_interruptible(&cam->busy_lock))
-		return -ERESTARTSYS;
-
-	if (!cam->present) {
-		mutex_unlock(&cam->busy_lock);
-		return -ENODEV;
+	if (!cam->streaming) {
+		ret = cpia2_usb_stream_start(cam,
+				cam->params.camera_state.stream_mode);
+		if (!ret)
+			v4l2_ctrl_grab(cam->usb_alt, true);
 	}
-
-	/* Priority check */
-	switch (cmd) {
-	case VIDIOC_S_FMT:
-	{
-		struct cpia2_fh *fh = file->private_data;
-		retval = v4l2_prio_check(&cam->prio, fh->prio);
-		if(retval) {
-			mutex_unlock(&cam->busy_lock);
-			return retval;
-		}
-		break;
-	}
-#ifdef CONFIG_VIDEO_V4L1_COMPAT
-	case VIDIOCGMBUF:
-	{
-		struct cpia2_fh *fh = file->private_data;
-		if(fh->prio != V4L2_PRIORITY_RECORD) {
-			mutex_unlock(&cam->busy_lock);
-			return -EBUSY;
-		}
-		break;
-	}
-#endif
-	default:
-		break;
-	}
-
-	switch (cmd) {
-	/* CPIA2 extension to Video4Linux API */
-	case CPIA2_IOC_SET_GPIO:
-		retval = ioctl_set_gpio(arg, cam);
-		break;
-#ifdef CONFIG_VIDEO_V4L1_COMPAT
-	case VIDIOCGMBUF:	/* mmap interface */
-		retval = ioctl_get_mbuf(arg, cam);
-		break;
-#endif
-	case VIDIOC_QUERYCAP:
-		retval = ioctl_querycap(arg,cam);
-		break;
-
-	case VIDIOC_ENUMINPUT:
-	case VIDIOC_G_INPUT:
-	case VIDIOC_S_INPUT:
-		retval = ioctl_input(cmd, arg, cam);
-		break;
-
-	case VIDIOC_ENUM_FMT:
-		retval = ioctl_enum_fmt(arg,cam);
-		break;
-	case VIDIOC_TRY_FMT:
-		retval = ioctl_try_fmt(arg,cam);
-		break;
-	case VIDIOC_G_FMT:
-		retval = ioctl_get_fmt(arg,cam);
-		break;
-	case VIDIOC_S_FMT:
-		retval = ioctl_set_fmt(arg,cam,file->private_data);
-		break;
-
-	case VIDIOC_CROPCAP:
-		retval = ioctl_cropcap(arg,cam);
-		break;
-	case VIDIOC_G_CROP:
-	case VIDIOC_S_CROP:
-		// TODO: I think cropping can be implemented - SJB
-		retval = -EINVAL;
-		break;
-
-	case VIDIOC_QUERYCTRL:
-		retval = ioctl_queryctrl(arg,cam);
-		break;
-	case VIDIOC_QUERYMENU:
-		retval = ioctl_querymenu(arg,cam);
-		break;
-	case VIDIOC_G_CTRL:
-		retval = ioctl_g_ctrl(arg,cam);
-		break;
-	case VIDIOC_S_CTRL:
-		retval = ioctl_s_ctrl(arg,cam);
-		break;
-
-	case VIDIOC_G_JPEGCOMP:
-		retval = ioctl_g_jpegcomp(arg,cam);
-		break;
-	case VIDIOC_S_JPEGCOMP:
-		retval = ioctl_s_jpegcomp(arg,cam);
-		break;
-
-	case VIDIOC_G_PRIORITY:
-	{
-		struct cpia2_fh *fh = file->private_data;
-		*(enum v4l2_priority*)arg = fh->prio;
-		break;
-	}
-	case VIDIOC_S_PRIORITY:
-	{
-		struct cpia2_fh *fh = file->private_data;
-		enum v4l2_priority prio;
-		prio = *(enum v4l2_priority*)arg;
-		if(cam->streaming &&
-		   prio != fh->prio &&
-		   fh->prio == V4L2_PRIORITY_RECORD) {
-			/* Can't drop record priority while streaming */
-			retval = -EBUSY;
-		} else if(prio == V4L2_PRIORITY_RECORD &&
-		   prio != fh->prio &&
-		   v4l2_prio_max(&cam->prio) == V4L2_PRIORITY_RECORD) {
-			/* Only one program can record at a time */
-			retval = -EBUSY;
-		} else {
-			retval = v4l2_prio_change(&cam->prio, &fh->prio, prio);
-		}
-		break;
-	}
-
-	case VIDIOC_REQBUFS:
-		retval = ioctl_reqbufs(arg,cam);
-		break;
-	case VIDIOC_QUERYBUF:
-		retval = ioctl_querybuf(arg,cam);
-		break;
-	case VIDIOC_QBUF:
-		retval = ioctl_qbuf(arg,cam);
-		break;
-	case VIDIOC_DQBUF:
-		retval = ioctl_dqbuf(arg,cam,file);
-		break;
-	case VIDIOC_STREAMON:
-	{
-		int type;
-		DBG("VIDIOC_STREAMON, streaming=%d\n", cam->streaming);
-		type = *(int*)arg;
-		if(!cam->mmapped || type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
-			retval = -EINVAL;
-
-		if(!cam->streaming) {
-			retval = cpia2_usb_stream_start(cam,
-					  cam->params.camera_state.stream_mode);
-		} else {
-			retval = -EINVAL;
-		}
-
-		break;
-	}
-	case VIDIOC_STREAMOFF:
-	{
-		int type;
-		DBG("VIDIOC_STREAMOFF, streaming=%d\n", cam->streaming);
-		type = *(int*)arg;
-		if(!cam->mmapped || type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
-			retval = -EINVAL;
-
-		if(cam->streaming) {
-			retval = cpia2_usb_stream_stop(cam);
-		} else {
-			retval = -EINVAL;
-		}
-
-		break;
-	}
-
-	case VIDIOC_ENUMOUTPUT:
-	case VIDIOC_G_OUTPUT:
-	case VIDIOC_S_OUTPUT:
-	case VIDIOC_G_MODULATOR:
-	case VIDIOC_S_MODULATOR:
-
-	case VIDIOC_ENUMAUDIO:
-	case VIDIOC_G_AUDIO:
-	case VIDIOC_S_AUDIO:
-
-	case VIDIOC_ENUMAUDOUT:
-	case VIDIOC_G_AUDOUT:
-	case VIDIOC_S_AUDOUT:
-
-	case VIDIOC_ENUMSTD:
-	case VIDIOC_QUERYSTD:
-	case VIDIOC_G_STD:
-	case VIDIOC_S_STD:
-
-	case VIDIOC_G_TUNER:
-	case VIDIOC_S_TUNER:
-	case VIDIOC_G_FREQUENCY:
-	case VIDIOC_S_FREQUENCY:
-
-	case VIDIOC_OVERLAY:
-	case VIDIOC_G_FBUF:
-	case VIDIOC_S_FBUF:
-
-	case VIDIOC_G_PARM:
-	case VIDIOC_S_PARM:
-		retval = -EINVAL;
-		break;
-	default:
-		retval = -ENOIOCTLCMD;
-		break;
-	}
-
-	mutex_unlock(&cam->busy_lock);
-	return retval;
+	return ret;
 }
 
-static long cpia2_ioctl(struct file *file,
-		       unsigned int cmd, unsigned long arg)
+static int cpia2_streamoff(struct file *file, void *fh, enum v4l2_buf_type type)
 {
-	return video_usercopy(file, cmd, arg, cpia2_do_ioctl);
+	struct camera_data *cam = video_drvdata(file);
+	int ret = -EINVAL;
+
+	DBG("VIDIOC_STREAMOFF, streaming=%d\n", cam->streaming);
+	if (!cam->mmapped || type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
+
+	if (cam->streaming) {
+		ret = cpia2_usb_stream_stop(cam);
+		if (!ret)
+			v4l2_ctrl_grab(cam->usb_alt, false);
+	}
+	return ret;
 }
 
 /******************************************************************************
@@ -1587,16 +987,10 @@ static int cpia2_mmap(struct file *file, struct vm_area_struct *area)
 	struct camera_data *cam = video_drvdata(file);
 	int retval;
 
-	/* Priority check */
-	struct cpia2_fh *fh = file->private_data;
-	if(fh->prio != V4L2_PRIORITY_RECORD) {
-		return -EBUSY;
-	}
-
 	retval = cpia2_remap_buffer(cam, area);
 
 	if(!retval)
-		fh->mmapped = 1;
+		cam->stream_fh = file->private_data;
 	return retval;
 }
 
@@ -1614,16 +1008,40 @@ static void reset_camera_struct_v4l(struct camera_data *cam)
 	cam->frame_size = buffer_size;
 	cam->num_frames = num_buffers;
 
-	/* FlickerModes */
+	/* Flicker modes */
 	cam->params.flicker_control.flicker_mode_req = flicker_mode;
-	cam->params.flicker_control.mains_frequency = flicker_freq;
 
-	/* streamMode */
+	/* stream modes */
 	cam->params.camera_state.stream_mode = alternate;
 
 	cam->pixelformat = V4L2_PIX_FMT_JPEG;
-	v4l2_prio_init(&cam->prio);
 }
+
+static const struct v4l2_ioctl_ops cpia2_ioctl_ops = {
+	.vidioc_querycap		    = cpia2_querycap,
+	.vidioc_enum_input		    = cpia2_enum_input,
+	.vidioc_g_input			    = cpia2_g_input,
+	.vidioc_s_input			    = cpia2_s_input,
+	.vidioc_enum_fmt_vid_cap	    = cpia2_enum_fmt_vid_cap,
+	.vidioc_g_fmt_vid_cap		    = cpia2_g_fmt_vid_cap,
+	.vidioc_s_fmt_vid_cap		    = cpia2_s_fmt_vid_cap,
+	.vidioc_try_fmt_vid_cap		    = cpia2_try_fmt_vid_cap,
+	.vidioc_g_jpegcomp		    = cpia2_g_jpegcomp,
+	.vidioc_s_jpegcomp		    = cpia2_s_jpegcomp,
+	.vidioc_cropcap			    = cpia2_cropcap,
+	.vidioc_reqbufs			    = cpia2_reqbufs,
+	.vidioc_querybuf		    = cpia2_querybuf,
+	.vidioc_qbuf			    = cpia2_qbuf,
+	.vidioc_dqbuf			    = cpia2_dqbuf,
+	.vidioc_streamon		    = cpia2_streamon,
+	.vidioc_streamoff		    = cpia2_streamoff,
+	.vidioc_s_parm			    = cpia2_s_parm,
+	.vidioc_g_parm			    = cpia2_g_parm,
+	.vidioc_enum_framesizes		    = cpia2_enum_framesizes,
+	.vidioc_enum_frameintervals	    = cpia2_enum_frameintervals,
+	.vidioc_subscribe_event		    = v4l2_ctrl_subscribe_event,
+	.vidioc_unsubscribe_event	    = v4l2_event_unsubscribe,
+};
 
 /***
  * The v4l video device structure initialized for this device
@@ -1634,7 +1052,7 @@ static const struct v4l2_file_operations cpia2_fops = {
 	.release	= cpia2_close,
 	.read		= cpia2_v4l_read,
 	.poll		= cpia2_v4l_poll,
-	.ioctl		= cpia2_ioctl,
+	.unlocked_ioctl	= video_ioctl2,
 	.mmap		= cpia2_mmap,
 };
 
@@ -1642,7 +1060,22 @@ static struct video_device cpia2_template = {
 	/* I could not find any place for the old .initialize initializer?? */
 	.name =		"CPiA2 Camera",
 	.fops =		&cpia2_fops,
-	.release =	video_device_release,
+	.ioctl_ops =	&cpia2_ioctl_ops,
+	.release =	video_device_release_empty,
+};
+
+void cpia2_camera_release(struct v4l2_device *v4l2_dev)
+{
+	struct camera_data *cam =
+		container_of(v4l2_dev, struct camera_data, v4l2_dev);
+
+	v4l2_ctrl_handler_free(&cam->hdl);
+	v4l2_device_unregister(&cam->v4l2_dev);
+	kfree(cam);
+}
+
+static const struct v4l2_ctrl_ops cpia2_ctrl_ops = {
+	.s_ctrl = cpia2_s_ctrl,
 };
 
 /******************************************************************************
@@ -1652,19 +1085,78 @@ static struct video_device cpia2_template = {
  *****************************************************************************/
 int cpia2_register_camera(struct camera_data *cam)
 {
-	cam->vdev = video_device_alloc();
-	if(!cam->vdev)
-		return -ENOMEM;
+	struct v4l2_ctrl_handler *hdl = &cam->hdl;
+	struct v4l2_ctrl_config cpia2_usb_alt = {
+		.ops = &cpia2_ctrl_ops,
+		.id = CPIA2_CID_USB_ALT,
+		.name = "USB Alternate",
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.min = USBIF_ISO_1,
+		.max = USBIF_ISO_6,
+		.step = 1,
+	};
+	int ret;
 
-	memcpy(cam->vdev, &cpia2_template, sizeof(cpia2_template));
-	video_set_drvdata(cam->vdev, cam);
+	v4l2_ctrl_handler_init(hdl, 12);
+	v4l2_ctrl_new_std(hdl, &cpia2_ctrl_ops,
+			V4L2_CID_BRIGHTNESS,
+			cam->params.pnp_id.device_type == DEVICE_STV_672 ? 1 : 0,
+			255, 1, DEFAULT_BRIGHTNESS);
+	v4l2_ctrl_new_std(hdl, &cpia2_ctrl_ops,
+			V4L2_CID_CONTRAST, 0, 255, 1, DEFAULT_CONTRAST);
+	v4l2_ctrl_new_std(hdl, &cpia2_ctrl_ops,
+			V4L2_CID_SATURATION, 0, 255, 1, DEFAULT_SATURATION);
+	v4l2_ctrl_new_std(hdl, &cpia2_ctrl_ops,
+			V4L2_CID_HFLIP, 0, 1, 1, 0);
+	v4l2_ctrl_new_std(hdl, &cpia2_ctrl_ops,
+			V4L2_CID_JPEG_ACTIVE_MARKER, 0,
+			V4L2_JPEG_ACTIVE_MARKER_DHT, 0,
+			V4L2_JPEG_ACTIVE_MARKER_DHT);
+	v4l2_ctrl_new_std(hdl, &cpia2_ctrl_ops,
+			V4L2_CID_JPEG_COMPRESSION_QUALITY, 1,
+			100, 1, 100);
+	cpia2_usb_alt.def = alternate;
+	cam->usb_alt = v4l2_ctrl_new_custom(hdl, &cpia2_usb_alt, NULL);
+	/* VP5 Only */
+	if (cam->params.pnp_id.device_type != DEVICE_STV_672)
+		v4l2_ctrl_new_std(hdl, &cpia2_ctrl_ops,
+			V4L2_CID_VFLIP, 0, 1, 1, 0);
+	/* Flicker control only valid for 672 */
+	if (cam->params.pnp_id.device_type == DEVICE_STV_672)
+		v4l2_ctrl_new_std_menu(hdl, &cpia2_ctrl_ops,
+			V4L2_CID_POWER_LINE_FREQUENCY,
+			V4L2_CID_POWER_LINE_FREQUENCY_60HZ, 0, 0);
+	/* Light control only valid for the QX5 Microscope */
+	if (cam->params.pnp_id.product == 0x151) {
+		cam->top_light = v4l2_ctrl_new_std(hdl, &cpia2_ctrl_ops,
+				V4L2_CID_ILLUMINATORS_1, 0, 1, 1, 0);
+		cam->bottom_light = v4l2_ctrl_new_std(hdl, &cpia2_ctrl_ops,
+				V4L2_CID_ILLUMINATORS_2, 0, 1, 1, 0);
+		v4l2_ctrl_cluster(2, &cam->top_light);
+	}
+
+	if (hdl->error) {
+		ret = hdl->error;
+		v4l2_ctrl_handler_free(hdl);
+		return ret;
+	}
+
+	cam->vdev = cpia2_template;
+	video_set_drvdata(&cam->vdev, cam);
+	cam->vdev.lock = &cam->v4l2_lock;
+	cam->vdev.ctrl_handler = hdl;
+	cam->vdev.v4l2_dev = &cam->v4l2_dev;
+	set_bit(V4L2_FL_USE_FH_PRIO, &cam->vdev.flags);
+	/* Locking in file operations other than ioctl should be done
+	   by the driver, not the V4L2 core.
+	   This driver needs auditing so that this flag can be removed. */
+	set_bit(V4L2_FL_LOCK_ALL_FOPS, &cam->vdev.flags);
 
 	reset_camera_struct_v4l(cam);
 
 	/* register v4l device */
-	if (video_register_device(cam->vdev, VFL_TYPE_GRABBER, video_nr) < 0) {
+	if (video_register_device(&cam->vdev, VFL_TYPE_GRABBER, video_nr) < 0) {
 		ERR("video_register_device failed\n");
-		video_device_release(cam->vdev);
 		return -ENODEV;
 	}
 
@@ -1678,13 +1170,7 @@ int cpia2_register_camera(struct camera_data *cam)
  *****************************************************************************/
 void cpia2_unregister_camera(struct camera_data *cam)
 {
-	if (!cam->open_count) {
-		video_unregister_device(cam->vdev);
-	} else {
-		LOG("%s removed while open, deferring "
-		    "video_unregister_device\n",
-		    video_device_node_name(cam->vdev));
-	}
+	video_unregister_device(&cam->vdev);
 }
 
 /******************************************************************************
@@ -1721,21 +1207,10 @@ static void __init check_parameters(void)
 		LOG("alternate specified is invalid, using %d\n", alternate);
 	}
 
-	if (flicker_mode != NEVER_FLICKER && flicker_mode != ANTI_FLICKER_ON) {
-		flicker_mode = NEVER_FLICKER;
+	if (flicker_mode != 0 && flicker_mode != FLICKER_50 && flicker_mode != FLICKER_60) {
+		flicker_mode = 0;
 		LOG("Flicker mode specified is invalid, using %d\n",
 		    flicker_mode);
-	}
-
-	if (flicker_freq != FLICKER_50 && flicker_freq != FLICKER_60) {
-		flicker_freq = FLICKER_60;
-		LOG("Flicker mode specified is invalid, using %d\n",
-		    flicker_freq);
-	}
-
-	if(video_nr < -1 || video_nr > 64) {
-		video_nr = -1;
-		LOG("invalid video_nr specified, must be -1 to 64\n");
 	}
 
 	DBG("Using %d buffers, each %d bytes, alternate=%d\n",
@@ -1752,8 +1227,8 @@ static void __init check_parameters(void)
  *****************************************************************************/
 static int __init cpia2_init(void)
 {
-	LOG("%s v%d.%d.%d\n",
-	    ABOUT, CPIA2_MAJ_VER, CPIA2_MIN_VER, CPIA2_PATCH_VER);
+	LOG("%s v%s\n",
+	    ABOUT, CPIA_VERSION);
 	check_parameters();
 	cpia2_usb_init();
 	return 0;
@@ -1773,4 +1248,3 @@ static void __exit cpia2_exit(void)
 
 module_init(cpia2_init);
 module_exit(cpia2_exit);
-

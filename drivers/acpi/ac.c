@@ -61,7 +61,6 @@ static int acpi_ac_open_fs(struct inode *inode, struct file *file);
 
 static int acpi_ac_add(struct acpi_device *device);
 static int acpi_ac_remove(struct acpi_device *device, int type);
-static int acpi_ac_resume(struct acpi_device *device);
 static void acpi_ac_notify(struct acpi_device *device, u32 event);
 
 static const struct acpi_device_id ac_device_ids[] = {
@@ -69,6 +68,11 @@ static const struct acpi_device_id ac_device_ids[] = {
 	{"", 0},
 };
 MODULE_DEVICE_TABLE(acpi, ac_device_ids);
+
+#ifdef CONFIG_PM_SLEEP
+static int acpi_ac_resume(struct device *dev);
+#endif
+static SIMPLE_DEV_PM_OPS(acpi_ac_pm, NULL, acpi_ac_resume);
 
 static struct acpi_driver acpi_ac_driver = {
 	.name = "ac",
@@ -78,9 +82,9 @@ static struct acpi_driver acpi_ac_driver = {
 	.ops = {
 		.add = acpi_ac_add,
 		.remove = acpi_ac_remove,
-		.resume = acpi_ac_resume,
 		.notify = acpi_ac_notify,
 		},
+	.drv.pm = &acpi_ac_pm,
 };
 
 struct acpi_ac {
@@ -89,7 +93,7 @@ struct acpi_ac {
 	unsigned long long state;
 };
 
-#define to_acpi_ac(x) container_of(x, struct acpi_ac, charger);
+#define to_acpi_ac(x) container_of(x, struct acpi_ac, charger)
 
 #ifdef CONFIG_ACPI_PROCFS_POWER
 static const struct file_operations acpi_ac_fops = {
@@ -100,24 +104,7 @@ static const struct file_operations acpi_ac_fops = {
 	.release = single_release,
 };
 #endif
-static int get_ac_property(struct power_supply *psy,
-			   enum power_supply_property psp,
-			   union power_supply_propval *val)
-{
-	struct acpi_ac *ac = to_acpi_ac(psy);
-	switch (psp) {
-	case POWER_SUPPLY_PROP_ONLINE:
-		val->intval = ac->state;
-		break;
-	default:
-		return -EINVAL;
-	}
-	return 0;
-}
 
-static enum power_supply_property ac_props[] = {
-	POWER_SUPPLY_PROP_ONLINE,
-};
 /* --------------------------------------------------------------------------
                                AC Adapter Management
    -------------------------------------------------------------------------- */
@@ -139,6 +126,35 @@ static int acpi_ac_get_state(struct acpi_ac *ac)
 
 	return 0;
 }
+
+/* --------------------------------------------------------------------------
+                            sysfs I/F
+   -------------------------------------------------------------------------- */
+static int get_ac_property(struct power_supply *psy,
+			   enum power_supply_property psp,
+			   union power_supply_propval *val)
+{
+	struct acpi_ac *ac = to_acpi_ac(psy);
+
+	if (!ac)
+		return -ENODEV;
+
+	if (acpi_ac_get_state(ac))
+		return -ENODEV;
+
+	switch (psp) {
+	case POWER_SUPPLY_PROP_ONLINE:
+		val->intval = ac->state;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static enum power_supply_property ac_props[] = {
+	POWER_SUPPLY_PROP_ONLINE,
+};
 
 #ifdef CONFIG_ACPI_PROCFS_POWER
 /* --------------------------------------------------------------------------
@@ -185,7 +201,8 @@ static int acpi_ac_add_fs(struct acpi_device *device)
 {
 	struct proc_dir_entry *entry = NULL;
 
-
+	printk(KERN_WARNING PREFIX "Deprecated procfs I/F for AC is loaded,"
+			" please retry with CONFIG_ACPI_PROCFS_POWER cleared\n");
 	if (!acpi_device_dir(device)) {
 		acpi_device_dir(device) = proc_mkdir(acpi_device_bid(device),
 						     acpi_ac_dir);
@@ -279,7 +296,9 @@ static int acpi_ac_add(struct acpi_device *device)
 	ac->charger.properties = ac_props;
 	ac->charger.num_properties = ARRAY_SIZE(ac_props);
 	ac->charger.get_property = get_ac_property;
-	power_supply_register(&ac->device->dev, &ac->charger);
+	result = power_supply_register(&ac->device->dev, &ac->charger);
+	if (result)
+		goto end;
 
 	printk(KERN_INFO PREFIX "%s [%s] (%s)\n",
 	       acpi_device_name(device), acpi_device_bid(device),
@@ -296,13 +315,19 @@ static int acpi_ac_add(struct acpi_device *device)
 	return result;
 }
 
-static int acpi_ac_resume(struct acpi_device *device)
+#ifdef CONFIG_PM_SLEEP
+static int acpi_ac_resume(struct device *dev)
 {
 	struct acpi_ac *ac;
 	unsigned old_state;
-	if (!device || !acpi_driver_data(device))
+
+	if (!dev)
 		return -EINVAL;
-	ac = acpi_driver_data(device);
+
+	ac = acpi_driver_data(to_acpi_device(dev));
+	if (!ac)
+		return -EINVAL;
+
 	old_state = ac->state;
 	if (acpi_ac_get_state(ac))
 		return 0;
@@ -310,6 +335,7 @@ static int acpi_ac_resume(struct acpi_device *device)
 		kobject_uevent(&ac->charger.dev->kobj, KOBJ_CHANGE);
 	return 0;
 }
+#endif
 
 static int acpi_ac_remove(struct acpi_device *device, int type)
 {

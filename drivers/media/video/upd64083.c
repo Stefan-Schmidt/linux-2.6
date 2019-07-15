@@ -34,7 +34,7 @@ MODULE_DESCRIPTION("uPD64083 driver");
 MODULE_AUTHOR("T. Adachi, Takeru KOMORIYA, Hans Verkuil");
 MODULE_LICENSE("GPL");
 
-static int debug;
+static bool debug;
 module_param(debug, bool, 0644);
 
 MODULE_PARM_DESC(debug, "Debug level (0-1)");
@@ -202,7 +202,7 @@ static int upd64083_probe(struct i2c_client *client,
 	v4l_info(client, "chip found @ 0x%x (%s)\n",
 			client->addr << 1, client->adapter->name);
 
-	state = kmalloc(sizeof(struct upd64083_state), GFP_KERNEL);
+	state = kzalloc(sizeof(struct upd64083_state), GFP_KERNEL);
 	if (state == NULL)
 		return -ENOMEM;
 	sd = &state->sd;
@@ -243,15 +243,4 @@ static struct i2c_driver upd64083_driver = {
 	.id_table	= upd64083_id,
 };
 
-static __init int init_upd64083(void)
-{
-	return i2c_add_driver(&upd64083_driver);
-}
-
-static __exit void exit_upd64083(void)
-{
-	i2c_del_driver(&upd64083_driver);
-}
-
-module_init(init_upd64083);
-module_exit(exit_upd64083);
+module_i2c_driver(upd64083_driver);

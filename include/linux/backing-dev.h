@@ -10,13 +10,14 @@
 
 #include <linux/percpu_counter.h>
 #include <linux/log2.h>
-#include <linux/proportions.h>
+#include <linux/flex_proportions.h>
 #include <linux/kernel.h>
 #include <linux/fs.h>
 #include <linux/sched.h>
 #include <linux/timer.h>
 #include <linux/writeback.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
+#include <linux/sysctl.h>
 
 struct page;
 struct device;
@@ -40,6 +41,8 @@ typedef int (congested_fn)(void *, int);
 enum bdi_stat_item {
 	BDI_RECLAIMABLE,
 	BDI_WRITEBACK,
+	BDI_DIRTIED,
+	BDI_WRITTEN,
 	NR_BDI_STAT_ITEMS
 };
 
@@ -57,6 +60,7 @@ struct bdi_writeback {
 	struct list_head b_dirty;	/* dirty inodes */
 	struct list_head b_io;		/* parked for writeback */
 	struct list_head b_more_io;	/* parked for more writeback */
+	spinlock_t list_lock;		/* protects the b_* lists */
 };
 
 struct backing_dev_info {
@@ -66,14 +70,27 @@ struct backing_dev_info {
 	unsigned int capabilities; /* Device capabilities */
 	congested_fn *congested_fn; /* Function pointer if device is md/dm */
 	void *congested_data;	/* Pointer to aux data for congested func */
-	void (*unplug_io_fn)(struct backing_dev_info *, struct page *);
-	void *unplug_io_data;
 
 	char *name;
 
 	struct percpu_counter bdi_stat[NR_BDI_STAT_ITEMS];
 
-	struct prop_local_percpu completions;
+	unsigned long bw_time_stamp;	/* last time write bw is updated */
+	unsigned long dirtied_stamp;
+	unsigned long written_stamp;	/* pages written at bw_time_stamp */
+	unsigned long write_bandwidth;	/* the estimated write bandwidth */
+	unsigned long avg_write_bandwidth; /* further smoothed write bw */
+
+	/*
+	 * The base dirty throttle rate, re-calculated on every 200ms.
+	 * All the bdi tasks' dirty rate will be curbed under it.
+	 * @dirty_ratelimit tracks the estimated @balanced_dirty_ratelimit
+	 * in small steps and is much more smooth/stable than the latter.
+	 */
+	unsigned long dirty_ratelimit;
+	unsigned long balanced_dirty_ratelimit;
+
+	struct fprop_local_percpu completions;
 	int dirty_exceeded;
 
 	unsigned int min_ratio;
@@ -102,12 +119,13 @@ int bdi_register(struct backing_dev_info *bdi, struct device *parent,
 int bdi_register_dev(struct backing_dev_info *bdi, dev_t dev);
 void bdi_unregister(struct backing_dev_info *bdi);
 int bdi_setup_and_register(struct backing_dev_info *, char *, unsigned int);
-void bdi_start_writeback(struct backing_dev_info *bdi, long nr_pages);
+void bdi_start_writeback(struct backing_dev_info *bdi, long nr_pages,
+			enum wb_reason reason);
 void bdi_start_background_writeback(struct backing_dev_info *bdi);
 int bdi_writeback_thread(void *data);
 int bdi_has_dirty_io(struct backing_dev_info *bdi);
-void bdi_arm_supers_timer(void);
 void bdi_wakeup_thread_delayed(struct backing_dev_info *bdi);
+void bdi_lock_two(struct bdi_writeback *wb1, struct bdi_writeback *wb2);
 
 extern spinlock_t bdi_lock;
 extern struct list_head bdi_list;
@@ -251,7 +269,6 @@ int bdi_set_max_ratio(struct backing_dev_info *bdi, unsigned int max_ratio);
 
 extern struct backing_dev_info default_backing_dev_info;
 extern struct backing_dev_info noop_backing_dev_info;
-void default_unplug_io_fn(struct backing_dev_info *bdi, struct page *page);
 
 int writeback_in_progress(struct backing_dev_info *bdi);
 
@@ -287,6 +304,8 @@ void clear_bdi_congested(struct backing_dev_info *bdi, int sync);
 void set_bdi_congested(struct backing_dev_info *bdi, int sync);
 long congestion_wait(int sync, long timeout);
 long wait_iff_congested(struct zone *zone, int sync, long timeout);
+int pdflush_proc_obsolete(struct ctl_table *table, int write,
+		void __user *buffer, size_t *lenp, loff_t *ppos);
 
 static inline bool bdi_cap_writeback_dirty(struct backing_dev_info *bdi)
 {
@@ -334,19 +353,6 @@ static inline int bdi_sched_wait(void *word)
 {
 	schedule();
 	return 0;
-}
-
-static inline void blk_run_backing_dev(struct backing_dev_info *bdi,
-				       struct page *page)
-{
-	if (bdi && bdi->unplug_io_fn)
-		bdi->unplug_io_fn(bdi, page);
-}
-
-static inline void blk_run_address_space(struct address_space *mapping)
-{
-	if (mapping)
-		blk_run_backing_dev(mapping->backing_dev_info, NULL);
 }
 
 #endif		/* _LINUX_BACKING_DEV_H */

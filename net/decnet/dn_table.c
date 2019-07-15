@@ -25,7 +25,7 @@
 #include <linux/netdevice.h>
 #include <linux/timer.h>
 #include <linux/spinlock.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <asm/uaccess.h>
 #include <linux/route.h> /* RTF_xxx */
 #include <net/neighbour.h>
@@ -59,7 +59,6 @@ struct dn_hash
 };
 
 #define dz_key_0(key)		((key).datum = 0)
-#define dz_prefix(key,dz)	((key).datum)
 
 #define for_nexthops(fi) { int nhsel; const struct dn_fib_nh *nh;\
 	for(nhsel = 0, nh = (fi)->fib_nh; nhsel < (fi)->fib_nhs; nh++, nhsel++)
@@ -124,11 +123,11 @@ static inline void dn_rebuild_zone(struct dn_zone *dz,
 				   struct dn_fib_node **old_ht,
 				   int old_divisor)
 {
-	int i;
 	struct dn_fib_node *f, **fp, *next;
+	int i;
 
 	for(i = 0; i < old_divisor; i++) {
-		for(f = old_ht[i]; f; f = f->fn_next) {
+		for(f = old_ht[i]; f; f = next) {
 			next = f->fn_next;
 			for(fp = dn_chain_p(f->fn_key, dz);
 				*fp && dn_key_leq((*fp)->fn_key, f->fn_key);
@@ -148,17 +147,18 @@ static void dn_rehash_zone(struct dn_zone *dz)
 
 	old_divisor = dz->dz_divisor;
 
-	switch(old_divisor) {
-		case 16:
-			new_divisor = 256;
-			new_hashmask = 0xFF;
-			break;
-		default:
-			printk(KERN_DEBUG "DECnet: dn_rehash_zone: BUG! %d\n", old_divisor);
-		case 256:
-			new_divisor = 1024;
-			new_hashmask = 0x3FF;
-			break;
+	switch (old_divisor) {
+	case 16:
+		new_divisor = 256;
+		new_hashmask = 0xFF;
+		break;
+	default:
+		printk(KERN_DEBUG "DECnet: dn_rehash_zone: BUG! %d\n",
+		       old_divisor);
+	case 256:
+		new_divisor = 1024;
+		new_hashmask = 0x3FF;
+		break;
 	}
 
 	ht = kcalloc(new_divisor, sizeof(struct dn_fib_node*), GFP_KERNEL);
@@ -297,61 +297,75 @@ static int dn_fib_dump_info(struct sk_buff *skb, u32 pid, u32 seq, int event,
 {
 	struct rtmsg *rtm;
 	struct nlmsghdr *nlh;
-	unsigned char *b = skb_tail_pointer(skb);
 
-	nlh = NLMSG_NEW(skb, pid, seq, event, sizeof(*rtm), flags);
-	rtm = NLMSG_DATA(nlh);
+	nlh = nlmsg_put(skb, pid, seq, event, sizeof(*rtm), flags);
+	if (!nlh)
+		return -EMSGSIZE;
+
+	rtm = nlmsg_data(nlh);
 	rtm->rtm_family = AF_DECnet;
 	rtm->rtm_dst_len = dst_len;
 	rtm->rtm_src_len = 0;
 	rtm->rtm_tos = 0;
 	rtm->rtm_table = tb_id;
-	RTA_PUT_U32(skb, RTA_TABLE, tb_id);
 	rtm->rtm_flags = fi->fib_flags;
 	rtm->rtm_scope = scope;
 	rtm->rtm_type  = type;
-	if (rtm->rtm_dst_len)
-		RTA_PUT(skb, RTA_DST, 2, dst);
 	rtm->rtm_protocol = fi->fib_protocol;
-	if (fi->fib_priority)
-		RTA_PUT(skb, RTA_PRIORITY, 4, &fi->fib_priority);
+
+	if (nla_put_u32(skb, RTA_TABLE, tb_id) < 0)
+		goto errout;
+
+	if (rtm->rtm_dst_len &&
+	    nla_put(skb, RTA_DST, 2, dst) < 0)
+		goto errout;
+
+	if (fi->fib_priority &&
+	    nla_put_u32(skb, RTA_PRIORITY, fi->fib_priority) < 0)
+		goto errout;
+
 	if (rtnetlink_put_metrics(skb, fi->fib_metrics) < 0)
-		goto rtattr_failure;
+		goto errout;
+
 	if (fi->fib_nhs == 1) {
-		if (fi->fib_nh->nh_gw)
-			RTA_PUT(skb, RTA_GATEWAY, 2, &fi->fib_nh->nh_gw);
-		if (fi->fib_nh->nh_oif)
-			RTA_PUT(skb, RTA_OIF, sizeof(int), &fi->fib_nh->nh_oif);
+		if (fi->fib_nh->nh_gw &&
+		    nla_put_le16(skb, RTA_GATEWAY, fi->fib_nh->nh_gw) < 0)
+			goto errout;
+
+		if (fi->fib_nh->nh_oif &&
+		    nla_put_u32(skb, RTA_OIF, fi->fib_nh->nh_oif) < 0)
+			goto errout;
 	}
+
 	if (fi->fib_nhs > 1) {
 		struct rtnexthop *nhp;
-		struct rtattr *mp_head;
-		if (skb_tailroom(skb) <= RTA_SPACE(0))
-			goto rtattr_failure;
-		mp_head = (struct rtattr *)skb_put(skb, RTA_SPACE(0));
+		struct nlattr *mp_head;
+
+		if (!(mp_head = nla_nest_start(skb, RTA_MULTIPATH)))
+			goto errout;
 
 		for_nexthops(fi) {
-			if (skb_tailroom(skb) < RTA_ALIGN(RTA_ALIGN(sizeof(*nhp)) + 4))
-				goto rtattr_failure;
-			nhp = (struct rtnexthop *)skb_put(skb, RTA_ALIGN(sizeof(*nhp)));
+			if (!(nhp = nla_reserve_nohdr(skb, sizeof(*nhp))))
+				goto errout;
+
 			nhp->rtnh_flags = nh->nh_flags & 0xFF;
 			nhp->rtnh_hops = nh->nh_weight - 1;
 			nhp->rtnh_ifindex = nh->nh_oif;
-			if (nh->nh_gw)
-				RTA_PUT(skb, RTA_GATEWAY, 2, &nh->nh_gw);
+
+			if (nh->nh_gw &&
+			    nla_put_le16(skb, RTA_GATEWAY, nh->nh_gw) < 0)
+				goto errout;
+
 			nhp->rtnh_len = skb_tail_pointer(skb) - (unsigned char *)nhp;
 		} endfor_nexthops(fi);
-		mp_head->rta_type = RTA_MULTIPATH;
-		mp_head->rta_len = skb_tail_pointer(skb) - (u8 *)mp_head;
+
+		nla_nest_end(skb, mp_head);
 	}
 
-	nlh->nlmsg_len = skb_tail_pointer(skb) - b;
-	return skb->len;
+	return nlmsg_end(skb, nlh);
 
-
-nlmsg_failure:
-rtattr_failure:
-	nlmsg_trim(skb, b);
+errout:
+	nlmsg_cancel(skb, nlh);
 	return -EMSGSIZE;
 }
 
@@ -476,7 +490,7 @@ int dn_fib_dump(struct sk_buff *skb, struct netlink_callback *cb)
 		return 0;
 
 	if (NLMSG_PAYLOAD(cb->nlh, 0) >= sizeof(struct rtmsg) &&
-		((struct rtmsg *)NLMSG_DATA(cb->nlh))->rtm_flags&RTM_F_CLONED)
+		((struct rtmsg *)nlmsg_data(cb->nlh))->rtm_flags&RTM_F_CLONED)
 			return dn_cache_dump(skb, cb);
 
 	s_h = cb->args[0];
@@ -765,7 +779,7 @@ static int dn_fib_table_flush(struct dn_fib_table *tb)
 	return found;
 }
 
-static int dn_fib_table_lookup(struct dn_fib_table *tb, const struct flowi *flp, struct dn_fib_res *res)
+static int dn_fib_table_lookup(struct dn_fib_table *tb, const struct flowidn *flp, struct dn_fib_res *res)
 {
 	int err;
 	struct dn_zone *dz;
@@ -774,7 +788,7 @@ static int dn_fib_table_lookup(struct dn_fib_table *tb, const struct flowi *flp,
 	read_lock(&dn_fib_tables_lock);
 	for(dz = t->dh_zone_list; dz; dz = dz->dz_next) {
 		struct dn_fib_node *f;
-		dn_fib_key_t k = dz_key(flp->fld_dst, dz);
+		dn_fib_key_t k = dz_key(flp->daddr, dz);
 
 		for(f = dz_chain(k, dz); f; f = f->fn_next) {
 			if (!dn_key_eq(k, f->fn_key)) {
@@ -789,7 +803,7 @@ static int dn_fib_table_lookup(struct dn_fib_table *tb, const struct flowi *flp,
 			if (f->fn_state&DN_S_ZOMBIE)
 				continue;
 
-			if (f->fn_scope < flp->fld_scope)
+			if (f->fn_scope < flp->flowidn_scope)
 				continue;
 
 			err = dn_fib_semantic_match(f->fn_type, DN_FIB_INFO(f), flp, res);
@@ -836,8 +850,8 @@ struct dn_fib_table *dn_fib_get_table(u32 n, int create)
 	if (!create)
 		return NULL;
 
-	if (in_interrupt() && net_ratelimit()) {
-		printk(KERN_DEBUG "DECnet: BUG! Attempt to create routing table from interrupt\n");
+	if (in_interrupt()) {
+		net_dbg_ratelimited("DECnet: BUG! Attempt to create routing table from interrupt\n");
 		return NULL;
 	}
 

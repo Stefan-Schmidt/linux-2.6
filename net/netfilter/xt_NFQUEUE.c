@@ -41,26 +41,36 @@ nfqueue_tg(struct sk_buff *skb, const struct xt_action_param *par)
 static u32 hash_v4(const struct sk_buff *skb)
 {
 	const struct iphdr *iph = ip_hdr(skb);
-	__be32 ipaddr;
 
 	/* packets in either direction go into same queue */
-	ipaddr = iph->saddr ^ iph->daddr;
+	if (iph->saddr < iph->daddr)
+		return jhash_3words((__force u32)iph->saddr,
+			(__force u32)iph->daddr, iph->protocol, jhash_initval);
 
-	return jhash_2words((__force u32)ipaddr, iph->protocol, jhash_initval);
+	return jhash_3words((__force u32)iph->daddr,
+			(__force u32)iph->saddr, iph->protocol, jhash_initval);
 }
 
-#if defined(CONFIG_IP6_NF_IPTABLES) || defined(CONFIG_IP6_NF_IPTABLES_MODULE)
+#if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
 static u32 hash_v6(const struct sk_buff *skb)
 {
 	const struct ipv6hdr *ip6h = ipv6_hdr(skb);
-	__be32 addr[4];
+	u32 a, b, c;
 
-	addr[0] = ip6h->saddr.s6_addr32[0] ^ ip6h->daddr.s6_addr32[0];
-	addr[1] = ip6h->saddr.s6_addr32[1] ^ ip6h->daddr.s6_addr32[1];
-	addr[2] = ip6h->saddr.s6_addr32[2] ^ ip6h->daddr.s6_addr32[2];
-	addr[3] = ip6h->saddr.s6_addr32[3] ^ ip6h->daddr.s6_addr32[3];
+	if (ip6h->saddr.s6_addr32[3] < ip6h->daddr.s6_addr32[3]) {
+		a = (__force u32) ip6h->saddr.s6_addr32[3];
+		b = (__force u32) ip6h->daddr.s6_addr32[3];
+	} else {
+		b = (__force u32) ip6h->saddr.s6_addr32[3];
+		a = (__force u32) ip6h->daddr.s6_addr32[3];
+	}
 
-	return jhash2((__force u32 *)addr, ARRAY_SIZE(addr), jhash_initval);
+	if (ip6h->saddr.s6_addr32[1] < ip6h->daddr.s6_addr32[1])
+		c = (__force u32) ip6h->saddr.s6_addr32[1];
+	else
+		c = (__force u32) ip6h->daddr.s6_addr32[1];
+
+	return jhash_3words(a, b, c, jhash_initval);
 }
 #endif
 
@@ -72,18 +82,31 @@ nfqueue_tg_v1(struct sk_buff *skb, const struct xt_action_param *par)
 
 	if (info->queues_total > 1) {
 		if (par->family == NFPROTO_IPV4)
-			queue = hash_v4(skb) % info->queues_total + queue;
-#if defined(CONFIG_IP6_NF_IPTABLES) || defined(CONFIG_IP6_NF_IPTABLES_MODULE)
+			queue = (((u64) hash_v4(skb) * info->queues_total) >>
+				 32) + queue;
+#if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
 		else if (par->family == NFPROTO_IPV6)
-			queue = hash_v6(skb) % info->queues_total + queue;
+			queue = (((u64) hash_v6(skb) * info->queues_total) >>
+				 32) + queue;
 #endif
 	}
 	return NF_QUEUE_NR(queue);
 }
 
-static int nfqueue_tg_v1_check(const struct xt_tgchk_param *par)
+static unsigned int
+nfqueue_tg_v2(struct sk_buff *skb, const struct xt_action_param *par)
 {
-	const struct xt_NFQ_info_v1 *info = par->targinfo;
+	const struct xt_NFQ_info_v2 *info = par->targinfo;
+	unsigned int ret = nfqueue_tg_v1(skb, par);
+
+	if (info->bypass)
+		ret |= NF_VERDICT_FLAG_QUEUE_BYPASS;
+	return ret;
+}
+
+static int nfqueue_tg_check(const struct xt_tgchk_param *par)
+{
+	const struct xt_NFQ_info_v2 *info = par->targinfo;
 	u32 maxid;
 
 	if (unlikely(!rnd_inited)) {
@@ -100,6 +123,8 @@ static int nfqueue_tg_v1_check(const struct xt_tgchk_param *par)
 		       info->queues_total, maxid);
 		return -ERANGE;
 	}
+	if (par->target->revision == 2 && info->bypass > 1)
+		return -EINVAL;
 	return 0;
 }
 
@@ -115,9 +140,18 @@ static struct xt_target nfqueue_tg_reg[] __read_mostly = {
 		.name		= "NFQUEUE",
 		.revision	= 1,
 		.family		= NFPROTO_UNSPEC,
-		.checkentry	= nfqueue_tg_v1_check,
+		.checkentry	= nfqueue_tg_check,
 		.target		= nfqueue_tg_v1,
 		.targetsize	= sizeof(struct xt_NFQ_info_v1),
+		.me		= THIS_MODULE,
+	},
+	{
+		.name		= "NFQUEUE",
+		.revision	= 2,
+		.family		= NFPROTO_UNSPEC,
+		.checkentry	= nfqueue_tg_check,
+		.target		= nfqueue_tg_v2,
+		.targetsize	= sizeof(struct xt_NFQ_info_v2),
 		.me		= THIS_MODULE,
 	},
 };

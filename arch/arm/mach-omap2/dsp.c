@@ -11,16 +11,26 @@
  * published by the Free Software Foundation.
  */
 
+/*
+ * XXX The function pointers to the PRM/CM functions are incorrect and
+ * should be removed.  No device driver should be changing PRM/CM bits
+ * directly; that's a layering violation -- those bits are the responsibility
+ * of the OMAP PM core code.
+ */
+
+#include <linux/module.h>
 #include <linux/platform_device.h>
-#include "prm.h"
-#include "cm.h"
+
+#include <asm/memblock.h>
+
+#include "control.h"
+#include "cm2xxx_3xxx.h"
+#include "prm2xxx_3xxx.h"
 #ifdef CONFIG_BRIDGE_DVFS
 #include <plat/omap-pm.h>
 #endif
 
 #include <plat/dsp.h>
-
-extern phys_addr_t omap_dsp_get_mempool_base(void);
 
 static struct platform_device *omap_dsp_pdev;
 
@@ -31,13 +41,41 @@ static struct omap_dsp_platform_data omap_dsp_pdata __initdata = {
 	.cpu_set_freq = omap_pm_cpu_set_freq,
 	.cpu_get_freq = omap_pm_cpu_get_freq,
 #endif
-	.dsp_prm_read = prm_read_mod_reg,
-	.dsp_prm_write = prm_write_mod_reg,
-	.dsp_prm_rmw_bits = prm_rmw_mod_reg_bits,
-	.dsp_cm_read = cm_read_mod_reg,
-	.dsp_cm_write = cm_write_mod_reg,
-	.dsp_cm_rmw_bits = cm_rmw_mod_reg_bits,
+	.dsp_prm_read = omap2_prm_read_mod_reg,
+	.dsp_prm_write = omap2_prm_write_mod_reg,
+	.dsp_prm_rmw_bits = omap2_prm_rmw_mod_reg_bits,
+	.dsp_cm_read = omap2_cm_read_mod_reg,
+	.dsp_cm_write = omap2_cm_write_mod_reg,
+	.dsp_cm_rmw_bits = omap2_cm_rmw_mod_reg_bits,
+
+	.set_bootaddr = omap_ctrl_write_dsp_boot_addr,
+	.set_bootmode = omap_ctrl_write_dsp_boot_mode,
 };
+
+static phys_addr_t omap_dsp_phys_mempool_base;
+
+void __init omap_dsp_reserve_sdram_memblock(void)
+{
+	phys_addr_t size = CONFIG_TIDSPBRIDGE_MEMPOOL_SIZE;
+	phys_addr_t paddr;
+
+	if (!size)
+		return;
+
+	paddr = arm_memblock_steal(size, SZ_1M);
+	if (!paddr) {
+		pr_err("%s: failed to reserve %llx bytes\n",
+				__func__, (unsigned long long)size);
+		return;
+	}
+
+	omap_dsp_phys_mempool_base = paddr;
+}
+
+static phys_addr_t omap_dsp_get_mempool_base(void)
+{
+	return omap_dsp_phys_mempool_base;
+}
 
 static int __init omap_dsp_init(void)
 {
@@ -49,8 +87,9 @@ static int __init omap_dsp_init(void)
 
 	if (pdata->phys_mempool_base) {
 		pdata->phys_mempool_size = CONFIG_TIDSPBRIDGE_MEMPOOL_SIZE;
-		pr_info("%s: %x bytes @ %x\n", __func__,
-			pdata->phys_mempool_size, pdata->phys_mempool_base);
+		pr_info("%s: %llx bytes @ %llx\n", __func__,
+			(unsigned long long)pdata->phys_mempool_size,
+			(unsigned long long)pdata->phys_mempool_base);
 	}
 
 	pdev = platform_device_alloc("omap-dsp", -1);

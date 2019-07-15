@@ -16,13 +16,13 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/clockchips.h>
-#include <linux/sched.h>
-#include <linux/cnt32_to_63.h>
 
 #include <asm/div64.h>
 #include <asm/mach/irq.h>
 #include <asm/mach/time.h>
+#include <asm/sched_clock.h>
 #include <mach/regs-ost.h>
+#include <mach/irqs.h>
 
 /*
  * This is PXA's sched_clock implementation. This has a resolution
@@ -33,28 +33,9 @@
  * calls to sched_clock() which should always be the case in practice.
  */
 
-#define OSCR2NS_SCALE_FACTOR 10
-
-static unsigned long oscr2ns_scale;
-
-static void __init set_oscr2ns_scale(unsigned long oscr_rate)
+static u32 notrace pxa_read_sched_clock(void)
 {
-	unsigned long long v = 1000000000ULL << OSCR2NS_SCALE_FACTOR;
-	do_div(v, oscr_rate);
-	oscr2ns_scale = v;
-	/*
-	 * We want an even value to automatically clear the top bit
-	 * returned by cnt32_to_63() without an additional run time
-	 * instruction. So if the LSB is 1 then round it up.
-	 */
-	if (oscr2ns_scale & 1)
-		oscr2ns_scale++;
-}
-
-unsigned long long sched_clock(void)
-{
-	unsigned long long v = cnt32_to_63(OSCR);
-	return (v * oscr2ns_scale) >> OSCR2NS_SCALE_FACTOR;
+	return readl_relaxed(OSCR);
 }
 
 
@@ -66,8 +47,8 @@ pxa_ost0_interrupt(int irq, void *dev_id)
 	struct clock_event_device *c = dev_id;
 
 	/* Disarm the compare/match, signal the event. */
-	OIER &= ~OIER_E0;
-	OSSR = OSSR_M0;
+	writel_relaxed(readl_relaxed(OIER) & ~OIER_E0, OIER);
+	writel_relaxed(OSSR_M0, OSSR);
 	c->event_handler(c);
 
 	return IRQ_HANDLED;
@@ -78,10 +59,10 @@ pxa_osmr0_set_next_event(unsigned long delta, struct clock_event_device *dev)
 {
 	unsigned long next, oscr;
 
-	OIER |= OIER_E0;
-	next = OSCR + delta;
-	OSMR0 = next;
-	oscr = OSCR;
+	writel_relaxed(readl_relaxed(OIER) | OIER_E0, OIER);
+	next = readl_relaxed(OSCR) + delta;
+	writel_relaxed(next, OSMR0);
+	oscr = readl_relaxed(OSCR);
 
 	return (signed)(next - oscr) <= MIN_OSCR_DELTA ? -ETIME : 0;
 }
@@ -91,15 +72,15 @@ pxa_osmr0_set_mode(enum clock_event_mode mode, struct clock_event_device *dev)
 {
 	switch (mode) {
 	case CLOCK_EVT_MODE_ONESHOT:
-		OIER &= ~OIER_E0;
-		OSSR = OSSR_M0;
+		writel_relaxed(readl_relaxed(OIER) & ~OIER_E0, OIER);
+		writel_relaxed(OSSR_M0, OSSR);
 		break;
 
 	case CLOCK_EVT_MODE_UNUSED:
 	case CLOCK_EVT_MODE_SHUTDOWN:
 		/* initializing, released, or preparing for suspend */
-		OIER &= ~OIER_E0;
-		OSSR = OSSR_M0;
+		writel_relaxed(readl_relaxed(OIER) & ~OIER_E0, OIER);
+		writel_relaxed(OSSR_M0, OSSR);
 		break;
 
 	case CLOCK_EVT_MODE_RESUME:
@@ -111,24 +92,9 @@ pxa_osmr0_set_mode(enum clock_event_mode mode, struct clock_event_device *dev)
 static struct clock_event_device ckevt_pxa_osmr0 = {
 	.name		= "osmr0",
 	.features	= CLOCK_EVT_FEAT_ONESHOT,
-	.shift		= 32,
 	.rating		= 200,
 	.set_next_event	= pxa_osmr0_set_next_event,
 	.set_mode	= pxa_osmr0_set_mode,
-};
-
-static cycle_t pxa_read_oscr(struct clocksource *cs)
-{
-	return OSCR;
-}
-
-static struct clocksource cksrc_pxa_oscr0 = {
-	.name           = "oscr0",
-	.rating         = 200,
-	.read           = pxa_read_oscr,
-	.mask           = CLOCKSOURCE_MASK(32),
-	.shift          = 20,
-	.flags		= CLOCK_SOURCE_IS_CONTINUOUS,
 };
 
 static struct irqaction pxa_ost0_irq = {
@@ -142,25 +108,22 @@ static void __init pxa_timer_init(void)
 {
 	unsigned long clock_tick_rate = get_clock_tick_rate();
 
-	OIER = 0;
-	OSSR = OSSR_M0 | OSSR_M1 | OSSR_M2 | OSSR_M3;
+	writel_relaxed(0, OIER);
+	writel_relaxed(OSSR_M0 | OSSR_M1 | OSSR_M2 | OSSR_M3, OSSR);
 
-	set_oscr2ns_scale(clock_tick_rate);
+	setup_sched_clock(pxa_read_sched_clock, 32, clock_tick_rate);
 
-	ckevt_pxa_osmr0.mult =
-		div_sc(clock_tick_rate, NSEC_PER_SEC, ckevt_pxa_osmr0.shift);
+	clockevents_calc_mult_shift(&ckevt_pxa_osmr0, clock_tick_rate, 4);
 	ckevt_pxa_osmr0.max_delta_ns =
 		clockevent_delta2ns(0x7fffffff, &ckevt_pxa_osmr0);
 	ckevt_pxa_osmr0.min_delta_ns =
 		clockevent_delta2ns(MIN_OSCR_DELTA * 2, &ckevt_pxa_osmr0) + 1;
 	ckevt_pxa_osmr0.cpumask = cpumask_of(0);
 
-	cksrc_pxa_oscr0.mult =
-		clocksource_hz2mult(clock_tick_rate, cksrc_pxa_oscr0.shift);
-
 	setup_irq(IRQ_OST0, &pxa_ost0_irq);
 
-	clocksource_register(&cksrc_pxa_oscr0);
+	clocksource_mmio_init(OSCR, "oscr0", clock_tick_rate, 200, 32,
+		clocksource_mmio_readl_up);
 	clockevents_register_device(&ckevt_pxa_osmr0);
 }
 
@@ -169,12 +132,12 @@ static unsigned long osmr[4], oier, oscr;
 
 static void pxa_timer_suspend(void)
 {
-	osmr[0] = OSMR0;
-	osmr[1] = OSMR1;
-	osmr[2] = OSMR2;
-	osmr[3] = OSMR3;
-	oier = OIER;
-	oscr = OSCR;
+	osmr[0] = readl_relaxed(OSMR0);
+	osmr[1] = readl_relaxed(OSMR1);
+	osmr[2] = readl_relaxed(OSMR2);
+	osmr[3] = readl_relaxed(OSMR3);
+	oier = readl_relaxed(OIER);
+	oscr = readl_relaxed(OSCR);
 }
 
 static void pxa_timer_resume(void)
@@ -188,12 +151,12 @@ static void pxa_timer_resume(void)
 	if (osmr[0] - oscr < MIN_OSCR_DELTA)
 		osmr[0] += MIN_OSCR_DELTA;
 
-	OSMR0 = osmr[0];
-	OSMR1 = osmr[1];
-	OSMR2 = osmr[2];
-	OSMR3 = osmr[3];
-	OIER = oier;
-	OSCR = oscr;
+	writel_relaxed(osmr[0], OSMR0);
+	writel_relaxed(osmr[1], OSMR1);
+	writel_relaxed(osmr[2], OSMR2);
+	writel_relaxed(osmr[3], OSMR3);
+	writel_relaxed(oier, OIER);
+	writel_relaxed(oscr, OSCR);
 }
 #else
 #define pxa_timer_suspend NULL

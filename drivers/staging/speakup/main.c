@@ -23,7 +23,6 @@
 */
 
 #include <linux/kernel.h>
-#include <linux/version.h>
 #include <linux/vt.h>
 #include <linux/tty.h>
 #include <linux/mm.h>		/* __get_free_page() and friends */
@@ -1283,7 +1282,7 @@ static int edit_bits(struct vc_data *vc, u_char type, u_char ch, u_short key)
 }
 
 /* Allocation concurrency is protected by the console semaphore */
-void speakup_allocate(struct vc_data *vc)
+int speakup_allocate(struct vc_data *vc)
 {
 	int vc_num;
 
@@ -1292,10 +1291,12 @@ void speakup_allocate(struct vc_data *vc)
 		speakup_console[vc_num] = kzalloc(sizeof(*speakup_console[0]),
 						  GFP_ATOMIC);
 		if (speakup_console[vc_num] == NULL)
-			return;
+			return -ENOMEM;
 		speakup_date(vc);
 	} else if (!spk_parked)
 		speakup_date(vc);
+
+	return 0;
 }
 
 void speakup_deallocate(struct vc_data *vc)
@@ -1303,10 +1304,8 @@ void speakup_deallocate(struct vc_data *vc)
 	int vc_num;
 
 	vc_num = vc->vc_num;
-	if (speakup_console[vc_num] != NULL) {
-		kfree(speakup_console[vc_num]);
-		speakup_console[vc_num] = NULL;
-	}
+	kfree(speakup_console[vc_num]);
+	speakup_console[vc_num] = NULL;
 }
 
 static u_char is_cursor;
@@ -1732,15 +1731,15 @@ static void do_handle_spec(struct vc_data *vc, u_char value, char up_flag)
 	switch (value) {
 	case KVAL(K_CAPS):
 		label = msg_get(MSG_KEYNAME_CAPSLOCK);
-		on_off = (vc_kbd_led(kbd_table + vc->vc_num, VC_CAPSLOCK));
+		on_off = vt_get_leds(fg_console, VC_CAPSLOCK);
 		break;
 	case KVAL(K_NUM):
 		label = msg_get(MSG_KEYNAME_NUMLOCK);
-		on_off = (vc_kbd_led(kbd_table + vc->vc_num, VC_NUMLOCK));
+		on_off = vt_get_leds(fg_console, VC_NUMLOCK);
 		break;
 	case KVAL(K_HOLD):
 		label = msg_get(MSG_KEYNAME_SCROLLLOCK);
-		on_off = (vc_kbd_led(kbd_table + vc->vc_num, VC_SCROLLOCK));
+		on_off = vt_get_leds(fg_console, VC_SCROLLOCK);
 		if (speakup_console[vc->vc_num])
 			speakup_console[vc->vc_num]->tty_stopped = on_off;
 		break;
@@ -1855,7 +1854,7 @@ static void speakup_bits(struct vc_data *vc)
 
 static int handle_goto(struct vc_data *vc, u_char type, u_char ch, u_short key)
 {
-	static u_char *goto_buf = "\0\0\0\0\0\0";
+	static u_char goto_buf[8];
 	static int num;
 	int maxlen, go_pos;
 	char *cp;
@@ -2021,7 +2020,7 @@ speakup_key(struct vc_data *vc, int shift_state, int keycode, u_short keysym,
 	if (type >= 0xf0)
 		type -= 0xf0;
 	if (type == KT_PAD
-		&& (vc_kbd_led(kbd_table + fg_console, VC_NUMLOCK))) {
+		&& (vt_get_leds(fg_console, VC_NUMLOCK))) {
 		if (up_flag) {
 			spk_keydown = 0;
 			goto out;
@@ -2217,17 +2216,22 @@ static void __exit speakup_exit(void)
 {
 	int i;
 
-	free_user_msgs();
 	unregister_keyboard_notifier(&keyboard_notifier_block);
 	unregister_vt_notifier(&vt_notifier_block);
 	speakup_unregister_devsynth();
 	del_timer(&cursor_timer);
-
 	kthread_stop(speakup_task);
 	speakup_task = NULL;
 	mutex_lock(&spk_mutex);
 	synth_release();
 	mutex_unlock(&spk_mutex);
+
+	speakup_kobj_exit();
+
+	for (i = 0; i < MAX_NR_CONSOLES; i++)
+		kfree(speakup_console[i]);
+
+	speakup_remove_virtual_keyboard();
 
 	for (i = 0; i < MAXVARS; i++)
 		speakup_unregister_var(i);
@@ -2236,42 +2240,23 @@ static void __exit speakup_exit(void)
 		if (characters[i] != default_chars[i])
 			kfree(characters[i]);
 	}
-	for (i = 0; speakup_console[i]; i++)
-		kfree(speakup_console[i]);
-	speakup_kobj_exit();
-	speakup_remove_virtual_keyboard();
+
+	free_user_msgs();
 }
 
 /* call by: module_init() */
 static int __init speakup_init(void)
 {
 	int i;
-	int err;
+	long err = 0;
 	struct st_spk_t *first_console;
 	struct vc_data *vc = vc_cons[fg_console].d;
 	struct var_t *var;
 
-	err = speakup_add_virtual_keyboard();
-	if (err)
-		return err;
-
+	/* These first few initializations cannot fail. */
 	initialize_msgs();	/* Initialize arrays for i18n. */
-	first_console = kzalloc(sizeof(*first_console), GFP_KERNEL);
-	if (!first_console)
-		return -ENOMEM;
-	err = speakup_kobj_init();
-	if (err) {
-		kfree(first_console);
-		return err;
-	}
-
 	reset_default_chars();
 	reset_default_chartab();
-
-	speakup_console[vc->vc_num] = first_console;
-	speakup_date(vc);
-	pr_info("speakup %s: initialized\n", SPEAKUP_VERSION);
-
 	strlwr(synth_name);
 	spk_vars[0].u.n.high = vc->vc_cols;
 	for (var = spk_vars; var->var_id != MAXVARS; var++)
@@ -2283,27 +2268,98 @@ static int __init speakup_init(void)
 		set_mask_bits(0, i, 2);
 
 	set_key_info(key_defaults, key_buf);
+
+	/* From here on out, initializations can fail. */
+	err = speakup_add_virtual_keyboard();
+	if (err)
+		goto error_virtkeyboard;
+
+	first_console = kzalloc(sizeof(*first_console), GFP_KERNEL);
+	if (!first_console) {
+		err = -ENOMEM;
+		goto error_alloc;
+	}
+
+	speakup_console[vc->vc_num] = first_console;
+	speakup_date(vc);
+
+	for (i = 0; i < MAX_NR_CONSOLES; i++)
+		if (vc_cons[i].d) {
+			err = speakup_allocate(vc_cons[i].d);
+			if (err)
+				goto error_kobjects;
+		}
+
 	if (quiet_boot)
 		spk_shut_up |= 0x01;
 
-	for (i = 0; i < MAX_NR_CONSOLES; i++)
-		if (vc_cons[i].d)
-			speakup_allocate(vc_cons[i].d);
+	err = speakup_kobj_init();
+	if (err)
+		goto error_kobjects;
 
-	pr_warn("synth name on entry is: %s\n", synth_name);
 	synth_init(synth_name);
 	speakup_register_devsynth();
+	/*
+	 * register_devsynth might fail, but this error is not fatal.
+	 * /dev/synth is an extra feature; the rest of Speakup
+	 * will work fine without it.
+	 */
 
-	register_keyboard_notifier(&keyboard_notifier_block);
-	register_vt_notifier(&vt_notifier_block);
+	err = register_keyboard_notifier(&keyboard_notifier_block);
+	if (err)
+		goto error_kbdnotifier;
+	err = register_vt_notifier(&vt_notifier_block);
+	if (err)
+		goto error_vtnotifier;
 
 	speakup_task = kthread_create(speakup_thread, NULL, "speakup");
+
+	if (IS_ERR(speakup_task)) {
+		err = PTR_ERR(speakup_task);
+		goto error_task;
+	}
+
 	set_user_nice(speakup_task, 10);
-	if (!IS_ERR(speakup_task))
-		wake_up_process(speakup_task);
-	else
-		return -ENOMEM;
-	return 0;
+	wake_up_process(speakup_task);
+
+	pr_info("speakup %s: initialized\n", SPEAKUP_VERSION);
+	pr_info("synth name on entry is: %s\n", synth_name);
+	goto out;
+
+error_task:
+	unregister_vt_notifier(&vt_notifier_block);
+
+error_vtnotifier:
+	unregister_keyboard_notifier(&keyboard_notifier_block);
+	del_timer(&cursor_timer);
+
+error_kbdnotifier:
+	speakup_unregister_devsynth();
+	mutex_lock(&spk_mutex);
+	synth_release();
+	mutex_unlock(&spk_mutex);
+	speakup_kobj_exit();
+
+error_kobjects:
+	for (i = 0; i < MAX_NR_CONSOLES; i++)
+		kfree(speakup_console[i]);
+
+error_alloc:
+	speakup_remove_virtual_keyboard();
+
+error_virtkeyboard:
+	for (i = 0; i < MAXVARS; i++)
+		speakup_unregister_var(i);
+
+	for (i = 0; i < 256; i++) {
+		if (characters[i] != default_chars[i])
+			kfree(characters[i]);
+	}
+
+	free_user_msgs();
+
+out:
+	return err;
 }
 
 module_init(speakup_init);

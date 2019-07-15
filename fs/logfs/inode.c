@@ -93,7 +93,7 @@ static struct inode *__logfs_iget(struct super_block *sb, ino_t ino)
 		/* inode->i_nlink == 0 can be true when called from
 		 * block validator */
 		/* set i_nlink to 0 to prevent caching */
-		inode->i_nlink = 0;
+		clear_nlink(inode);
 		logfs_inode(inode)->li_flags |= LOGFS_IF_ZOMBIE;
 		iget_failed(inode);
 		if (!err)
@@ -141,18 +141,40 @@ struct inode *logfs_safe_iget(struct super_block *sb, ino_t ino, int *is_cached)
 	return __logfs_iget(sb, ino);
 }
 
+static void logfs_i_callback(struct rcu_head *head)
+{
+	struct inode *inode = container_of(head, struct inode, i_rcu);
+	kmem_cache_free(logfs_inode_cache, logfs_inode(inode));
+}
+
 static void __logfs_destroy_inode(struct inode *inode)
 {
 	struct logfs_inode *li = logfs_inode(inode);
 
 	BUG_ON(li->li_block);
 	list_del(&li->li_freeing_list);
-	kmem_cache_free(logfs_inode_cache, li);
+	call_rcu(&inode->i_rcu, logfs_i_callback);
+}
+
+static void __logfs_destroy_meta_inode(struct inode *inode)
+{
+	struct logfs_inode *li = logfs_inode(inode);
+	BUG_ON(li->li_block);
+	call_rcu(&inode->i_rcu, logfs_i_callback);
 }
 
 static void logfs_destroy_inode(struct inode *inode)
 {
 	struct logfs_inode *li = logfs_inode(inode);
+
+	if (inode->i_ino < LOGFS_RESERVED_INOS) {
+		/*
+		 * The reserved inodes are never destroyed unless we are in
+		 * unmont path.
+		 */
+		__logfs_destroy_meta_inode(inode);
+		return;
+	}
 
 	BUG_ON(list_empty(&li->li_freeing_list));
 	spin_lock(&logfs_inode_lock);
@@ -192,7 +214,6 @@ static void logfs_init_inode(struct super_block *sb, struct inode *inode)
 	inode->i_blocks	= 0;
 	inode->i_ctime	= CURRENT_TIME;
 	inode->i_mtime	= CURRENT_TIME;
-	inode->i_nlink	= 1;
 	li->li_refcount = 1;
 	INIT_LIST_HEAD(&li->li_freeing_list);
 
@@ -281,12 +302,12 @@ static int logfs_write_inode(struct inode *inode, struct writeback_control *wbc)
 	if (logfs_inode(inode)->li_flags & LOGFS_IF_STILLBORN)
 		return 0;
 
-	ret = __logfs_write_inode(inode, flags);
+	ret = __logfs_write_inode(inode, NULL, flags);
 	LOGFS_BUG_ON(ret, inode->i_sb);
 	return ret;
 }
 
-/* called with inode_lock held */
+/* called with inode->i_lock held */
 static int logfs_drop_inode(struct inode *inode)
 {
 	struct logfs_super *super = logfs_super(inode->i_sb);
@@ -318,7 +339,7 @@ static void logfs_set_ino_generation(struct super_block *sb,
 	mutex_unlock(&super->s_journal_mutex);
 }
 
-struct inode *logfs_new_inode(struct inode *dir, int mode)
+struct inode *logfs_new_inode(struct inode *dir, umode_t mode)
 {
 	struct super_block *sb = dir->i_sb;
 	struct inode *inode;
@@ -358,7 +379,9 @@ static void logfs_init_once(void *_li)
 
 static int logfs_sync_fs(struct super_block *sb, int wait)
 {
+	logfs_get_wblocks(sb, NULL, WF_LOCK);
 	logfs_write_anchor(sb);
+	logfs_put_wblocks(sb, NULL, WF_LOCK);
 	return 0;
 }
 
@@ -366,8 +389,8 @@ static void logfs_put_super(struct super_block *sb)
 {
 	struct logfs_super *super = logfs_super(sb);
 	/* kill the meta-inodes */
-	iput(super->s_master_inode);
 	iput(super->s_segfile_inode);
+	iput(super->s_master_inode);
 	iput(super->s_mapping_inode);
 }
 

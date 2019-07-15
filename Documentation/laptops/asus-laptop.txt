@@ -45,7 +45,7 @@ Status
 Usage
 -----
 
-  Try "modprobe asus_acpi". Check your dmesg (simply type dmesg). You should
+  Try "modprobe asus-laptop". Check your dmesg (simply type dmesg). You should
   see some lines like this :
 
       Asus Laptop Extras version 0.42
@@ -61,7 +61,7 @@ Usage
   Hotkeys are also reported as input keys (like keyboards) you can check
   which key are supported using "xev" under X11.
 
-  You can get informations on the version of your DSDT table by reading the
+  You can get information on the version of your DSDT table by reading the
   /sys/devices/platform/asus-laptop/infos entry. If you have a question or a
   bug report to do, please include the output of this entry.
 
@@ -151,8 +151,7 @@ Display switching
 
   Debugging:
   1) Check whether the Fn+F8 key:
-     a) does not lock the laptop (try disabling CONFIG_X86_UP_APIC or boot with
-        noapic / nolapic if it does)
+     a) does not lock the laptop (try a boot with noapic / nolapic if it does)
      b) generates events (0x6n, where n is the value corresponding to the
         configuration above)
      c) actually works
@@ -178,7 +177,7 @@ LED display
 -----------
 
   Some models like the W1N have a LED display that can be used to display
-  several informations.
+  several items of information.
 
   LED display works for the following models:
     W1000N

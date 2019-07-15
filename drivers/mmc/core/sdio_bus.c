@@ -13,10 +13,12 @@
 
 #include <linux/device.h>
 #include <linux/err.h>
+#include <linux/export.h>
 #include <linux/slab.h>
 #include <linux/pm_runtime.h>
 
 #include <linux/mmc/card.h>
+#include <linux/mmc/host.h>
 #include <linux/mmc/sdio_func.h>
 
 #include "sdio_cis.h"
@@ -132,9 +134,11 @@ static int sdio_bus_probe(struct device *dev)
 	 * it should call pm_runtime_put_noidle() in its probe routine and
 	 * pm_runtime_get_noresume() in its remove routine.
 	 */
-	ret = pm_runtime_get_sync(dev);
-	if (ret < 0)
-		goto out;
+	if (func->card->host->caps & MMC_CAP_POWER_OFF_CARD) {
+		ret = pm_runtime_get_sync(dev);
+		if (ret < 0)
+			goto out;
+	}
 
 	/* Set the default block size so the driver is sure it's something
 	 * sensible. */
@@ -151,7 +155,8 @@ static int sdio_bus_probe(struct device *dev)
 	return 0;
 
 disable_runtimepm:
-	pm_runtime_put_noidle(dev);
+	if (func->card->host->caps & MMC_CAP_POWER_OFF_CARD)
+		pm_runtime_put_noidle(dev);
 out:
 	return ret;
 }
@@ -160,17 +165,16 @@ static int sdio_bus_remove(struct device *dev)
 {
 	struct sdio_driver *drv = to_sdio_driver(dev->driver);
 	struct sdio_func *func = dev_to_sdio_func(dev);
-	int ret;
+	int ret = 0;
 
 	/* Make sure card is powered before invoking ->remove() */
-	ret = pm_runtime_get_sync(dev);
-	if (ret < 0)
-		goto out;
+	if (func->card->host->caps & MMC_CAP_POWER_OFF_CARD)
+		pm_runtime_get_sync(dev);
 
 	drv->remove(func);
 
 	if (func->irq_handler) {
-		printk(KERN_WARNING "WARNING: driver %s did not remove "
+		pr_warning("WARNING: driver %s did not remove "
 			"its interrupt handler!\n", drv->name);
 		sdio_claim_host(func);
 		sdio_release_irq(func);
@@ -178,61 +182,39 @@ static int sdio_bus_remove(struct device *dev)
 	}
 
 	/* First, undo the increment made directly above */
-	pm_runtime_put_noidle(dev);
+	if (func->card->host->caps & MMC_CAP_POWER_OFF_CARD)
+		pm_runtime_put_noidle(dev);
 
 	/* Then undo the runtime PM settings in sdio_bus_probe() */
-	pm_runtime_put_noidle(dev);
+	if (func->card->host->caps & MMC_CAP_POWER_OFF_CARD)
+		pm_runtime_put_sync(dev);
 
-out:
 	return ret;
 }
 
-#ifdef CONFIG_PM_RUNTIME
+#ifdef CONFIG_PM
 
-static int sdio_bus_pm_prepare(struct device *dev)
+static int pm_no_operation(struct device *dev)
 {
-	/*
-	 * Resume an SDIO device which was suspended at run time at this
-	 * point, in order to allow standard SDIO suspend/resume paths
-	 * to keep working as usual.
-	 *
-	 * Ultimately, the SDIO driver itself will decide (in its
-	 * suspend handler, or lack thereof) whether the card should be
-	 * removed or kept, and if kept, at what power state.
-	 *
-	 * At this point, PM core have increased our use count, so it's
-	 * safe to directly resume the device. After system is resumed
-	 * again, PM core will drop back its runtime PM use count, and if
-	 * needed device will be suspended again.
-	 *
-	 * The end result is guaranteed to be a power state that is
-	 * coherent with the device's runtime PM use count.
-	 *
-	 * The return value of pm_runtime_resume is deliberately unchecked
-	 * since there is little point in failing system suspend if a
-	 * device can't be resumed.
-	 */
-	pm_runtime_resume(dev);
-
 	return 0;
 }
 
 static const struct dev_pm_ops sdio_bus_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(pm_no_operation, pm_no_operation)
 	SET_RUNTIME_PM_OPS(
 		pm_generic_runtime_suspend,
 		pm_generic_runtime_resume,
 		pm_generic_runtime_idle
 	)
-	.prepare = sdio_bus_pm_prepare,
 };
 
 #define SDIO_PM_OPS_PTR	(&sdio_bus_pm_ops)
 
-#else /* !CONFIG_PM_RUNTIME */
+#else /* !CONFIG_PM */
 
 #define SDIO_PM_OPS_PTR	NULL
 
-#endif /* !CONFIG_PM_RUNTIME */
+#endif /* !CONFIG_PM */
 
 static struct bus_type sdio_bus_type = {
 	.name		= "sdio",

@@ -8,7 +8,7 @@
  * implementation written by Steve Reid.
  *
  * s390 Version:
- *   Copyright IBM Corp. 2003,2007
+ *   Copyright IBM Corp. 2003, 2007
  *   Author(s): Thomas Spatzier
  *		Jan Glauber (jan.glauber@de.ibm.com)
  *
@@ -90,7 +90,7 @@ static struct shash_alg alg = {
 
 static int __init sha1_s390_init(void)
 {
-	if (!crypt_s390_func_available(KIMD_SHA_1))
+	if (!crypt_s390_func_available(KIMD_SHA_1, CRYPT_S390_MSA))
 		return -EOPNOTSUPP;
 	return crypto_register_shash(&alg);
 }

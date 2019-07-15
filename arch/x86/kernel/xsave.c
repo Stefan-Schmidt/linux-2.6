@@ -3,9 +3,13 @@
  *
  * Author: Suresh Siddha <suresh.b.siddha@intel.com>
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/bootmem.h>
 #include <linux/compat.h>
 #include <asm/i387.h>
+#include <asm/fpu-internal.h>
 #ifdef CONFIG_IA32_EMULATION
 #include <asm/sigcontext32.h>
 #endif
@@ -47,13 +51,11 @@ void __sanitize_i387_state(struct task_struct *tsk)
 	if (!fx)
 		return;
 
-	BUG_ON(task_thread_info(tsk)->status & TS_USEDFPU);
-
 	xstate_bv = tsk->thread.fpu.state->xsave.xsave_hdr.xstate_bv;
 
 	/*
 	 * None of the feature bits are in init state. So nothing else
-	 * to do for us, as the memory layout is upto date.
+	 * to do for us, as the memory layout is up to date.
 	 */
 	if ((xstate_bv & pcntxt_mask) == pcntxt_mask)
 		return;
@@ -163,12 +165,12 @@ int save_i387_xstate(void __user *buf)
 	BUG_ON(sig_xstate_size < xstate_size);
 
 	if ((unsigned long)buf % 64)
-		printk("save_i387_xstate: bad fpstate %p\n", buf);
+		pr_err("%s: bad fpstate %p\n", __func__, buf);
 
 	if (!used_math())
 		return 0;
 
-	if (task_thread_info(tsk)->status & TS_USEDFPU) {
+	if (user_has_fpu()) {
 		if (use_xsave())
 			err = xsave_user(buf);
 		else
@@ -176,8 +178,7 @@ int save_i387_xstate(void __user *buf)
 
 		if (err)
 			return err;
-		task_thread_info(tsk)->status &= ~TS_USEDFPU;
-		stts();
+		user_fpu_end();
 	} else {
 		sanitize_i387_state(tsk);
 		if (__copy_to_user(buf, &tsk->thread.fpu.state->fxsave,
@@ -292,10 +293,7 @@ int restore_i387_xstate(void __user *buf)
 			return err;
 	}
 
-	if (!(task_thread_info(current)->status & TS_USEDFPU)) {
-		clts();
-		task_thread_info(current)->status |= TS_USEDFPU;
-	}
+	user_fpu_begin();
 	if (use_xsave())
 		err = restore_user_xstate(buf);
 	else
@@ -394,7 +392,8 @@ static void __init setup_xstate_init(void)
 	 * Setup init_xstate_buf to represent the init state of
 	 * all the features managed by the xsave
 	 */
-	init_xstate_buf = alloc_bootmem(xstate_size);
+	init_xstate_buf = alloc_bootmem_align(xstate_size,
+					      __alignof__(struct xsave_struct));
 	init_xstate_buf->i387.mxcsr = MXCSR_DEFAULT;
 
 	clts();
@@ -426,7 +425,7 @@ static void __init xstate_enable_boot_cpu(void)
 	pcntxt_mask = eax + ((u64)edx << 32);
 
 	if ((pcntxt_mask & XSTATE_FPSSE) != XSTATE_FPSSE) {
-		printk(KERN_ERR "FP/SSE not shown under xsave features 0x%llx\n",
+		pr_err("FP/SSE not shown under xsave features 0x%llx\n",
 		       pcntxt_mask);
 		BUG();
 	}
@@ -449,9 +448,8 @@ static void __init xstate_enable_boot_cpu(void)
 
 	setup_xstate_init();
 
-	printk(KERN_INFO "xsave/xrstor: enabled xstate_bv 0x%llx, "
-	       "cntxt size 0x%x\n",
-	       pcntxt_mask, xstate_size);
+	pr_info("enabled xstate_bv 0x%llx, cntxt size 0x%x\n",
+		pcntxt_mask, xstate_size);
 }
 
 /*

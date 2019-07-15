@@ -40,7 +40,7 @@
 #define TD_RXER		0x0020 /* Rx error or not */
 
 #define TD_NAK		0x0010 /* No ack. */
-#define TD_STAL		0x0008 /* Stall recieved */
+#define TD_STAL		0x0008 /* Stall received */
 #define TD_TO		0x0004 /* time out */
 #define TD_UN		0x0002 /* underrun */
 #define TD_NO		0x0010 /* Rx Non Octet Aligned Packet */
@@ -155,7 +155,7 @@ u32 fhci_create_ep(struct fhci_usb *usb, enum fhci_mem_alloc data_mem,
 	struct endpoint *ep;
 	struct usb_td __iomem *td;
 	unsigned long ep_offset;
-	char *err_for = "enpoint PRAM";
+	char *err_for = "endpoint PRAM";
 	int ep_mem_size;
 	u32 i;
 
@@ -249,7 +249,7 @@ void fhci_init_ep_registers(struct fhci_usb *usb, struct endpoint *ep,
 	u8 rt;
 
 	/* set the endpoint registers according to the endpoint */
-	out_be16(&usb->fhci->regs->usb_ep[0],
+	out_be16(&usb->fhci->regs->usb_usep[0],
 		 USB_TRANS_CTR | USB_EP_MF | USB_EP_RTE);
 	out_be16(&usb->fhci->pram->ep_ptr[0],
 		 cpm_muram_offset(ep->ep_pram_ptr));
@@ -271,10 +271,10 @@ void fhci_init_ep_registers(struct fhci_usb *usb, struct endpoint *ep,
 
 /*
  * Collect the submitted frames and inform the application about them
- * It is also prepearing the TDs for new frames. If the Tx interrupts
- * are diabled, the application should call that routine to get
+ * It is also preparing the TDs for new frames. If the Tx interrupts
+ * are disabled, the application should call that routine to get
  * confirmation about the submitted frames. Otherwise, the routine is
- * called frome the interrupt service routine during the Tx interrupt.
+ * called from the interrupt service routine during the Tx interrupt.
  * In that case the application is informed by calling the application
  * specific 'fhci_transaction_confirm' routine
  */
@@ -337,7 +337,7 @@ static void fhci_td_transaction_confirm(struct fhci_usb *usb)
 					pkt->status = USB_TD_RX_ER_NONOCT;
 				else
 					fhci_err(usb->fhci, "illegal error "
-						 "occured\n");
+						 "occurred\n");
 			} else if (td_status & TD_NAK)
 				pkt->status = USB_TD_TX_ER_NAK;
 			else if (td_status & TD_TO)
@@ -347,7 +347,7 @@ static void fhci_td_transaction_confirm(struct fhci_usb *usb)
 			else if (td_status & TD_STAL)
 				pkt->status = USB_TD_TX_ER_STALL;
 			else
-				fhci_err(usb->fhci, "illegal error occured\n");
+				fhci_err(usb->fhci, "illegal error occurred\n");
 		} else if ((extra_data & TD_TOK_IN) &&
 				pkt->len > td_length - CRC_SIZE) {
 			pkt->status = USB_TD_RX_DATA_UNDERUN;
@@ -463,7 +463,7 @@ u32 fhci_host_transaction(struct fhci_usb *usb,
 	cq_put(&ep->conf_frame_Q, pkt);
 
 	if (cq_howmany(&ep->conf_frame_Q) == 1)
-		out_8(&usb->fhci->regs->usb_comm, USB_CMD_STR_FIFO);
+		out_8(&usb->fhci->regs->usb_uscom, USB_CMD_STR_FIFO);
 
 	return 0;
 }
@@ -535,8 +535,8 @@ void fhci_flush_actual_frame(struct fhci_usb *usb)
 	struct endpoint *ep = usb->ep0;
 
 	/* disable the USB controller */
-	mode = in_8(&usb->fhci->regs->usb_mod);
-	out_8(&usb->fhci->regs->usb_mod, mode & ~USB_MODE_EN);
+	mode = in_8(&usb->fhci->regs->usb_usmod);
+	out_8(&usb->fhci->regs->usb_usmod, mode & ~USB_MODE_EN);
 
 	tb_ptr = in_be16(&ep->ep_pram_ptr->tx_bd_ptr);
 	td = cpm_muram_addr(tb_ptr);
@@ -571,9 +571,9 @@ void fhci_flush_actual_frame(struct fhci_usb *usb)
 	usb->actual_frame->frame_status = FRAME_TIMER_END_TRANSMISSION;
 
 	/* reset the event register */
-	out_be16(&usb->fhci->regs->usb_event, 0xffff);
+	out_be16(&usb->fhci->regs->usb_usber, 0xffff);
 	/* enable the USB controller */
-	out_8(&usb->fhci->regs->usb_mod, mode | USB_MODE_EN);
+	out_8(&usb->fhci->regs->usb_usmod, mode | USB_MODE_EN);
 }
 
 /* handles Tx confirm and Tx error interrupt */
@@ -613,7 +613,7 @@ void fhci_host_transmit_actual_frame(struct fhci_usb *usb)
 
 		/* start transmit only if we have something in the TDs */
 		if (in_be16(&td->status) & TD_R)
-			out_8(&usb->fhci->regs->usb_comm, USB_CMD_STR_FIFO);
+			out_8(&usb->fhci->regs->usb_uscom, USB_CMD_STR_FIFO);
 
 		if (in_be32(&ep->conf_td->buf_ptr) == DUMMY_BD_BUFFER) {
 			out_be32(&old_td->buf_ptr, 0);

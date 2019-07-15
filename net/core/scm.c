@@ -28,7 +28,6 @@
 #include <linux/nsproxy.h>
 #include <linux/slab.h>
 
-#include <asm/system.h>
 #include <asm/uaccess.h>
 
 #include <net/protocol.h>
@@ -79,10 +78,11 @@ static int scm_fp_copy(struct cmsghdr *cmsg, struct scm_fp_list **fplp)
 			return -ENOMEM;
 		*fplp = fpl;
 		fpl->count = 0;
+		fpl->max = SCM_MAX_FD;
 	}
 	fpp = &fpl->fp[fpl->count];
 
-	if (fpl->count + num > SCM_MAX_FD)
+	if (fpl->count + num > fpl->max)
 		return -EINVAL;
 
 	/*
@@ -94,7 +94,7 @@ static int scm_fp_copy(struct cmsghdr *cmsg, struct scm_fp_list **fplp)
 		int fd = fdp[i];
 		struct file *file;
 
-		if (fd < 0 || !(file = fget(fd)))
+		if (fd < 0 || !(file = fget_raw(fd)))
 			return -EBADF;
 		*fpp++ = file;
 		fpl->count++;
@@ -109,25 +109,9 @@ void __scm_destroy(struct scm_cookie *scm)
 
 	if (fpl) {
 		scm->fp = NULL;
-		if (current->scm_work_list) {
-			list_add_tail(&fpl->list, current->scm_work_list);
-		} else {
-			LIST_HEAD(work_list);
-
-			current->scm_work_list = &work_list;
-
-			list_add(&fpl->list, &work_list);
-			while (!list_empty(&work_list)) {
-				fpl = list_first_entry(&work_list, struct scm_fp_list, list);
-
-				list_del(&fpl->list);
-				for (i=fpl->count-1; i>=0; i--)
-					fput(fpl->fp[i]);
-				kfree(fpl);
-			}
-
-			current->scm_work_list = NULL;
-		}
+		for (i=fpl->count-1; i>=0; i--)
+			fput(fpl->fp[i]);
+		kfree(fpl);
 	}
 }
 EXPORT_SYMBOL(__scm_destroy);
@@ -172,7 +156,7 @@ int __scm_send(struct socket *sock, struct msghdr *msg, struct scm_cookie *p)
 			if (err)
 				goto error;
 
-			if (pid_vnr(p->pid) != p->creds.pid) {
+			if (!p->pid || pid_vnr(p->pid) != p->creds.pid) {
 				struct pid *pid;
 				err = -ESRCH;
 				pid = find_get_pid(p->creds.pid);
@@ -182,8 +166,9 @@ int __scm_send(struct socket *sock, struct msghdr *msg, struct scm_cookie *p)
 				p->pid = pid;
 			}
 
-			if ((p->cred->euid != p->creds.uid) ||
-				(p->cred->egid != p->creds.gid)) {
+			if (!p->cred ||
+			    (p->cred->euid != p->creds.uid) ||
+			    (p->cred->egid != p->creds.gid)) {
 				struct cred *cred;
 				err = -ENOMEM;
 				cred = prepare_creds();
@@ -191,8 +176,9 @@ int __scm_send(struct socket *sock, struct msghdr *msg, struct scm_cookie *p)
 					goto error;
 
 				cred->uid = cred->euid = p->creds.uid;
-				cred->gid = cred->egid = p->creds.uid;
-				put_cred(p->cred);
+				cred->gid = cred->egid = p->creds.gid;
+				if (p->cred)
+					put_cred(p->cred);
 				p->cred = cred;
 			}
 			break;
@@ -279,6 +265,7 @@ void scm_detach_fds(struct msghdr *msg, struct scm_cookie *scm)
 	for (i=0, cmfptr=(__force int __user *)CMSG_DATA(cm); i<fdmax;
 	     i++, cmfptr++)
 	{
+		struct socket *sock;
 		int new_fd;
 		err = security_file_receive(fp[i]);
 		if (err)
@@ -295,6 +282,9 @@ void scm_detach_fds(struct msghdr *msg, struct scm_cookie *scm)
 		}
 		/* Bump the usage count and install the file. */
 		get_file(fp[i]);
+		sock = sock_from_file(fp[i], &err);
+		if (sock)
+			sock_update_netprioidx(sock->sk, current);
 		fd_install(new_fd, fp[i]);
 	}
 
@@ -331,11 +321,12 @@ struct scm_fp_list *scm_fp_dup(struct scm_fp_list *fpl)
 	if (!fpl)
 		return NULL;
 
-	new_fpl = kmalloc(sizeof(*fpl), GFP_KERNEL);
+	new_fpl = kmemdup(fpl, offsetof(struct scm_fp_list, fp[fpl->count]),
+			  GFP_KERNEL);
 	if (new_fpl) {
-		for (i=fpl->count-1; i>=0; i--)
+		for (i = 0; i < fpl->count; i++)
 			get_file(fpl->fp[i]);
-		memcpy(new_fpl, fpl, sizeof(*fpl));
+		new_fpl->max = new_fpl->count;
 	}
 	return new_fpl;
 }

@@ -15,21 +15,16 @@
  * General Public License for more details.
  */
 
+#include "bfad_drv.h"
 #include "bfa_modules.h"
-#include "bfa_cb_ioim.h"
 
 BFA_TRC_FILE(HAL, FCPIM);
-BFA_MODULE(fcpim);
-
-
-#define bfa_fcpim_add_iostats(__l, __r, __stats)	\
-	(__l->__stats += __r->__stats)
-
 
 /*
  *  BFA ITNIM Related definitions
  */
 static void bfa_itnim_update_del_itn_stats(struct bfa_itnim_s *itnim);
+static void bfa_ioim_lm_init(struct bfa_s *bfa);
 
 #define BFA_ITNIM_FROM_TAG(_fcpim, _tag)                                \
 	(((_fcpim)->itnim_arr + ((_tag) & ((_fcpim)->num_itnims - 1))))
@@ -37,12 +32,12 @@ static void bfa_itnim_update_del_itn_stats(struct bfa_itnim_s *itnim);
 #define bfa_fcpim_additn(__itnim)					\
 	list_add_tail(&(__itnim)->qe, &(__itnim)->fcpim->itnim_q)
 #define bfa_fcpim_delitn(__itnim)	do {				\
-	bfa_assert(bfa_q_is_on_q(&(__itnim)->fcpim->itnim_q, __itnim));      \
+	WARN_ON(!bfa_q_is_on_q(&(__itnim)->fcpim->itnim_q, __itnim));   \
 	bfa_itnim_update_del_itn_stats(__itnim);      \
 	list_del(&(__itnim)->qe);      \
-	bfa_assert(list_empty(&(__itnim)->io_q));      \
-	bfa_assert(list_empty(&(__itnim)->io_cleanup_q));      \
-	bfa_assert(list_empty(&(__itnim)->pending_q));      \
+	WARN_ON(!list_empty(&(__itnim)->io_q));				\
+	WARN_ON(!list_empty(&(__itnim)->io_cleanup_q));			\
+	WARN_ON(!list_empty(&(__itnim)->pending_q));			\
 } while (0)
 
 #define bfa_itnim_online_cb(__itnim) do {				\
@@ -72,11 +67,14 @@ static void bfa_itnim_update_del_itn_stats(struct bfa_itnim_s *itnim);
 	}								\
 } while (0)
 
+enum bfa_ioim_lm_ua_status {
+	BFA_IOIM_LM_UA_RESET = 0,
+	BFA_IOIM_LM_UA_SET = 1,
+};
+
 /*
- *  bfa_itnim_sm BFA itnim state machine
+ *  itnim state machine event
  */
-
-
 enum bfa_itnim_event {
 	BFA_ITNIM_SM_CREATE = 1,	/*  itnim is created */
 	BFA_ITNIM_SM_ONLINE = 2,	/*  itnim is online */
@@ -107,9 +105,6 @@ enum bfa_itnim_event {
 	if ((__fcpim)->profile_start)					\
 		(__fcpim)->profile_start(__ioim);			\
 } while (0)
-/*
- *  hal_ioim_sm
- */
 
 /*
  * IO state machine events
@@ -221,8 +216,7 @@ static void     bfa_itnim_sm_deleting_qfull(struct bfa_itnim_s *itnim,
  * forward declaration for BFA IOIM functions
  */
 static bfa_boolean_t	bfa_ioim_send_ioreq(struct bfa_ioim_s *ioim);
-static bfa_boolean_t	bfa_ioim_sge_setup(struct bfa_ioim_s *ioim);
-static void		bfa_ioim_sgpg_setup(struct bfa_ioim_s *ioim);
+static bfa_boolean_t	bfa_ioim_sgpg_alloc(struct bfa_ioim_s *ioim);
 static bfa_boolean_t	bfa_ioim_send_abort(struct bfa_ioim_s *ioim);
 static void		bfa_ioim_notify_cleanup(struct bfa_ioim_s *ioim);
 static void __bfa_cb_ioim_good_comp(void *cbarg, bfa_boolean_t complete);
@@ -231,7 +225,6 @@ static void __bfa_cb_ioim_abort(void *cbarg, bfa_boolean_t complete);
 static void __bfa_cb_ioim_failed(void *cbarg, bfa_boolean_t complete);
 static void __bfa_cb_ioim_pathtov(void *cbarg, bfa_boolean_t complete);
 static bfa_boolean_t    bfa_ioim_is_abortable(struct bfa_ioim_s *ioim);
-
 
 /*
  * forward declaration of BFA IO state machine
@@ -260,21 +253,19 @@ static void     bfa_ioim_sm_resfree(struct bfa_ioim_s *ioim,
 					enum bfa_ioim_event event);
 static void	bfa_ioim_sm_cmnd_retry(struct bfa_ioim_s *ioim,
 					enum bfa_ioim_event event);
-
 /*
  * forward declaration for BFA TSKIM functions
  */
 static void     __bfa_cb_tskim_done(void *cbarg, bfa_boolean_t complete);
 static void     __bfa_cb_tskim_failed(void *cbarg, bfa_boolean_t complete);
 static bfa_boolean_t bfa_tskim_match_scope(struct bfa_tskim_s *tskim,
-					lun_t lun);
+					struct scsi_lun lun);
 static void     bfa_tskim_gather_ios(struct bfa_tskim_s *tskim);
 static void     bfa_tskim_cleanp_comp(void *tskim_cbarg);
 static void     bfa_tskim_cleanup_ios(struct bfa_tskim_s *tskim);
 static bfa_boolean_t bfa_tskim_send(struct bfa_tskim_s *tskim);
 static bfa_boolean_t bfa_tskim_send_abort(struct bfa_tskim_s *tskim);
 static void     bfa_tskim_iocdisable_ios(struct bfa_tskim_s *tskim);
-
 
 /*
  * forward declaration of BFA TSKIM state machine
@@ -293,32 +284,23 @@ static void     bfa_tskim_sm_cleanup_qfull(struct bfa_tskim_s *tskim,
 					enum bfa_tskim_event event);
 static void     bfa_tskim_sm_hcb(struct bfa_tskim_s *tskim,
 					enum bfa_tskim_event event);
-
 /*
- *  hal_fcpim_mod BFA FCP Initiator Mode module
+ *  BFA FCP Initiator Mode module
  */
 
 /*
- *	Compute and return memory needed by FCP(im) module.
+ * Compute and return memory needed by FCP(im) module.
  */
 static void
-bfa_fcpim_meminfo(struct bfa_iocfc_cfg_s *cfg, u32 *km_len,
-		u32 *dm_len)
+bfa_fcpim_meminfo(struct bfa_iocfc_cfg_s *cfg, u32 *km_len)
 {
-	bfa_itnim_meminfo(cfg, km_len, dm_len);
+	bfa_itnim_meminfo(cfg, km_len);
 
 	/*
 	 * IO memory
 	 */
-	if (cfg->fwcfg.num_ioim_reqs < BFA_IOIM_MIN)
-		cfg->fwcfg.num_ioim_reqs = BFA_IOIM_MIN;
-	else if (cfg->fwcfg.num_ioim_reqs > BFA_IOIM_MAX)
-		cfg->fwcfg.num_ioim_reqs = BFA_IOIM_MAX;
-
 	*km_len += cfg->fwcfg.num_ioim_reqs *
 	  (sizeof(struct bfa_ioim_s) + sizeof(struct bfa_ioim_sp_s));
-
-	*dm_len += cfg->fwcfg.num_ioim_reqs * BFI_IOIM_SNSLEN;
 
 	/*
 	 * task management command memory
@@ -330,61 +312,67 @@ bfa_fcpim_meminfo(struct bfa_iocfc_cfg_s *cfg, u32 *km_len,
 
 
 static void
-bfa_fcpim_attach(struct bfa_s *bfa, void *bfad, struct bfa_iocfc_cfg_s *cfg,
-		struct bfa_meminfo_s *meminfo, struct bfa_pcidev_s *pcidev)
+bfa_fcpim_attach(struct bfa_fcp_mod_s *fcp, void *bfad,
+		struct bfa_iocfc_cfg_s *cfg, struct bfa_pcidev_s *pcidev)
 {
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
+	struct bfa_fcpim_s *fcpim = &fcp->fcpim;
+	struct bfa_s *bfa = fcp->bfa;
 
 	bfa_trc(bfa, cfg->drvcfg.path_tov);
 	bfa_trc(bfa, cfg->fwcfg.num_rports);
 	bfa_trc(bfa, cfg->fwcfg.num_ioim_reqs);
 	bfa_trc(bfa, cfg->fwcfg.num_tskim_reqs);
 
+	fcpim->fcp		= fcp;
 	fcpim->bfa		= bfa;
 	fcpim->num_itnims	= cfg->fwcfg.num_rports;
-	fcpim->num_ioim_reqs  = cfg->fwcfg.num_ioim_reqs;
 	fcpim->num_tskim_reqs = cfg->fwcfg.num_tskim_reqs;
 	fcpim->path_tov		= cfg->drvcfg.path_tov;
 	fcpim->delay_comp	= cfg->drvcfg.delay_comp;
 	fcpim->profile_comp = NULL;
 	fcpim->profile_start = NULL;
 
-	bfa_itnim_attach(fcpim, meminfo);
-	bfa_tskim_attach(fcpim, meminfo);
-	bfa_ioim_attach(fcpim, meminfo);
+	bfa_itnim_attach(fcpim);
+	bfa_tskim_attach(fcpim);
+	bfa_ioim_attach(fcpim);
 }
 
 static void
-bfa_fcpim_detach(struct bfa_s *bfa)
+bfa_fcpim_iocdisable(struct bfa_fcp_mod_s *fcp)
 {
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
-
-	bfa_ioim_detach(fcpim);
-	bfa_tskim_detach(fcpim);
-}
-
-static void
-bfa_fcpim_start(struct bfa_s *bfa)
-{
-}
-
-static void
-bfa_fcpim_stop(struct bfa_s *bfa)
-{
-}
-
-static void
-bfa_fcpim_iocdisable(struct bfa_s *bfa)
-{
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
+	struct bfa_fcpim_s *fcpim = &fcp->fcpim;
 	struct bfa_itnim_s *itnim;
 	struct list_head *qe, *qen;
+
+	/* Enqueue unused ioim resources to free_q */
+	list_splice_tail_init(&fcpim->tskim_unused_q, &fcpim->tskim_free_q);
 
 	list_for_each_safe(qe, qen, &fcpim->itnim_q) {
 		itnim = (struct bfa_itnim_s *) qe;
 		bfa_itnim_iocdisable(itnim);
 	}
 }
+
+void
+bfa_fcpim_path_tov_set(struct bfa_s *bfa, u16 path_tov)
+{
+	struct bfa_fcpim_s *fcpim = BFA_FCPIM(bfa);
+
+	fcpim->path_tov = path_tov * 1000;
+	if (fcpim->path_tov > BFA_FCPIM_PATHTOV_MAX)
+		fcpim->path_tov = BFA_FCPIM_PATHTOV_MAX;
+}
+
+u16
+bfa_fcpim_path_tov_get(struct bfa_s *bfa)
+{
+	struct bfa_fcpim_s *fcpim = BFA_FCPIM(bfa);
+
+	return fcpim->path_tov / 1000;
+}
+
+#define bfa_fcpim_add_iostats(__l, __r, __stats)	\
+	(__l->__stats += __r->__stats)
 
 void
 bfa_fcpim_add_stats(struct bfa_itnim_iostats_s *lstats,
@@ -436,29 +424,11 @@ bfa_fcpim_add_stats(struct bfa_itnim_iostats_s *lstats,
 	bfa_fcpim_add_iostats(lstats, rstats, wr_throughput);
 }
 
-void
-bfa_fcpim_path_tov_set(struct bfa_s *bfa, u16 path_tov)
-{
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
-
-	fcpim->path_tov = path_tov * 1000;
-	if (fcpim->path_tov > BFA_FCPIM_PATHTOV_MAX)
-		fcpim->path_tov = BFA_FCPIM_PATHTOV_MAX;
-}
-
-u16
-bfa_fcpim_path_tov_get(struct bfa_s *bfa)
-{
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
-
-	return fcpim->path_tov / 1000;
-}
-
 bfa_status_t
-bfa_fcpim_port_iostats(struct bfa_s *bfa, struct bfa_itnim_iostats_s *stats,
-	u8 lp_tag)
+bfa_fcpim_port_iostats(struct bfa_s *bfa,
+		struct bfa_itnim_iostats_s *stats, u8 lp_tag)
 {
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
+	struct bfa_fcpim_s *fcpim = BFA_FCPIM(bfa);
 	struct list_head *qe, *qen;
 	struct bfa_itnim_s *itnim;
 
@@ -472,39 +442,35 @@ bfa_fcpim_port_iostats(struct bfa_s *bfa, struct bfa_itnim_iostats_s *stats,
 	}
 	return BFA_STATUS_OK;
 }
-bfa_status_t
-bfa_fcpim_get_modstats(struct bfa_s *bfa, struct bfa_itnim_iostats_s *modstats)
-{
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
-	struct list_head *qe, *qen;
-	struct bfa_itnim_s *itnim;
 
-	/* accumulate IO stats from itnim */
-	memset(modstats, 0, sizeof(struct bfa_itnim_iostats_s));
-	list_for_each_safe(qe, qen, &fcpim->itnim_q) {
-		itnim = (struct bfa_itnim_s *) qe;
-		bfa_fcpim_add_stats(modstats, &(itnim->stats));
-	}
-	return BFA_STATUS_OK;
+void
+bfa_ioim_profile_comp(struct bfa_ioim_s *ioim)
+{
+	struct bfa_itnim_latency_s *io_lat =
+			&(ioim->itnim->ioprofile.io_latency);
+	u32 val, idx;
+
+	val = (u32)(jiffies - ioim->start_time);
+	idx = bfa_ioim_get_index(scsi_bufflen((struct scsi_cmnd *)ioim->dio));
+	bfa_itnim_ioprofile_update(ioim->itnim, idx);
+
+	io_lat->count[idx]++;
+	io_lat->min[idx] = (io_lat->min[idx] < val) ? io_lat->min[idx] : val;
+	io_lat->max[idx] = (io_lat->max[idx] > val) ? io_lat->max[idx] : val;
+	io_lat->avg[idx] += val;
 }
 
-bfa_status_t
-bfa_fcpim_get_del_itn_stats(struct bfa_s *bfa,
-	 struct bfa_fcpim_del_itn_stats_s *modstats)
+void
+bfa_ioim_profile_start(struct bfa_ioim_s *ioim)
 {
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
-
-	*modstats = fcpim->del_itn_stats;
-
-	return BFA_STATUS_OK;
+	ioim->start_time = jiffies;
 }
-
 
 bfa_status_t
 bfa_fcpim_profile_on(struct bfa_s *bfa, u32 time)
 {
 	struct bfa_itnim_s *itnim;
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
+	struct bfa_fcpim_s *fcpim = BFA_FCPIM(bfa);
 	struct list_head *qe, *qen;
 
 	/* accumulate IO stats from itnim */
@@ -516,13 +482,13 @@ bfa_fcpim_profile_on(struct bfa_s *bfa, u32 time)
 	fcpim->io_profile_start_time = time;
 	fcpim->profile_comp = bfa_ioim_profile_comp;
 	fcpim->profile_start = bfa_ioim_profile_start;
-
 	return BFA_STATUS_OK;
 }
+
 bfa_status_t
 bfa_fcpim_profile_off(struct bfa_s *bfa)
 {
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
+	struct bfa_fcpim_s *fcpim = BFA_FCPIM(bfa);
 	fcpim->io_profile = BFA_FALSE;
 	fcpim->io_profile_start_time = 0;
 	fcpim->profile_comp = NULL;
@@ -530,86 +496,20 @@ bfa_fcpim_profile_off(struct bfa_s *bfa)
 	return BFA_STATUS_OK;
 }
 
-bfa_status_t
-bfa_fcpim_port_clear_iostats(struct bfa_s *bfa, u8 lp_tag)
-{
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
-	struct list_head *qe, *qen;
-	struct bfa_itnim_s *itnim;
-
-	/* clear IO stats from all active itnims */
-	list_for_each_safe(qe, qen, &fcpim->itnim_q) {
-		itnim = (struct bfa_itnim_s *) qe;
-		if (itnim->rport->rport_info.lp_tag != lp_tag)
-			continue;
-		bfa_itnim_clear_stats(itnim);
-	}
-	return BFA_STATUS_OK;
-
-}
-
-bfa_status_t
-bfa_fcpim_clr_modstats(struct bfa_s *bfa)
-{
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
-	struct list_head *qe, *qen;
-	struct bfa_itnim_s *itnim;
-
-	/* clear IO stats from all active itnims */
-	list_for_each_safe(qe, qen, &fcpim->itnim_q) {
-		itnim = (struct bfa_itnim_s *) qe;
-		bfa_itnim_clear_stats(itnim);
-	}
-	memset(&fcpim->del_itn_stats, 0,
-		sizeof(struct bfa_fcpim_del_itn_stats_s));
-
-	return BFA_STATUS_OK;
-}
-
-void
-bfa_fcpim_qdepth_set(struct bfa_s *bfa, u16 q_depth)
-{
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
-
-	bfa_assert(q_depth <= BFA_IOCFC_QDEPTH_MAX);
-
-	fcpim->q_depth = q_depth;
-}
-
 u16
 bfa_fcpim_qdepth_get(struct bfa_s *bfa)
 {
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
+	struct bfa_fcpim_s *fcpim = BFA_FCPIM(bfa);
 
 	return fcpim->q_depth;
 }
-
-void
-bfa_fcpim_update_ioredirect(struct bfa_s *bfa)
-{
-	bfa_boolean_t ioredirect;
-
-	/*
-	 * IO redirection is turned off when QoS is enabled and vice versa
-	 */
-	ioredirect = bfa_fcport_is_qos_enabled(bfa) ? BFA_FALSE : BFA_TRUE;
-}
-
-void
-bfa_fcpim_set_ioredirect(struct bfa_s *bfa, bfa_boolean_t state)
-{
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
-	fcpim->ioredirect = state;
-}
-
-
 
 /*
  *  BFA ITNIM module state machine functions
  */
 
 /*
- *	Beginning/unallocated state - no events expected.
+ * Beginning/unallocated state - no events expected.
  */
 static void
 bfa_itnim_sm_uninit(struct bfa_itnim_s *itnim, enum bfa_itnim_event event)
@@ -630,7 +530,7 @@ bfa_itnim_sm_uninit(struct bfa_itnim_s *itnim, enum bfa_itnim_event event)
 }
 
 /*
- *	Beginning state, only online event expected.
+ * Beginning state, only online event expected.
  */
 static void
 bfa_itnim_sm_created(struct bfa_itnim_s *itnim, enum bfa_itnim_event event)
@@ -733,7 +633,7 @@ bfa_itnim_sm_fwcreate_qfull(struct bfa_itnim_s *itnim,
 }
 
 /*
- *	Waiting for itnim create response from firmware, a delete is pending.
+ * Waiting for itnim create response from firmware, a delete is pending.
  */
 static void
 bfa_itnim_sm_delete_pending(struct bfa_itnim_s *itnim,
@@ -761,7 +661,7 @@ bfa_itnim_sm_delete_pending(struct bfa_itnim_s *itnim,
 }
 
 /*
- *	Online state - normal parking state.
+ * Online state - normal parking state.
  */
 static void
 bfa_itnim_sm_online(struct bfa_itnim_s *itnim, enum bfa_itnim_event event)
@@ -803,7 +703,7 @@ bfa_itnim_sm_online(struct bfa_itnim_s *itnim, enum bfa_itnim_event event)
 }
 
 /*
- *	Second level error recovery need.
+ * Second level error recovery need.
  */
 static void
 bfa_itnim_sm_sler(struct bfa_itnim_s *itnim, enum bfa_itnim_event event)
@@ -834,7 +734,7 @@ bfa_itnim_sm_sler(struct bfa_itnim_s *itnim, enum bfa_itnim_event event)
 }
 
 /*
- *	Going offline. Waiting for active IO cleanup.
+ * Going offline. Waiting for active IO cleanup.
  */
 static void
 bfa_itnim_sm_cleanup_offline(struct bfa_itnim_s *itnim,
@@ -871,7 +771,7 @@ bfa_itnim_sm_cleanup_offline(struct bfa_itnim_s *itnim,
 }
 
 /*
- *	Deleting itnim. Waiting for active IO cleanup.
+ * Deleting itnim. Waiting for active IO cleanup.
  */
 static void
 bfa_itnim_sm_cleanup_delete(struct bfa_itnim_s *itnim,
@@ -956,7 +856,7 @@ bfa_itnim_sm_fwdelete_qfull(struct bfa_itnim_s *itnim,
 }
 
 /*
- *	Offline state.
+ * Offline state.
  */
 static void
 bfa_itnim_sm_offline(struct bfa_itnim_s *itnim, enum bfa_itnim_event event)
@@ -987,9 +887,6 @@ bfa_itnim_sm_offline(struct bfa_itnim_s *itnim, enum bfa_itnim_event event)
 	}
 }
 
-/*
- *	IOC h/w failed state.
- */
 static void
 bfa_itnim_sm_iocdisable(struct bfa_itnim_s *itnim,
 				enum bfa_itnim_event event)
@@ -1024,7 +921,7 @@ bfa_itnim_sm_iocdisable(struct bfa_itnim_s *itnim,
 }
 
 /*
- *	Itnim is deleted, waiting for firmware response to delete.
+ * Itnim is deleted, waiting for firmware response to delete.
  */
 static void
 bfa_itnim_sm_deleting(struct bfa_itnim_s *itnim, enum bfa_itnim_event event)
@@ -1069,7 +966,7 @@ bfa_itnim_sm_deleting_qfull(struct bfa_itnim_s *itnim,
 }
 
 /*
- *	Initiate cleanup of all IOs on an IOC failure.
+ * Initiate cleanup of all IOs on an IOC failure.
  */
 static void
 bfa_itnim_iocdisable_cleanup(struct bfa_itnim_s *itnim)
@@ -1103,7 +1000,7 @@ bfa_itnim_iocdisable_cleanup(struct bfa_itnim_s *itnim)
 }
 
 /*
- *	IO cleanup completion
+ * IO cleanup completion
  */
 static void
 bfa_itnim_cleanp_comp(void *itnim_cbarg)
@@ -1115,7 +1012,7 @@ bfa_itnim_cleanp_comp(void *itnim_cbarg)
 }
 
 /*
- *	Initiate cleanup of all IOs.
+ * Initiate cleanup of all IOs.
  */
 static void
 bfa_itnim_cleanup(struct bfa_itnim_s *itnim)
@@ -1187,9 +1084,6 @@ bfa_itnim_qresume(void *cbarg)
 	bfa_sm_send_event(itnim, BFA_ITNIM_SM_QRESUME);
 }
 
-
-
-
 /*
  *  bfa_itnim_public
  */
@@ -1207,8 +1101,7 @@ bfa_itnim_tskdone(struct bfa_itnim_s *itnim)
 }
 
 void
-bfa_itnim_meminfo(struct bfa_iocfc_cfg_s *cfg, u32 *km_len,
-		u32 *dm_len)
+bfa_itnim_meminfo(struct bfa_iocfc_cfg_s *cfg, u32 *km_len)
 {
 	/*
 	 * ITN memory
@@ -1217,15 +1110,16 @@ bfa_itnim_meminfo(struct bfa_iocfc_cfg_s *cfg, u32 *km_len,
 }
 
 void
-bfa_itnim_attach(struct bfa_fcpim_mod_s *fcpim, struct bfa_meminfo_s *minfo)
+bfa_itnim_attach(struct bfa_fcpim_s *fcpim)
 {
 	struct bfa_s	*bfa = fcpim->bfa;
+	struct bfa_fcp_mod_s	*fcp = fcpim->fcp;
 	struct bfa_itnim_s *itnim;
 	int	i, j;
 
 	INIT_LIST_HEAD(&fcpim->itnim_q);
 
-	itnim = (struct bfa_itnim_s *) bfa_meminfo_kva(minfo);
+	itnim = (struct bfa_itnim_s *) bfa_mem_kva_curp(fcp);
 	fcpim->itnim_arr = itnim;
 
 	for (i = 0; i < fcpim->num_itnims; i++, itnim++) {
@@ -1247,7 +1141,7 @@ bfa_itnim_attach(struct bfa_fcpim_mod_s *fcpim, struct bfa_meminfo_s *minfo)
 		bfa_sm_set_state(itnim, bfa_itnim_sm_uninit);
 	}
 
-	bfa_meminfo_kva(minfo) = (u8 *) itnim;
+	bfa_mem_kva_curp(fcp) = (u8 *) itnim;
 }
 
 void
@@ -1260,7 +1154,7 @@ bfa_itnim_iocdisable(struct bfa_itnim_s *itnim)
 static bfa_boolean_t
 bfa_itnim_send_fwcreate(struct bfa_itnim_s *itnim)
 {
-	struct bfi_itnim_create_req_s *m;
+	struct bfi_itn_create_req_s *m;
 
 	itnim->msg_no++;
 
@@ -1273,8 +1167,8 @@ bfa_itnim_send_fwcreate(struct bfa_itnim_s *itnim)
 		return BFA_FALSE;
 	}
 
-	bfi_h2i_set(m->mh, BFI_MC_ITNIM, BFI_ITNIM_H2I_CREATE_REQ,
-			bfa_lpuid(itnim->bfa));
+	bfi_h2i_set(m->mh, BFI_MC_ITN, BFI_ITN_H2I_CREATE_REQ,
+			bfa_fn_lpu(itnim->bfa));
 	m->fw_handle = itnim->rport->fw_handle;
 	m->class = FC_CLASS_3;
 	m->seq_rec = itnim->seq_rec;
@@ -1284,14 +1178,14 @@ bfa_itnim_send_fwcreate(struct bfa_itnim_s *itnim)
 	/*
 	 * queue I/O message to firmware
 	 */
-	bfa_reqq_produce(itnim->bfa, itnim->reqq);
+	bfa_reqq_produce(itnim->bfa, itnim->reqq, m->mh);
 	return BFA_TRUE;
 }
 
 static bfa_boolean_t
 bfa_itnim_send_fwdelete(struct bfa_itnim_s *itnim)
 {
-	struct bfi_itnim_delete_req_s *m;
+	struct bfi_itn_delete_req_s *m;
 
 	/*
 	 * check for room in queue to send request now
@@ -1302,15 +1196,15 @@ bfa_itnim_send_fwdelete(struct bfa_itnim_s *itnim)
 		return BFA_FALSE;
 	}
 
-	bfi_h2i_set(m->mh, BFI_MC_ITNIM, BFI_ITNIM_H2I_DELETE_REQ,
-			bfa_lpuid(itnim->bfa));
+	bfi_h2i_set(m->mh, BFI_MC_ITN, BFI_ITN_H2I_DELETE_REQ,
+			bfa_fn_lpu(itnim->bfa));
 	m->fw_handle = itnim->rport->fw_handle;
 	bfa_stats(itnim, fw_delete);
 
 	/*
 	 * queue I/O message to firmware
 	 */
-	bfa_reqq_produce(itnim->bfa, itnim->reqq);
+	bfa_reqq_produce(itnim->bfa, itnim->reqq, m->mh);
 	return BFA_TRUE;
 }
 
@@ -1401,7 +1295,7 @@ bfa_itnim_iotov_start(struct bfa_itnim_s *itnim)
 	if (itnim->fcpim->path_tov > 0) {
 
 		itnim->iotov_active = BFA_TRUE;
-		bfa_assert(bfa_itnim_hold_io(itnim));
+		WARN_ON(!bfa_itnim_hold_io(itnim));
 		bfa_timer_start(itnim->bfa, &itnim->timer,
 			bfa_itnim_iotov, itnim, itnim->fcpim->path_tov);
 	}
@@ -1441,7 +1335,7 @@ bfa_itnim_iotov_delete(struct bfa_itnim_s *itnim)
 static void
 bfa_itnim_update_del_itn_stats(struct bfa_itnim_s *itnim)
 {
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(itnim->bfa);
+	struct bfa_fcpim_s *fcpim = BFA_FCPIM(itnim->bfa);
 	fcpim->del_itn_stats.del_itn_iocomp_aborted +=
 		itnim->stats.iocomp_aborted;
 	fcpim->del_itn_stats.del_itn_iocomp_timedout +=
@@ -1457,20 +1351,18 @@ bfa_itnim_update_del_itn_stats(struct bfa_itnim_s *itnim)
 	fcpim->del_itn_stats.del_tm_iocdowns += itnim->stats.tm_iocdowns;
 }
 
-
-
 /*
- *  bfa_itnim_public
+ * bfa_itnim_public
  */
 
 /*
- *	Itnim interrupt processing.
+ * Itnim interrupt processing.
  */
 void
 bfa_itnim_isr(struct bfa_s *bfa, struct bfi_msg_s *m)
 {
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
-	union bfi_itnim_i2h_msg_u msg;
+	struct bfa_fcpim_s *fcpim = BFA_FCPIM(bfa);
+	union bfi_itn_i2h_msg_u msg;
 	struct bfa_itnim_s *itnim;
 
 	bfa_trc(bfa, m->mhdr.msg_id);
@@ -1478,23 +1370,23 @@ bfa_itnim_isr(struct bfa_s *bfa, struct bfi_msg_s *m)
 	msg.msg = m;
 
 	switch (m->mhdr.msg_id) {
-	case BFI_ITNIM_I2H_CREATE_RSP:
+	case BFI_ITN_I2H_CREATE_RSP:
 		itnim = BFA_ITNIM_FROM_TAG(fcpim,
 						msg.create_rsp->bfa_handle);
-		bfa_assert(msg.create_rsp->status == BFA_STATUS_OK);
+		WARN_ON(msg.create_rsp->status != BFA_STATUS_OK);
 		bfa_stats(itnim, create_comps);
 		bfa_sm_send_event(itnim, BFA_ITNIM_SM_FWRSP);
 		break;
 
-	case BFI_ITNIM_I2H_DELETE_RSP:
+	case BFI_ITN_I2H_DELETE_RSP:
 		itnim = BFA_ITNIM_FROM_TAG(fcpim,
 						msg.delete_rsp->bfa_handle);
-		bfa_assert(msg.delete_rsp->status == BFA_STATUS_OK);
+		WARN_ON(msg.delete_rsp->status != BFA_STATUS_OK);
 		bfa_stats(itnim, delete_comps);
 		bfa_sm_send_event(itnim, BFA_ITNIM_SM_FWRSP);
 		break;
 
-	case BFI_ITNIM_I2H_SLER_EVENT:
+	case BFI_ITN_I2H_SLER_EVENT:
 		itnim = BFA_ITNIM_FROM_TAG(fcpim,
 						msg.sler_event->bfa_handle);
 		bfa_stats(itnim, sler_events);
@@ -1503,24 +1395,24 @@ bfa_itnim_isr(struct bfa_s *bfa, struct bfi_msg_s *m)
 
 	default:
 		bfa_trc(bfa, m->mhdr.msg_id);
-		bfa_assert(0);
+		WARN_ON(1);
 	}
 }
 
-
-
 /*
- *  bfa_itnim_api
+ * bfa_itnim_api
  */
 
 struct bfa_itnim_s *
 bfa_itnim_create(struct bfa_s *bfa, struct bfa_rport_s *rport, void *ditn)
 {
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
+	struct bfa_fcpim_s *fcpim = BFA_FCPIM(bfa);
 	struct bfa_itnim_s *itnim;
 
+	bfa_itn_create(bfa, rport, bfa_itnim_isr);
+
 	itnim = BFA_ITNIM_FROM_TAG(fcpim, rport->rport_tag);
-	bfa_assert(itnim->rport == rport);
+	WARN_ON(itnim->rport != rport);
 
 	itnim->ditn = ditn;
 
@@ -1568,29 +1460,24 @@ bfa_itnim_hold_io(struct bfa_itnim_s *itnim)
 		 bfa_sm_cmp_state(itnim, bfa_itnim_sm_iocdisable));
 }
 
+#define bfa_io_lat_clock_res_div	HZ
+#define bfa_io_lat_clock_res_mul	1000
 bfa_status_t
 bfa_itnim_get_ioprofile(struct bfa_itnim_s *itnim,
-		struct bfa_itnim_ioprofile_s *ioprofile)
+			struct bfa_itnim_ioprofile_s *ioprofile)
 {
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(itnim->bfa);
+	struct bfa_fcpim_s *fcpim = BFA_FCPIM(itnim->bfa);
 	if (!fcpim->io_profile)
 		return BFA_STATUS_IOPROFILE_OFF;
 
 	itnim->ioprofile.index = BFA_IOBUCKET_MAX;
 	itnim->ioprofile.io_profile_start_time =
-		bfa_io_profile_start_time(itnim->bfa);
+				bfa_io_profile_start_time(itnim->bfa);
 	itnim->ioprofile.clock_res_mul = bfa_io_lat_clock_res_mul;
 	itnim->ioprofile.clock_res_div = bfa_io_lat_clock_res_div;
 	*ioprofile = itnim->ioprofile;
 
 	return BFA_STATUS_OK;
-}
-
-void
-bfa_itnim_get_stats(struct bfa_itnim_s *itnim,
-	struct bfa_itnim_iostats_s *stats)
-{
-	*stats = itnim->stats;
 }
 
 void
@@ -1608,14 +1495,11 @@ bfa_itnim_clear_stats(struct bfa_itnim_s *itnim)
  */
 
 /*
- *	IO is not started (unallocated).
+ * IO is not started (unallocated).
  */
 static void
 bfa_ioim_sm_uninit(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 {
-	bfa_trc_fp(ioim->bfa, ioim->iotag);
-	bfa_trc_fp(ioim->bfa, event);
-
 	switch (event) {
 	case BFA_IOIM_SM_START:
 		if (!bfa_itnim_is_online(ioim->itnim)) {
@@ -1635,7 +1519,7 @@ bfa_ioim_sm_uninit(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 		}
 
 		if (ioim->nsges > BFI_SGE_INLINE) {
-			if (!bfa_ioim_sge_setup(ioim)) {
+			if (!bfa_ioim_sgpg_alloc(ioim)) {
 				bfa_sm_set_state(ioim, bfa_ioim_sm_sgalloc);
 				return;
 			}
@@ -1662,9 +1546,9 @@ bfa_ioim_sm_uninit(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 		 * requests immediately.
 		 */
 		bfa_sm_set_state(ioim, bfa_ioim_sm_hcb);
-		bfa_assert(bfa_q_is_on_q(&ioim->itnim->pending_q, ioim));
+		WARN_ON(!bfa_q_is_on_q(&ioim->itnim->pending_q, ioim));
 		bfa_cb_queue(ioim->bfa, &ioim->hcb_qe,
-				__bfa_cb_ioim_abort, ioim);
+			__bfa_cb_ioim_abort, ioim);
 		break;
 
 	default:
@@ -1673,7 +1557,7 @@ bfa_ioim_sm_uninit(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 }
 
 /*
- *	IO is waiting for SG pages.
+ * IO is waiting for SG pages.
  */
 static void
 bfa_ioim_sm_sgalloc(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
@@ -1720,14 +1604,11 @@ bfa_ioim_sm_sgalloc(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 }
 
 /*
- *	IO is active.
+ * IO is active.
  */
 static void
 bfa_ioim_sm_active(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 {
-	bfa_trc_fp(ioim->bfa, ioim->iotag);
-	bfa_trc_fp(ioim->bfa, event);
-
 	switch (event) {
 	case BFA_IOIM_SM_COMP_GOOD:
 		bfa_sm_set_state(ioim, bfa_ioim_sm_hcb);
@@ -1786,8 +1667,8 @@ bfa_ioim_sm_active(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 		break;
 
 	case BFA_IOIM_SM_SQRETRY:
-		if (bfa_ioim_get_iotag(ioim) != BFA_TRUE) {
-			/* max retry completed free IO */
+		if (bfa_ioim_maxretry_reached(ioim)) {
+			/* max retry reached, free IO */
 			bfa_sm_set_state(ioim, bfa_ioim_sm_hcb_free);
 			bfa_ioim_move_to_comp_q(ioim);
 			bfa_cb_queue(ioim->bfa, &ioim->hcb_qe,
@@ -1804,17 +1685,15 @@ bfa_ioim_sm_active(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 }
 
 /*
-*	IO is retried with new tag.
-*/
+ * IO is retried with new tag.
+ */
 static void
 bfa_ioim_sm_cmnd_retry(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 {
-	bfa_trc_fp(ioim->bfa, ioim->iotag);
-	bfa_trc_fp(ioim->bfa, event);
-
 	switch (event) {
 	case BFA_IOIM_SM_FREE:
 		/* abts and rrq done. Now retry the IO with new tag */
+		bfa_ioim_update_iotag(ioim);
 		if (!bfa_ioim_send_ioreq(ioim)) {
 			bfa_sm_set_state(ioim, bfa_ioim_sm_qfull);
 			break;
@@ -1858,7 +1737,7 @@ bfa_ioim_sm_cmnd_retry(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 }
 
 /*
- *	IO is being aborted, waiting for completion from firmware.
+ * IO is being aborted, waiting for completion from firmware.
  */
 static void
 bfa_ioim_sm_abort(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
@@ -1894,7 +1773,7 @@ bfa_ioim_sm_abort(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 		break;
 
 	case BFA_IOIM_SM_CLEANUP:
-		bfa_assert(ioim->iosp->abort_explicit == BFA_TRUE);
+		WARN_ON(ioim->iosp->abort_explicit != BFA_TRUE);
 		ioim->iosp->abort_explicit = BFA_FALSE;
 
 		if (bfa_ioim_send_abort(ioim))
@@ -1981,7 +1860,7 @@ bfa_ioim_sm_cleanup(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 }
 
 /*
- *	IO is waiting for room in request CQ
+ * IO is waiting for room in request CQ
  */
 static void
 bfa_ioim_sm_qfull(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
@@ -2025,7 +1904,7 @@ bfa_ioim_sm_qfull(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 }
 
 /*
- *	Active IO is being aborted, waiting for room in request CQ.
+ * Active IO is being aborted, waiting for room in request CQ.
  */
 static void
 bfa_ioim_sm_abort_qfull(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
@@ -2040,7 +1919,7 @@ bfa_ioim_sm_abort_qfull(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 		break;
 
 	case BFA_IOIM_SM_CLEANUP:
-		bfa_assert(ioim->iosp->abort_explicit == BFA_TRUE);
+		WARN_ON(ioim->iosp->abort_explicit != BFA_TRUE);
 		ioim->iosp->abort_explicit = BFA_FALSE;
 		bfa_sm_set_state(ioim, bfa_ioim_sm_cleanup_qfull);
 		break;
@@ -2076,7 +1955,7 @@ bfa_ioim_sm_abort_qfull(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 }
 
 /*
- *	Active IO is being cleaned up, waiting for room in request CQ.
+ * Active IO is being cleaned up, waiting for room in request CQ.
  */
 static void
 bfa_ioim_sm_cleanup_qfull(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
@@ -2092,7 +1971,7 @@ bfa_ioim_sm_cleanup_qfull(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 
 	case BFA_IOIM_SM_ABORT:
 		/*
-		 * IO is alraedy being cleaned up implicitly
+		 * IO is already being cleaned up implicitly
 		 */
 		ioim->io_cbfn = __bfa_cb_ioim_abort;
 		break;
@@ -2131,9 +2010,6 @@ bfa_ioim_sm_cleanup_qfull(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 static void
 bfa_ioim_sm_hcb(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 {
-	bfa_trc_fp(ioim->bfa, ioim->iotag);
-	bfa_trc_fp(ioim->bfa, event);
-
 	switch (event) {
 	case BFA_IOIM_SM_HCB:
 		bfa_sm_set_state(ioim, bfa_ioim_sm_uninit);
@@ -2212,11 +2088,27 @@ bfa_ioim_sm_resfree(struct bfa_ioim_s *ioim, enum bfa_ioim_event event)
 	}
 }
 
-
-
 /*
- *  hal_ioim_private
+ * This is called from bfa_fcpim_start after the bfa_init() with flash read
+ * is complete by driver. now invalidate the stale content of lun mask
+ * like unit attention, rp tag and lp tag.
  */
+static void
+bfa_ioim_lm_init(struct bfa_s *bfa)
+{
+	struct bfa_lun_mask_s *lunm_list;
+	int	i;
+
+	if (bfa_get_lun_mask_status(bfa) == BFA_LUNMASK_MINCFG)
+		return;
+
+	lunm_list = bfa_get_lun_mask_list(bfa);
+	for (i = 0; i < MAX_LUN_MASK_CFG; i++) {
+		lunm_list[i].ua = BFA_IOIM_LM_UA_RESET;
+		lunm_list[i].lp_tag = BFA_LP_TAG_INVALID;
+		lunm_list[i].rp_tag = BFA_RPORT_TAG_INVALID;
+	}
+}
 
 static void
 __bfa_cb_ioim_good_comp(void *cbarg, bfa_boolean_t complete)
@@ -2253,7 +2145,8 @@ __bfa_cb_ioim_comp(void *cbarg, bfa_boolean_t complete)
 		if ((m->scsi_status == SCSI_STATUS_CHECK_CONDITION) &&
 					m->sns_len) {
 			sns_len = m->sns_len;
-			snsinfo = ioim->iosp->snsinfo;
+			snsinfo = BFA_SNSINFO_FROM_TAG(ioim->fcpim->fcp,
+						ioim->iotag);
 		}
 
 		/*
@@ -2272,6 +2165,224 @@ __bfa_cb_ioim_comp(void *cbarg, bfa_boolean_t complete)
 
 	bfa_cb_ioim_done(ioim->bfa->bfad, ioim->dio, m->io_status,
 			  m->scsi_status, sns_len, snsinfo, residue);
+}
+
+void
+bfa_fcpim_lunmask_rp_update(struct bfa_s *bfa, wwn_t lp_wwn, wwn_t rp_wwn,
+			u16 rp_tag, u8 lp_tag)
+{
+	struct bfa_lun_mask_s *lun_list;
+	u8	i;
+
+	if (bfa_get_lun_mask_status(bfa) == BFA_LUNMASK_MINCFG)
+		return;
+
+	lun_list = bfa_get_lun_mask_list(bfa);
+	for (i = 0; i < MAX_LUN_MASK_CFG; i++) {
+		if (lun_list[i].state == BFA_IOIM_LUN_MASK_ACTIVE) {
+			if ((lun_list[i].lp_wwn == lp_wwn) &&
+			    (lun_list[i].rp_wwn == rp_wwn)) {
+				lun_list[i].rp_tag = rp_tag;
+				lun_list[i].lp_tag = lp_tag;
+			}
+		}
+	}
+}
+
+/*
+ * set UA for all active luns in LM DB
+ */
+static void
+bfa_ioim_lm_set_ua(struct bfa_s *bfa)
+{
+	struct bfa_lun_mask_s	*lunm_list;
+	int	i;
+
+	lunm_list = bfa_get_lun_mask_list(bfa);
+	for (i = 0; i < MAX_LUN_MASK_CFG; i++) {
+		if (lunm_list[i].state != BFA_IOIM_LUN_MASK_ACTIVE)
+			continue;
+		lunm_list[i].ua = BFA_IOIM_LM_UA_SET;
+	}
+}
+
+bfa_status_t
+bfa_fcpim_lunmask_update(struct bfa_s *bfa, u32 update)
+{
+	struct bfa_lunmask_cfg_s	*lun_mask;
+
+	bfa_trc(bfa, bfa_get_lun_mask_status(bfa));
+	if (bfa_get_lun_mask_status(bfa) == BFA_LUNMASK_MINCFG)
+		return BFA_STATUS_FAILED;
+
+	if (bfa_get_lun_mask_status(bfa) == update)
+		return BFA_STATUS_NO_CHANGE;
+
+	lun_mask = bfa_get_lun_mask(bfa);
+	lun_mask->status = update;
+
+	if (bfa_get_lun_mask_status(bfa) == BFA_LUNMASK_ENABLED)
+		bfa_ioim_lm_set_ua(bfa);
+
+	return  bfa_dconf_update(bfa);
+}
+
+bfa_status_t
+bfa_fcpim_lunmask_clear(struct bfa_s *bfa)
+{
+	int i;
+	struct bfa_lun_mask_s	*lunm_list;
+
+	bfa_trc(bfa, bfa_get_lun_mask_status(bfa));
+	if (bfa_get_lun_mask_status(bfa) == BFA_LUNMASK_MINCFG)
+		return BFA_STATUS_FAILED;
+
+	lunm_list = bfa_get_lun_mask_list(bfa);
+	for (i = 0; i < MAX_LUN_MASK_CFG; i++) {
+		if (lunm_list[i].state == BFA_IOIM_LUN_MASK_ACTIVE) {
+			if (lunm_list[i].rp_tag != BFA_RPORT_TAG_INVALID)
+				bfa_rport_unset_lunmask(bfa,
+				  BFA_RPORT_FROM_TAG(bfa, lunm_list[i].rp_tag));
+		}
+	}
+
+	memset(lunm_list, 0, sizeof(struct bfa_lun_mask_s) * MAX_LUN_MASK_CFG);
+	return bfa_dconf_update(bfa);
+}
+
+bfa_status_t
+bfa_fcpim_lunmask_query(struct bfa_s *bfa, void *buf)
+{
+	struct bfa_lunmask_cfg_s *lun_mask;
+
+	bfa_trc(bfa, bfa_get_lun_mask_status(bfa));
+	if (bfa_get_lun_mask_status(bfa) == BFA_LUNMASK_MINCFG)
+		return BFA_STATUS_FAILED;
+
+	lun_mask = bfa_get_lun_mask(bfa);
+	memcpy(buf, lun_mask, sizeof(struct bfa_lunmask_cfg_s));
+	return BFA_STATUS_OK;
+}
+
+bfa_status_t
+bfa_fcpim_lunmask_add(struct bfa_s *bfa, u16 vf_id, wwn_t *pwwn,
+		      wwn_t rpwwn, struct scsi_lun lun)
+{
+	struct bfa_lun_mask_s *lunm_list;
+	struct bfa_rport_s *rp = NULL;
+	int i, free_index = MAX_LUN_MASK_CFG + 1;
+	struct bfa_fcs_lport_s *port = NULL;
+	struct bfa_fcs_rport_s *rp_fcs;
+
+	bfa_trc(bfa, bfa_get_lun_mask_status(bfa));
+	if (bfa_get_lun_mask_status(bfa) == BFA_LUNMASK_MINCFG)
+		return BFA_STATUS_FAILED;
+
+	port = bfa_fcs_lookup_port(&((struct bfad_s *)bfa->bfad)->bfa_fcs,
+				   vf_id, *pwwn);
+	if (port) {
+		*pwwn = port->port_cfg.pwwn;
+		rp_fcs = bfa_fcs_lport_get_rport_by_pwwn(port, rpwwn);
+		if (rp_fcs)
+			rp = rp_fcs->bfa_rport;
+	}
+
+	lunm_list = bfa_get_lun_mask_list(bfa);
+	/* if entry exists */
+	for (i = 0; i < MAX_LUN_MASK_CFG; i++) {
+		if (lunm_list[i].state != BFA_IOIM_LUN_MASK_ACTIVE)
+			free_index = i;
+		if ((lunm_list[i].lp_wwn == *pwwn) &&
+		    (lunm_list[i].rp_wwn == rpwwn) &&
+		    (scsilun_to_int((struct scsi_lun *)&lunm_list[i].lun) ==
+		     scsilun_to_int((struct scsi_lun *)&lun)))
+			return  BFA_STATUS_ENTRY_EXISTS;
+	}
+
+	if (free_index > MAX_LUN_MASK_CFG)
+		return BFA_STATUS_MAX_ENTRY_REACHED;
+
+	if (rp) {
+		lunm_list[free_index].lp_tag = bfa_lps_get_tag_from_pid(bfa,
+						   rp->rport_info.local_pid);
+		lunm_list[free_index].rp_tag = rp->rport_tag;
+	} else {
+		lunm_list[free_index].lp_tag = BFA_LP_TAG_INVALID;
+		lunm_list[free_index].rp_tag = BFA_RPORT_TAG_INVALID;
+	}
+
+	lunm_list[free_index].lp_wwn = *pwwn;
+	lunm_list[free_index].rp_wwn = rpwwn;
+	lunm_list[free_index].lun = lun;
+	lunm_list[free_index].state = BFA_IOIM_LUN_MASK_ACTIVE;
+
+	/* set for all luns in this rp */
+	for (i = 0; i < MAX_LUN_MASK_CFG; i++) {
+		if ((lunm_list[i].lp_wwn == *pwwn) &&
+		    (lunm_list[i].rp_wwn == rpwwn))
+			lunm_list[i].ua = BFA_IOIM_LM_UA_SET;
+	}
+
+	return bfa_dconf_update(bfa);
+}
+
+bfa_status_t
+bfa_fcpim_lunmask_delete(struct bfa_s *bfa, u16 vf_id, wwn_t *pwwn,
+			 wwn_t rpwwn, struct scsi_lun lun)
+{
+	struct bfa_lun_mask_s	*lunm_list;
+	struct bfa_rport_s	*rp = NULL;
+	struct bfa_fcs_lport_s *port = NULL;
+	struct bfa_fcs_rport_s *rp_fcs;
+	int	i;
+
+	/* in min cfg lunm_list could be NULL but  no commands should run. */
+	if (bfa_get_lun_mask_status(bfa) == BFA_LUNMASK_MINCFG)
+		return BFA_STATUS_FAILED;
+
+	bfa_trc(bfa, bfa_get_lun_mask_status(bfa));
+	bfa_trc(bfa, *pwwn);
+	bfa_trc(bfa, rpwwn);
+	bfa_trc(bfa, scsilun_to_int((struct scsi_lun *)&lun));
+
+	if (*pwwn == 0) {
+		port = bfa_fcs_lookup_port(
+				&((struct bfad_s *)bfa->bfad)->bfa_fcs,
+				vf_id, *pwwn);
+		if (port) {
+			*pwwn = port->port_cfg.pwwn;
+			rp_fcs = bfa_fcs_lport_get_rport_by_pwwn(port, rpwwn);
+			if (rp_fcs)
+				rp = rp_fcs->bfa_rport;
+		}
+	}
+
+	lunm_list = bfa_get_lun_mask_list(bfa);
+	for (i = 0; i < MAX_LUN_MASK_CFG; i++) {
+		if ((lunm_list[i].lp_wwn == *pwwn) &&
+		    (lunm_list[i].rp_wwn == rpwwn) &&
+		    (scsilun_to_int((struct scsi_lun *)&lunm_list[i].lun) ==
+		     scsilun_to_int((struct scsi_lun *)&lun))) {
+			lunm_list[i].lp_wwn = 0;
+			lunm_list[i].rp_wwn = 0;
+			int_to_scsilun(0, &lunm_list[i].lun);
+			lunm_list[i].state = BFA_IOIM_LUN_MASK_INACTIVE;
+			if (lunm_list[i].rp_tag != BFA_RPORT_TAG_INVALID) {
+				lunm_list[i].rp_tag = BFA_RPORT_TAG_INVALID;
+				lunm_list[i].lp_tag = BFA_LP_TAG_INVALID;
+			}
+			return bfa_dconf_update(bfa);
+		}
+	}
+
+	/* set for all luns in this rp */
+	for (i = 0; i < MAX_LUN_MASK_CFG; i++) {
+		if ((lunm_list[i].lp_wwn == *pwwn) &&
+		    (lunm_list[i].rp_wwn == rpwwn))
+			lunm_list[i].ua = BFA_IOIM_LM_UA_SET;
+	}
+
+	return BFA_STATUS_ENTRY_NOT_EXISTS;
 }
 
 static void
@@ -2323,7 +2434,7 @@ bfa_ioim_sgpg_alloced(void *cbarg)
 
 	ioim->nsgpgs = BFA_SGPG_NPAGE(ioim->nsges);
 	list_splice_tail_init(&ioim->iosp->sgpg_wqe.sgpg_q, &ioim->sgpg_q);
-	bfa_ioim_sgpg_setup(ioim);
+	ioim->sgpg = bfa_q_first(&ioim->sgpg_q);
 	bfa_sm_send_event(ioim, BFA_IOIM_SM_SGALLOCED);
 }
 
@@ -2335,13 +2446,16 @@ bfa_ioim_send_ioreq(struct bfa_ioim_s *ioim)
 {
 	struct bfa_itnim_s *itnim = ioim->itnim;
 	struct bfi_ioim_req_s *m;
-	static struct fcp_cmnd_s cmnd_z0 = { 0 };
-	struct bfi_sge_s      *sge;
+	static struct fcp_cmnd_s cmnd_z0 = { { { 0 } } };
+	struct bfi_sge_s *sge, *sgpge;
 	u32	pgdlen = 0;
 	u32	fcp_dl;
 	u64 addr;
 	struct scatterlist *sg;
+	struct bfa_sgpg_s *sgpg;
 	struct scsi_cmnd *cmnd = (struct scsi_cmnd *) ioim->dio;
+	u32 i, sge_id, pgcumsz;
+	enum dma_data_direction dmadir;
 
 	/*
 	 * check for room in queue to send request now
@@ -2359,22 +2473,61 @@ bfa_ioim_send_ioreq(struct bfa_ioim_s *ioim)
 	 */
 	m->io_tag = cpu_to_be16(ioim->iotag);
 	m->rport_hdl = ioim->itnim->rport->fw_handle;
-	m->io_timeout = bfa_cb_ioim_get_timeout(ioim->dio);
+	m->io_timeout = 0;
 
-	/*
-	 * build inline IO SG element here
-	 */
 	sge = &m->sges[0];
-	if (ioim->nsges) {
-		sg = (struct scatterlist *)scsi_sglist(cmnd);
-		addr = bfa_os_sgaddr(sg_dma_address(sg));
-		sge->sga = *(union bfi_addr_u *) &addr;
-		pgdlen = sg_dma_len(sg);
-		sge->sg_len = pgdlen;
-		sge->flags = (ioim->nsges > BFI_SGE_INLINE) ?
+	sgpg = ioim->sgpg;
+	sge_id = 0;
+	sgpge = NULL;
+	pgcumsz = 0;
+	scsi_for_each_sg(cmnd, sg, ioim->nsges, i) {
+		if (i == 0) {
+			/* build inline IO SG element */
+			addr = bfa_sgaddr_le(sg_dma_address(sg));
+			sge->sga = *(union bfi_addr_u *) &addr;
+			pgdlen = sg_dma_len(sg);
+			sge->sg_len = pgdlen;
+			sge->flags = (ioim->nsges > BFI_SGE_INLINE) ?
 					BFI_SGE_DATA_CPL : BFI_SGE_DATA_LAST;
-		bfa_sge_to_be(sge);
-		sge++;
+			bfa_sge_to_be(sge);
+			sge++;
+		} else {
+			if (sge_id == 0)
+				sgpge = sgpg->sgpg->sges;
+
+			addr = bfa_sgaddr_le(sg_dma_address(sg));
+			sgpge->sga = *(union bfi_addr_u *) &addr;
+			sgpge->sg_len = sg_dma_len(sg);
+			pgcumsz += sgpge->sg_len;
+
+			/* set flags */
+			if (i < (ioim->nsges - 1) &&
+					sge_id < (BFI_SGPG_DATA_SGES - 1))
+				sgpge->flags = BFI_SGE_DATA;
+			else if (i < (ioim->nsges - 1))
+				sgpge->flags = BFI_SGE_DATA_CPL;
+			else
+				sgpge->flags = BFI_SGE_DATA_LAST;
+
+			bfa_sge_to_le(sgpge);
+
+			sgpge++;
+			if (i == (ioim->nsges - 1)) {
+				sgpge->flags = BFI_SGE_PGDLEN;
+				sgpge->sga.a32.addr_lo = 0;
+				sgpge->sga.a32.addr_hi = 0;
+				sgpge->sg_len = pgcumsz;
+				bfa_sge_to_le(sgpge);
+			} else if (++sge_id == BFI_SGPG_DATA_SGES) {
+				sgpg = (struct bfa_sgpg_s *) bfa_q_next(sgpg);
+				sgpge->flags = BFI_SGE_LINK;
+				sgpge->sga = sgpg->sgpg_pa;
+				sgpge->sg_len = pgcumsz;
+				bfa_sge_to_le(sgpge);
+				sge_id = 0;
+				pgcumsz = 0;
+			}
+		}
 	}
 
 	if (ioim->nsges > BFI_SGE_INLINE) {
@@ -2391,10 +2544,17 @@ bfa_ioim_send_ioreq(struct bfa_ioim_s *ioim)
 	 * set up I/O command parameters
 	 */
 	m->cmnd = cmnd_z0;
-	m->cmnd.lun = bfa_cb_ioim_get_lun(ioim->dio);
-	m->cmnd.iodir = bfa_cb_ioim_get_iodir(ioim->dio);
-	m->cmnd.cdb = *(scsi_cdb_t *)bfa_cb_ioim_get_cdb(ioim->dio);
-	fcp_dl = bfa_cb_ioim_get_size(ioim->dio);
+	int_to_scsilun(cmnd->device->lun, &m->cmnd.lun);
+	dmadir = cmnd->sc_data_direction;
+	if (dmadir == DMA_TO_DEVICE)
+		m->cmnd.iodir = FCP_IODIR_WRITE;
+	else if (dmadir == DMA_FROM_DEVICE)
+		m->cmnd.iodir = FCP_IODIR_READ;
+	else
+		m->cmnd.iodir = FCP_IODIR_NONE;
+
+	m->cmnd.cdb = *(struct scsi_cdb_s *) cmnd->cmnd;
+	fcp_dl = scsi_bufflen(cmnd);
 	m->cmnd.fcp_dl = cpu_to_be32(fcp_dl);
 
 	/*
@@ -2402,12 +2562,12 @@ bfa_ioim_send_ioreq(struct bfa_ioim_s *ioim)
 	 */
 	switch (m->cmnd.iodir) {
 	case FCP_IODIR_READ:
-		bfi_h2i_set(m->mh, BFI_MC_IOIM_READ, 0, bfa_lpuid(ioim->bfa));
+		bfi_h2i_set(m->mh, BFI_MC_IOIM_READ, 0, bfa_fn_lpu(ioim->bfa));
 		bfa_stats(itnim, input_reqs);
 		ioim->itnim->stats.rd_throughput += fcp_dl;
 		break;
 	case FCP_IODIR_WRITE:
-		bfi_h2i_set(m->mh, BFI_MC_IOIM_WRITE, 0, bfa_lpuid(ioim->bfa));
+		bfi_h2i_set(m->mh, BFI_MC_IOIM_WRITE, 0, bfa_fn_lpu(ioim->bfa));
 		bfa_stats(itnim, output_reqs);
 		ioim->itnim->stats.wr_throughput += fcp_dl;
 		break;
@@ -2415,35 +2575,16 @@ bfa_ioim_send_ioreq(struct bfa_ioim_s *ioim)
 		bfa_stats(itnim, input_reqs);
 		bfa_stats(itnim, output_reqs);
 	default:
-		bfi_h2i_set(m->mh, BFI_MC_IOIM_IO, 0, bfa_lpuid(ioim->bfa));
+		bfi_h2i_set(m->mh, BFI_MC_IOIM_IO, 0, bfa_fn_lpu(ioim->bfa));
 	}
 	if (itnim->seq_rec ||
-	    (bfa_cb_ioim_get_size(ioim->dio) & (sizeof(u32) - 1)))
-		bfi_h2i_set(m->mh, BFI_MC_IOIM_IO, 0, bfa_lpuid(ioim->bfa));
-
-#ifdef IOIM_ADVANCED
-	m->cmnd.crn = bfa_cb_ioim_get_crn(ioim->dio);
-	m->cmnd.priority = bfa_cb_ioim_get_priority(ioim->dio);
-	m->cmnd.taskattr = bfa_cb_ioim_get_taskattr(ioim->dio);
-
-	/*
-	 * Handle large CDB (>16 bytes).
-	 */
-	m->cmnd.addl_cdb_len = (bfa_cb_ioim_get_cdblen(ioim->dio) -
-					FCP_CMND_CDB_LEN) / sizeof(u32);
-	if (m->cmnd.addl_cdb_len) {
-		memcpy(&m->cmnd.cdb + 1, (scsi_cdb_t *)
-				bfa_cb_ioim_get_cdb(ioim->dio) + 1,
-				m->cmnd.addl_cdb_len * sizeof(u32));
-		fcp_cmnd_fcpdl(&m->cmnd) =
-				cpu_to_be32(bfa_cb_ioim_get_size(ioim->dio));
-	}
-#endif
+	    (scsi_bufflen(cmnd) & (sizeof(u32) - 1)))
+		bfi_h2i_set(m->mh, BFI_MC_IOIM_IO, 0, bfa_fn_lpu(ioim->bfa));
 
 	/*
 	 * queue I/O message to firmware
 	 */
-	bfa_reqq_produce(ioim->bfa, ioim->reqq);
+	bfa_reqq_produce(ioim->bfa, ioim->reqq, m->mh);
 	return BFA_TRUE;
 }
 
@@ -2452,11 +2593,11 @@ bfa_ioim_send_ioreq(struct bfa_ioim_s *ioim)
  * at queuing time.
  */
 static bfa_boolean_t
-bfa_ioim_sge_setup(struct bfa_ioim_s *ioim)
+bfa_ioim_sgpg_alloc(struct bfa_ioim_s *ioim)
 {
 	u16	nsgpgs;
 
-	bfa_assert(ioim->nsges > BFI_SGE_INLINE);
+	WARN_ON(ioim->nsges <= BFI_SGE_INLINE);
 
 	/*
 	 * allocate SG pages needed
@@ -2472,71 +2613,9 @@ bfa_ioim_sge_setup(struct bfa_ioim_s *ioim)
 	}
 
 	ioim->nsgpgs = nsgpgs;
-	bfa_ioim_sgpg_setup(ioim);
+	ioim->sgpg = bfa_q_first(&ioim->sgpg_q);
 
 	return BFA_TRUE;
-}
-
-static void
-bfa_ioim_sgpg_setup(struct bfa_ioim_s *ioim)
-{
-	int		sgeid, nsges, i;
-	struct bfi_sge_s      *sge;
-	struct bfa_sgpg_s *sgpg;
-	u32	pgcumsz;
-	u64        addr;
-	struct scatterlist *sg;
-	struct scsi_cmnd *cmnd = (struct scsi_cmnd *) ioim->dio;
-
-	sgeid = BFI_SGE_INLINE;
-	ioim->sgpg = sgpg = bfa_q_first(&ioim->sgpg_q);
-
-	sg = scsi_sglist(cmnd);
-	sg = sg_next(sg);
-
-	do {
-		sge = sgpg->sgpg->sges;
-		nsges = ioim->nsges - sgeid;
-		if (nsges > BFI_SGPG_DATA_SGES)
-			nsges = BFI_SGPG_DATA_SGES;
-
-		pgcumsz = 0;
-		for (i = 0; i < nsges; i++, sge++, sgeid++, sg = sg_next(sg)) {
-			addr = bfa_os_sgaddr(sg_dma_address(sg));
-			sge->sga = *(union bfi_addr_u *) &addr;
-			sge->sg_len = sg_dma_len(sg);
-			pgcumsz += sge->sg_len;
-
-			/*
-			 * set flags
-			 */
-			if (i < (nsges - 1))
-				sge->flags = BFI_SGE_DATA;
-			else if (sgeid < (ioim->nsges - 1))
-				sge->flags = BFI_SGE_DATA_CPL;
-			else
-				sge->flags = BFI_SGE_DATA_LAST;
-
-			bfa_sge_to_le(sge);
-		}
-
-		sgpg = (struct bfa_sgpg_s *) bfa_q_next(sgpg);
-
-		/*
-		 * set the link element of each page
-		 */
-		if (sgeid == ioim->nsges) {
-			sge->flags = BFI_SGE_PGDLEN;
-			sge->sga.a32.addr_lo = 0;
-			sge->sga.a32.addr_hi = 0;
-		} else {
-			sge->flags = BFI_SGE_LINK;
-			sge->sga = sgpg->sgpg_pa;
-		}
-		sge->sg_len = pgcumsz;
-
-		bfa_sge_to_le(sge);
-	} while (sgeid < ioim->nsges);
 }
 
 /*
@@ -2563,14 +2642,14 @@ bfa_ioim_send_abort(struct bfa_ioim_s *ioim)
 	else
 		msgop = BFI_IOIM_H2I_IOCLEANUP_REQ;
 
-	bfi_h2i_set(m->mh, BFI_MC_IOIM, msgop, bfa_lpuid(ioim->bfa));
+	bfi_h2i_set(m->mh, BFI_MC_IOIM, msgop, bfa_fn_lpu(ioim->bfa));
 	m->io_tag    = cpu_to_be16(ioim->iotag);
 	m->abort_tag = ++ioim->abort_tag;
 
 	/*
 	 * queue I/O message to firmware
 	 */
-	bfa_reqq_produce(ioim->bfa, ioim->reqq);
+	bfa_reqq_produce(ioim->bfa, ioim->reqq, m->mh);
 	return BFA_TRUE;
 }
 
@@ -2605,7 +2684,7 @@ bfa_ioim_notify_cleanup(struct bfa_ioim_s *ioim)
 		}
 		bfa_itnim_iodone(ioim->itnim);
 	} else
-		bfa_tskim_iodone(ioim->iosp->tskim);
+		bfa_wc_down(&ioim->iosp->tskim->wc);
 }
 
 static bfa_boolean_t
@@ -2623,9 +2702,6 @@ bfa_ioim_is_abortable(struct bfa_ioim_s *ioim)
 	return BFA_TRUE;
 }
 
-/*
- *	or after the link comes back.
- */
 void
 bfa_ioim_delayed_comp(struct bfa_ioim_s *ioim, bfa_boolean_t iotov)
 {
@@ -2653,55 +2729,36 @@ bfa_ioim_delayed_comp(struct bfa_ioim_s *ioim, bfa_boolean_t iotov)
 }
 
 
-
-/*
- *  hal_ioim_friend
- */
-
 /*
  * Memory allocation and initialization.
  */
 void
-bfa_ioim_attach(struct bfa_fcpim_mod_s *fcpim, struct bfa_meminfo_s *minfo)
+bfa_ioim_attach(struct bfa_fcpim_s *fcpim)
 {
 	struct bfa_ioim_s		*ioim;
+	struct bfa_fcp_mod_s	*fcp = fcpim->fcp;
 	struct bfa_ioim_sp_s	*iosp;
 	u16		i;
-	u8			*snsinfo;
-	u32		snsbufsz;
 
 	/*
 	 * claim memory first
 	 */
-	ioim = (struct bfa_ioim_s *) bfa_meminfo_kva(minfo);
+	ioim = (struct bfa_ioim_s *) bfa_mem_kva_curp(fcp);
 	fcpim->ioim_arr = ioim;
-	bfa_meminfo_kva(minfo) = (u8 *) (ioim + fcpim->num_ioim_reqs);
+	bfa_mem_kva_curp(fcp) = (u8 *) (ioim + fcpim->fcp->num_ioim_reqs);
 
-	iosp = (struct bfa_ioim_sp_s *) bfa_meminfo_kva(minfo);
+	iosp = (struct bfa_ioim_sp_s *) bfa_mem_kva_curp(fcp);
 	fcpim->ioim_sp_arr = iosp;
-	bfa_meminfo_kva(minfo) = (u8 *) (iosp + fcpim->num_ioim_reqs);
-
-	/*
-	 * Claim DMA memory for per IO sense data.
-	 */
-	snsbufsz = fcpim->num_ioim_reqs * BFI_IOIM_SNSLEN;
-	fcpim->snsbase.pa  = bfa_meminfo_dma_phys(minfo);
-	bfa_meminfo_dma_phys(minfo) += snsbufsz;
-
-	fcpim->snsbase.kva = bfa_meminfo_dma_virt(minfo);
-	bfa_meminfo_dma_virt(minfo) += snsbufsz;
-	snsinfo = fcpim->snsbase.kva;
-	bfa_iocfc_set_snsbase(fcpim->bfa, fcpim->snsbase.pa);
+	bfa_mem_kva_curp(fcp) = (u8 *) (iosp + fcpim->fcp->num_ioim_reqs);
 
 	/*
 	 * Initialize ioim free queues
 	 */
-	INIT_LIST_HEAD(&fcpim->ioim_free_q);
 	INIT_LIST_HEAD(&fcpim->ioim_resfree_q);
 	INIT_LIST_HEAD(&fcpim->ioim_comp_q);
 
-	for (i = 0; i < fcpim->num_ioim_reqs;
-	     i++, ioim++, iosp++, snsinfo += BFI_IOIM_SNSLEN) {
+	for (i = 0; i < fcpim->fcp->num_ioim_reqs;
+	     i++, ioim++, iosp++) {
 		/*
 		 * initialize IOIM
 		 */
@@ -2710,30 +2767,19 @@ bfa_ioim_attach(struct bfa_fcpim_mod_s *fcpim, struct bfa_meminfo_s *minfo)
 		ioim->bfa     = fcpim->bfa;
 		ioim->fcpim   = fcpim;
 		ioim->iosp    = iosp;
-		iosp->snsinfo = snsinfo;
 		INIT_LIST_HEAD(&ioim->sgpg_q);
 		bfa_reqq_winit(&ioim->iosp->reqq_wait,
 				   bfa_ioim_qresume, ioim);
 		bfa_sgpg_winit(&ioim->iosp->sgpg_wqe,
 				   bfa_ioim_sgpg_alloced, ioim);
 		bfa_sm_set_state(ioim, bfa_ioim_sm_uninit);
-
-		list_add_tail(&ioim->qe, &fcpim->ioim_free_q);
 	}
-}
-
-/*
- * Driver detach time call.
- */
-void
-bfa_ioim_detach(struct bfa_fcpim_mod_s *fcpim)
-{
 }
 
 void
 bfa_ioim_isr(struct bfa_s *bfa, struct bfi_msg_s *m)
 {
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
+	struct bfa_fcpim_s *fcpim = BFA_FCPIM(bfa);
 	struct bfi_ioim_rsp_s *rsp = (struct bfi_ioim_rsp_s *) m;
 	struct bfa_ioim_s *ioim;
 	u16	iotag;
@@ -2742,7 +2788,7 @@ bfa_ioim_isr(struct bfa_s *bfa, struct bfi_msg_s *m)
 	iotag = be16_to_cpu(rsp->io_tag);
 
 	ioim = BFA_IOIM_FROM_TAG(fcpim, iotag);
-	bfa_assert(ioim->iotag == iotag);
+	WARN_ON(ioim->iotag != iotag);
 
 	bfa_trc(ioim->bfa, ioim->iotag);
 	bfa_trc(ioim->bfa, rsp->io_status);
@@ -2773,13 +2819,13 @@ bfa_ioim_isr(struct bfa_s *bfa, struct bfi_msg_s *m)
 
 	case BFI_IOIM_STS_PROTO_ERR:
 		bfa_stats(ioim->itnim, iocom_proto_err);
-		bfa_assert(rsp->reuse_io_tag);
+		WARN_ON(!rsp->reuse_io_tag);
 		evt = BFA_IOIM_SM_COMP;
 		break;
 
 	case BFI_IOIM_STS_SQER_NEEDED:
 		bfa_stats(ioim->itnim, iocom_sqer_needed);
-		bfa_assert(rsp->reuse_io_tag == 0);
+		WARN_ON(rsp->reuse_io_tag != 0);
 		evt = BFA_IOIM_SM_SQRETRY;
 		break;
 
@@ -2808,7 +2854,7 @@ bfa_ioim_isr(struct bfa_s *bfa, struct bfi_msg_s *m)
 		break;
 
 	default:
-		bfa_assert(0);
+		WARN_ON(1);
 	}
 
 	bfa_sm_send_event(ioim, evt);
@@ -2817,7 +2863,7 @@ bfa_ioim_isr(struct bfa_s *bfa, struct bfi_msg_s *m)
 void
 bfa_ioim_good_comp_isr(struct bfa_s *bfa, struct bfi_msg_s *m)
 {
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
+	struct bfa_fcpim_s *fcpim = BFA_FCPIM(bfa);
 	struct bfi_ioim_rsp_s *rsp = (struct bfi_ioim_rsp_s *) m;
 	struct bfa_ioim_s *ioim;
 	u16	iotag;
@@ -2825,39 +2871,13 @@ bfa_ioim_good_comp_isr(struct bfa_s *bfa, struct bfi_msg_s *m)
 	iotag = be16_to_cpu(rsp->io_tag);
 
 	ioim = BFA_IOIM_FROM_TAG(fcpim, iotag);
-	bfa_assert(ioim->iotag == iotag);
+	WARN_ON(BFA_IOIM_TAG_2_ID(ioim->iotag) != iotag);
 
-	bfa_trc_fp(ioim->bfa, ioim->iotag);
 	bfa_ioim_cb_profile_comp(fcpim, ioim);
 
 	bfa_sm_send_event(ioim, BFA_IOIM_SM_COMP_GOOD);
 }
 
-void
-bfa_ioim_profile_start(struct bfa_ioim_s *ioim)
-{
-	ioim->start_time = jiffies;
-}
-
-void
-bfa_ioim_profile_comp(struct bfa_ioim_s *ioim)
-{
-	u32 fcp_dl = bfa_cb_ioim_get_size(ioim->dio);
-	u32 index = bfa_ioim_get_index(fcp_dl);
-	u64 end_time = jiffies;
-	struct bfa_itnim_latency_s *io_lat =
-			&(ioim->itnim->ioprofile.io_latency);
-	u32 val = (u32)(end_time - ioim->start_time);
-
-	bfa_itnim_ioprofile_update(ioim->itnim, index);
-
-	io_lat->count[index]++;
-	io_lat->min[index] = (io_lat->min[index] < val) ?
-		io_lat->min[index] : val;
-	io_lat->max[index] = (io_lat->max[index] > val) ?
-		io_lat->max[index] : val;
-	io_lat->avg[index] += val;
-}
 /*
  * Called by itnim to clean up IO while going offline.
  */
@@ -2903,11 +2923,6 @@ bfa_ioim_tov(struct bfa_ioim_s *ioim)
 }
 
 
-
-/*
- *  hal_ioim_api
- */
-
 /*
  * Allocate IOIM resource for initiator mode I/O request.
  */
@@ -2915,17 +2930,20 @@ struct bfa_ioim_s *
 bfa_ioim_alloc(struct bfa_s *bfa, struct bfad_ioim_s *dio,
 		struct bfa_itnim_s *itnim, u16 nsges)
 {
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
+	struct bfa_fcpim_s *fcpim = BFA_FCPIM(bfa);
 	struct bfa_ioim_s *ioim;
+	struct bfa_iotag_s *iotag = NULL;
 
 	/*
 	 * alocate IOIM resource
 	 */
-	bfa_q_deq(&fcpim->ioim_free_q, &ioim);
-	if (!ioim) {
+	bfa_q_deq(&fcpim->fcp->iotag_ioim_free_q, &iotag);
+	if (!iotag) {
 		bfa_stats(itnim, no_iotags);
 		return NULL;
 	}
+
+	ioim = BFA_IOIM_FROM_TAG(fcpim, iotag->tag);
 
 	ioim->dio = dio;
 	ioim->itnim = itnim;
@@ -2936,7 +2954,6 @@ bfa_ioim_alloc(struct bfa_s *bfa, struct bfad_ioim_s *dio,
 	fcpim->ios_active++;
 
 	list_add_tail(&ioim->qe, &itnim->io_q);
-	bfa_trc_fp(ioim->bfa, ioim->iotag);
 
 	return ioim;
 }
@@ -2944,13 +2961,8 @@ bfa_ioim_alloc(struct bfa_s *bfa, struct bfad_ioim_s *dio,
 void
 bfa_ioim_free(struct bfa_ioim_s *ioim)
 {
-	struct bfa_fcpim_mod_s *fcpim = ioim->fcpim;
-
-	bfa_trc_fp(ioim->bfa, ioim->iotag);
-	bfa_assert_fp(bfa_sm_cmp_state(ioim, bfa_ioim_sm_uninit));
-
-	bfa_assert_fp(list_empty(&ioim->sgpg_q) ||
-			(ioim->nsges > BFI_SGE_INLINE));
+	struct bfa_fcpim_s *fcpim = ioim->fcpim;
+	struct bfa_iotag_s *iotag;
 
 	if (ioim->nsgpgs > 0)
 		bfa_sgpg_mfree(ioim->bfa, &ioim->sgpg_q, ioim->nsgpgs);
@@ -2958,23 +2970,30 @@ bfa_ioim_free(struct bfa_ioim_s *ioim)
 	bfa_stats(ioim->itnim, io_comps);
 	fcpim->ios_active--;
 
+	ioim->iotag &= BFA_IOIM_IOTAG_MASK;
+
+	WARN_ON(!(ioim->iotag <
+		(fcpim->fcp->num_ioim_reqs + fcpim->fcp->num_fwtio_reqs)));
+	iotag = BFA_IOTAG_FROM_TAG(fcpim->fcp, ioim->iotag);
+
+	if (ioim->iotag < fcpim->fcp->num_ioim_reqs)
+		list_add_tail(&iotag->qe, &fcpim->fcp->iotag_ioim_free_q);
+	else
+		list_add_tail(&iotag->qe, &fcpim->fcp->iotag_tio_free_q);
+
 	list_del(&ioim->qe);
-	list_add_tail(&ioim->qe, &fcpim->ioim_free_q);
 }
 
 void
 bfa_ioim_start(struct bfa_ioim_s *ioim)
 {
-	bfa_trc_fp(ioim->bfa, ioim->iotag);
-
 	bfa_ioim_cb_profile_start(ioim->fcpim, ioim);
 
 	/*
 	 * Obtain the queue over which this request has to be issued
 	 */
 	ioim->reqq = bfa_fcpim_ioredirect_enabled(ioim->bfa) ?
-			bfa_cb_ioim_get_reqq(ioim->dio) :
-			bfa_itnim_get_reqq(ioim);
+			BFA_FALSE : bfa_itnim_get_reqq(ioim);
 
 	bfa_sm_send_event(ioim, BFA_IOIM_SM_START);
 }
@@ -2997,13 +3016,12 @@ bfa_ioim_abort(struct bfa_ioim_s *ioim)
 	return BFA_STATUS_OK;
 }
 
-
 /*
  *  BFA TSKIM state machine functions
  */
 
 /*
- *	Task management command beginning state.
+ * Task management command beginning state.
  */
 static void
 bfa_tskim_sm_uninit(struct bfa_tskim_s *tskim, enum bfa_tskim_event event)
@@ -3040,9 +3058,8 @@ bfa_tskim_sm_uninit(struct bfa_tskim_s *tskim, enum bfa_tskim_event event)
 }
 
 /*
- * brief
- *	TM command is active, awaiting completion from firmware to
- *	cleanup IO requests in TM scope.
+ * TM command is active, awaiting completion from firmware to
+ * cleanup IO requests in TM scope.
  */
 static void
 bfa_tskim_sm_active(struct bfa_tskim_s *tskim, enum bfa_tskim_event event)
@@ -3077,8 +3094,8 @@ bfa_tskim_sm_active(struct bfa_tskim_s *tskim, enum bfa_tskim_event event)
 }
 
 /*
- *	An active TM is being cleaned up since ITN is offline. Awaiting cleanup
- *	completion event from firmware.
+ * An active TM is being cleaned up since ITN is offline. Awaiting cleanup
+ * completion event from firmware.
  */
 static void
 bfa_tskim_sm_cleanup(struct bfa_tskim_s *tskim, enum bfa_tskim_event event)
@@ -3138,7 +3155,7 @@ bfa_tskim_sm_iocleanup(struct bfa_tskim_s *tskim, enum bfa_tskim_event event)
 }
 
 /*
- *	Task management command is waiting for room in request CQ
+ * Task management command is waiting for room in request CQ
  */
 static void
 bfa_tskim_sm_qfull(struct bfa_tskim_s *tskim, enum bfa_tskim_event event)
@@ -3173,8 +3190,8 @@ bfa_tskim_sm_qfull(struct bfa_tskim_s *tskim, enum bfa_tskim_event event)
 }
 
 /*
- *	Task management command is active, awaiting for room in request CQ
- *	to send clean up request.
+ * Task management command is active, awaiting for room in request CQ
+ * to send clean up request.
  */
 static void
 bfa_tskim_sm_cleanup_qfull(struct bfa_tskim_s *tskim,
@@ -3186,10 +3203,8 @@ bfa_tskim_sm_cleanup_qfull(struct bfa_tskim_s *tskim,
 	case BFA_TSKIM_SM_DONE:
 		bfa_reqq_wcancel(&tskim->reqq_wait);
 		/*
-		 *
 		 * Fall through !!!
 		 */
-
 	case BFA_TSKIM_SM_QRESUME:
 		bfa_sm_set_state(tskim, bfa_tskim_sm_cleanup);
 		bfa_tskim_send_abort(tskim);
@@ -3208,7 +3223,7 @@ bfa_tskim_sm_cleanup_qfull(struct bfa_tskim_s *tskim,
 }
 
 /*
- *	BFA callback is pending
+ * BFA callback is pending
  */
 static void
 bfa_tskim_sm_hcb(struct bfa_tskim_s *tskim, enum bfa_tskim_event event)
@@ -3232,12 +3247,6 @@ bfa_tskim_sm_hcb(struct bfa_tskim_s *tskim, enum bfa_tskim_event event)
 		bfa_sm_fault(tskim->bfa, event);
 	}
 }
-
-
-
-/*
- *  hal_tskim_private
- */
 
 static void
 __bfa_cb_tskim_done(void *cbarg, bfa_boolean_t complete)
@@ -3268,8 +3277,8 @@ __bfa_cb_tskim_failed(void *cbarg, bfa_boolean_t complete)
 				BFI_TSKIM_STS_FAILED);
 }
 
-static	bfa_boolean_t
-bfa_tskim_match_scope(struct bfa_tskim_s *tskim, lun_t lun)
+static bfa_boolean_t
+bfa_tskim_match_scope(struct bfa_tskim_s *tskim, struct scsi_lun lun)
 {
 	switch (tskim->tm_cmnd) {
 	case FCP_TM_TARGET_RESET:
@@ -3279,24 +3288,26 @@ bfa_tskim_match_scope(struct bfa_tskim_s *tskim, lun_t lun)
 	case FCP_TM_CLEAR_TASK_SET:
 	case FCP_TM_LUN_RESET:
 	case FCP_TM_CLEAR_ACA:
-		return (tskim->lun == lun);
+		return !memcmp(&tskim->lun, &lun, sizeof(lun));
 
 	default:
-		bfa_assert(0);
+		WARN_ON(1);
 	}
 
 	return BFA_FALSE;
 }
 
 /*
- *	Gather affected IO requests and task management commands.
+ * Gather affected IO requests and task management commands.
  */
 static void
 bfa_tskim_gather_ios(struct bfa_tskim_s *tskim)
 {
 	struct bfa_itnim_s *itnim = tskim->itnim;
 	struct bfa_ioim_s *ioim;
-	struct list_head	*qe, *qen;
+	struct list_head *qe, *qen;
+	struct scsi_cmnd *cmnd;
+	struct scsi_lun scsilun;
 
 	INIT_LIST_HEAD(&tskim->io_q);
 
@@ -3305,8 +3316,9 @@ bfa_tskim_gather_ios(struct bfa_tskim_s *tskim)
 	 */
 	list_for_each_safe(qe, qen, &itnim->io_q) {
 		ioim = (struct bfa_ioim_s *) qe;
-		if (bfa_tskim_match_scope
-			(tskim, bfa_cb_ioim_get_lun(ioim->dio))) {
+		cmnd = (struct scsi_cmnd *) ioim->dio;
+		int_to_scsilun(cmnd->device->lun, &scsilun);
+		if (bfa_tskim_match_scope(tskim, scsilun)) {
 			list_del(&ioim->qe);
 			list_add_tail(&ioim->qe, &tskim->io_q);
 		}
@@ -3317,8 +3329,9 @@ bfa_tskim_gather_ios(struct bfa_tskim_s *tskim)
 	 */
 	list_for_each_safe(qe, qen, &itnim->pending_q) {
 		ioim = (struct bfa_ioim_s *) qe;
-		if (bfa_tskim_match_scope
-			(tskim, bfa_cb_ioim_get_lun(ioim->dio))) {
+		cmnd = (struct scsi_cmnd *) ioim->dio;
+		int_to_scsilun(cmnd->device->lun, &scsilun);
+		if (bfa_tskim_match_scope(tskim, scsilun)) {
 			list_del(&ioim->qe);
 			list_add_tail(&ioim->qe, &ioim->fcpim->ioim_comp_q);
 			bfa_ioim_tov(ioim);
@@ -3327,7 +3340,7 @@ bfa_tskim_gather_ios(struct bfa_tskim_s *tskim)
 }
 
 /*
- *	IO cleanup completion
+ * IO cleanup completion
  */
 static void
 bfa_tskim_cleanp_comp(void *tskim_cbarg)
@@ -3339,7 +3352,7 @@ bfa_tskim_cleanp_comp(void *tskim_cbarg)
 }
 
 /*
- *	Gather affected IO requests and task management commands.
+ * Gather affected IO requests and task management commands.
  */
 static void
 bfa_tskim_cleanup_ios(struct bfa_tskim_s *tskim)
@@ -3359,7 +3372,7 @@ bfa_tskim_cleanup_ios(struct bfa_tskim_s *tskim)
 }
 
 /*
- *	Send task management request to firmware.
+ * Send task management request to firmware.
  */
 static bfa_boolean_t
 bfa_tskim_send(struct bfa_tskim_s *tskim)
@@ -3378,7 +3391,7 @@ bfa_tskim_send(struct bfa_tskim_s *tskim)
 	 * build i/o request message next
 	 */
 	bfi_h2i_set(m->mh, BFI_MC_TSKIM, BFI_TSKIM_H2I_TM_REQ,
-			bfa_lpuid(tskim->bfa));
+			bfa_fn_lpu(tskim->bfa));
 
 	m->tsk_tag = cpu_to_be16(tskim->tsk_tag);
 	m->itn_fhdl = tskim->itnim->rport->fw_handle;
@@ -3389,12 +3402,12 @@ bfa_tskim_send(struct bfa_tskim_s *tskim)
 	/*
 	 * queue I/O message to firmware
 	 */
-	bfa_reqq_produce(tskim->bfa, itnim->reqq);
+	bfa_reqq_produce(tskim->bfa, itnim->reqq, m->mh);
 	return BFA_TRUE;
 }
 
 /*
- *	Send abort request to cleanup an active TM to firmware.
+ * Send abort request to cleanup an active TM to firmware.
  */
 static bfa_boolean_t
 bfa_tskim_send_abort(struct bfa_tskim_s *tskim)
@@ -3413,19 +3426,19 @@ bfa_tskim_send_abort(struct bfa_tskim_s *tskim)
 	 * build i/o request message next
 	 */
 	bfi_h2i_set(m->mh, BFI_MC_TSKIM, BFI_TSKIM_H2I_ABORT_REQ,
-			bfa_lpuid(tskim->bfa));
+			bfa_fn_lpu(tskim->bfa));
 
 	m->tsk_tag  = cpu_to_be16(tskim->tsk_tag);
 
 	/*
 	 * queue I/O message to firmware
 	 */
-	bfa_reqq_produce(tskim->bfa, itnim->reqq);
+	bfa_reqq_produce(tskim->bfa, itnim->reqq, m->mh);
 	return BFA_TRUE;
 }
 
 /*
- *	Call to resume task management cmnd waiting for room in request queue.
+ * Call to resume task management cmnd waiting for room in request queue.
  */
 static void
 bfa_tskim_qresume(void *cbarg)
@@ -3450,12 +3463,6 @@ bfa_tskim_iocdisable_ios(struct bfa_tskim_s *tskim)
 		bfa_ioim_iocdisable(ioim);
 	}
 }
-
-
-
-/*
- *  hal_tskim_friend
- */
 
 /*
  * Notification on completions from related ioim.
@@ -3489,17 +3496,19 @@ bfa_tskim_cleanup(struct bfa_tskim_s *tskim)
 }
 
 /*
- *	Memory allocation and initialization.
+ * Memory allocation and initialization.
  */
 void
-bfa_tskim_attach(struct bfa_fcpim_mod_s *fcpim, struct bfa_meminfo_s *minfo)
+bfa_tskim_attach(struct bfa_fcpim_s *fcpim)
 {
 	struct bfa_tskim_s *tskim;
+	struct bfa_fcp_mod_s	*fcp = fcpim->fcp;
 	u16	i;
 
 	INIT_LIST_HEAD(&fcpim->tskim_free_q);
+	INIT_LIST_HEAD(&fcpim->tskim_unused_q);
 
-	tskim = (struct bfa_tskim_s *) bfa_meminfo_kva(minfo);
+	tskim = (struct bfa_tskim_s *) bfa_mem_kva_curp(fcp);
 	fcpim->tskim_arr = tskim;
 
 	for (i = 0; i < fcpim->num_tskim_reqs; i++, tskim++) {
@@ -3518,27 +3527,19 @@ bfa_tskim_attach(struct bfa_fcpim_mod_s *fcpim, struct bfa_meminfo_s *minfo)
 		list_add_tail(&tskim->qe, &fcpim->tskim_free_q);
 	}
 
-	bfa_meminfo_kva(minfo) = (u8 *) tskim;
-}
-
-void
-bfa_tskim_detach(struct bfa_fcpim_mod_s *fcpim)
-{
-	/*
-	* @todo
-	*/
+	bfa_mem_kva_curp(fcp) = (u8 *) tskim;
 }
 
 void
 bfa_tskim_isr(struct bfa_s *bfa, struct bfi_msg_s *m)
 {
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
+	struct bfa_fcpim_s *fcpim = BFA_FCPIM(bfa);
 	struct bfi_tskim_rsp_s *rsp = (struct bfi_tskim_rsp_s *) m;
 	struct bfa_tskim_s *tskim;
 	u16	tsk_tag = be16_to_cpu(rsp->tsk_tag);
 
 	tskim = BFA_TSKIM_FROM_TAG(fcpim, tsk_tag);
-	bfa_assert(tskim->tsk_tag == tsk_tag);
+	WARN_ON(tskim->tsk_tag != tsk_tag);
 
 	tskim->tsk_status = rsp->tsk_status;
 
@@ -3556,16 +3557,10 @@ bfa_tskim_isr(struct bfa_s *bfa, struct bfi_msg_s *m)
 }
 
 
-
-/*
- *  hal_tskim_api
- */
-
-
 struct bfa_tskim_s *
 bfa_tskim_alloc(struct bfa_s *bfa, struct bfad_tskim_s *dtsk)
 {
-	struct bfa_fcpim_mod_s *fcpim = BFA_FCPIM_MOD(bfa);
+	struct bfa_fcpim_s *fcpim = BFA_FCPIM(bfa);
 	struct bfa_tskim_s *tskim;
 
 	bfa_q_deq(&fcpim->tskim_free_q, &tskim);
@@ -3579,13 +3574,13 @@ bfa_tskim_alloc(struct bfa_s *bfa, struct bfad_tskim_s *dtsk)
 void
 bfa_tskim_free(struct bfa_tskim_s *tskim)
 {
-	bfa_assert(bfa_q_is_on_q_func(&tskim->itnim->tsk_q, &tskim->qe));
+	WARN_ON(!bfa_q_is_on_q_func(&tskim->itnim->tsk_q, &tskim->qe));
 	list_del(&tskim->qe);
 	list_add_tail(&tskim->qe, &tskim->fcpim->tskim_free_q);
 }
 
 /*
- *	Start a task management command.
+ * Start a task management command.
  *
  * @param[in]	tskim	BFA task management command instance
  * @param[in]	itnim	i-t nexus for the task management command
@@ -3596,7 +3591,8 @@ bfa_tskim_free(struct bfa_tskim_s *tskim)
  * @return None.
  */
 void
-bfa_tskim_start(struct bfa_tskim_s *tskim, struct bfa_itnim_s *itnim, lun_t lun,
+bfa_tskim_start(struct bfa_tskim_s *tskim, struct bfa_itnim_s *itnim,
+			struct scsi_lun lun,
 			enum fcp_tm_cmnd tm_cmnd, u8 tsecs)
 {
 	tskim->itnim	= itnim;
@@ -3608,4 +3604,222 @@ bfa_tskim_start(struct bfa_tskim_s *tskim, struct bfa_itnim_s *itnim, lun_t lun,
 
 	list_add_tail(&tskim->qe, &itnim->tsk_q);
 	bfa_sm_send_event(tskim, BFA_TSKIM_SM_START);
+}
+
+void
+bfa_tskim_res_recfg(struct bfa_s *bfa, u16 num_tskim_fw)
+{
+	struct bfa_fcpim_s	*fcpim = BFA_FCPIM(bfa);
+	struct list_head	*qe;
+	int	i;
+
+	for (i = 0; i < (fcpim->num_tskim_reqs - num_tskim_fw); i++) {
+		bfa_q_deq_tail(&fcpim->tskim_free_q, &qe);
+		list_add_tail(qe, &fcpim->tskim_unused_q);
+	}
+}
+
+/* BFA FCP module - parent module for fcpim */
+
+BFA_MODULE(fcp);
+
+static void
+bfa_fcp_meminfo(struct bfa_iocfc_cfg_s *cfg, struct bfa_meminfo_s *minfo,
+		struct bfa_s *bfa)
+{
+	struct bfa_fcp_mod_s *fcp = BFA_FCP_MOD(bfa);
+	struct bfa_mem_kva_s *fcp_kva = BFA_MEM_FCP_KVA(bfa);
+	struct bfa_mem_dma_s *seg_ptr;
+	u16	nsegs, idx, per_seg_ios, num_io_req;
+	u32	km_len = 0;
+
+	/*
+	 * ZERO for num_ioim_reqs and num_fwtio_reqs is allowed config value.
+	 * So if the values are non zero, adjust them appropriately.
+	 */
+	if (cfg->fwcfg.num_ioim_reqs &&
+	    cfg->fwcfg.num_ioim_reqs < BFA_IOIM_MIN)
+		cfg->fwcfg.num_ioim_reqs = BFA_IOIM_MIN;
+	else if (cfg->fwcfg.num_ioim_reqs > BFA_IOIM_MAX)
+		cfg->fwcfg.num_ioim_reqs = BFA_IOIM_MAX;
+
+	if (cfg->fwcfg.num_fwtio_reqs > BFA_FWTIO_MAX)
+		cfg->fwcfg.num_fwtio_reqs = BFA_FWTIO_MAX;
+
+	num_io_req = (cfg->fwcfg.num_ioim_reqs + cfg->fwcfg.num_fwtio_reqs);
+	if (num_io_req > BFA_IO_MAX) {
+		if (cfg->fwcfg.num_ioim_reqs && cfg->fwcfg.num_fwtio_reqs) {
+			cfg->fwcfg.num_ioim_reqs = BFA_IO_MAX/2;
+			cfg->fwcfg.num_fwtio_reqs = BFA_IO_MAX/2;
+		} else if (cfg->fwcfg.num_fwtio_reqs)
+			cfg->fwcfg.num_fwtio_reqs = BFA_FWTIO_MAX;
+		else
+			cfg->fwcfg.num_ioim_reqs = BFA_IOIM_MAX;
+	}
+
+	bfa_fcpim_meminfo(cfg, &km_len);
+
+	num_io_req = (cfg->fwcfg.num_ioim_reqs + cfg->fwcfg.num_fwtio_reqs);
+	km_len += num_io_req * sizeof(struct bfa_iotag_s);
+	km_len += cfg->fwcfg.num_rports * sizeof(struct bfa_itn_s);
+
+	/* dma memory */
+	nsegs = BFI_MEM_DMA_NSEGS(num_io_req, BFI_IOIM_SNSLEN);
+	per_seg_ios = BFI_MEM_NREQS_SEG(BFI_IOIM_SNSLEN);
+
+	bfa_mem_dma_seg_iter(fcp, seg_ptr, nsegs, idx) {
+		if (num_io_req >= per_seg_ios) {
+			num_io_req -= per_seg_ios;
+			bfa_mem_dma_setup(minfo, seg_ptr,
+				per_seg_ios * BFI_IOIM_SNSLEN);
+		} else
+			bfa_mem_dma_setup(minfo, seg_ptr,
+				num_io_req * BFI_IOIM_SNSLEN);
+	}
+
+	/* kva memory */
+	bfa_mem_kva_setup(minfo, fcp_kva, km_len);
+}
+
+static void
+bfa_fcp_attach(struct bfa_s *bfa, void *bfad, struct bfa_iocfc_cfg_s *cfg,
+		struct bfa_pcidev_s *pcidev)
+{
+	struct bfa_fcp_mod_s *fcp = BFA_FCP_MOD(bfa);
+	struct bfa_mem_dma_s *seg_ptr;
+	u16	idx, nsegs, num_io_req;
+
+	fcp->num_ioim_reqs = cfg->fwcfg.num_ioim_reqs;
+	fcp->num_fwtio_reqs  = cfg->fwcfg.num_fwtio_reqs;
+	fcp->num_itns   = cfg->fwcfg.num_rports;
+	fcp->bfa = bfa;
+
+	/*
+	 * Setup the pool of snsbase addr's, that is passed to fw as
+	 * part of bfi_iocfc_cfg_s.
+	 */
+	num_io_req = (cfg->fwcfg.num_ioim_reqs + cfg->fwcfg.num_fwtio_reqs);
+	nsegs = BFI_MEM_DMA_NSEGS(num_io_req, BFI_IOIM_SNSLEN);
+
+	bfa_mem_dma_seg_iter(fcp, seg_ptr, nsegs, idx) {
+
+		if (!bfa_mem_dma_virt(seg_ptr))
+			break;
+
+		fcp->snsbase[idx].pa = bfa_mem_dma_phys(seg_ptr);
+		fcp->snsbase[idx].kva = bfa_mem_dma_virt(seg_ptr);
+		bfa_iocfc_set_snsbase(bfa, idx, fcp->snsbase[idx].pa);
+	}
+
+	bfa_fcpim_attach(fcp, bfad, cfg, pcidev);
+
+	bfa_iotag_attach(fcp);
+
+	fcp->itn_arr = (struct bfa_itn_s *) bfa_mem_kva_curp(fcp);
+	bfa_mem_kva_curp(fcp) = (u8 *)fcp->itn_arr +
+			(fcp->num_itns * sizeof(struct bfa_itn_s));
+	memset(fcp->itn_arr, 0,
+			(fcp->num_itns * sizeof(struct bfa_itn_s)));
+}
+
+static void
+bfa_fcp_detach(struct bfa_s *bfa)
+{
+}
+
+static void
+bfa_fcp_start(struct bfa_s *bfa)
+{
+	struct bfa_fcp_mod_s *fcp = BFA_FCP_MOD(bfa);
+
+	/*
+	 * bfa_init() with flash read is complete. now invalidate the stale
+	 * content of lun mask like unit attention, rp tag and lp tag.
+	 */
+	bfa_ioim_lm_init(fcp->bfa);
+}
+
+static void
+bfa_fcp_stop(struct bfa_s *bfa)
+{
+}
+
+static void
+bfa_fcp_iocdisable(struct bfa_s *bfa)
+{
+	struct bfa_fcp_mod_s *fcp = BFA_FCP_MOD(bfa);
+
+	/* Enqueue unused ioim resources to free_q */
+	list_splice_tail_init(&fcp->iotag_unused_q, &fcp->iotag_ioim_free_q);
+
+	bfa_fcpim_iocdisable(fcp);
+}
+
+void
+bfa_fcp_res_recfg(struct bfa_s *bfa, u16 num_ioim_fw)
+{
+	struct bfa_fcp_mod_s	*mod = BFA_FCP_MOD(bfa);
+	struct list_head	*qe;
+	int	i;
+
+	for (i = 0; i < (mod->num_ioim_reqs - num_ioim_fw); i++) {
+		bfa_q_deq_tail(&mod->iotag_ioim_free_q, &qe);
+		list_add_tail(qe, &mod->iotag_unused_q);
+	}
+}
+
+void
+bfa_itn_create(struct bfa_s *bfa, struct bfa_rport_s *rport,
+		void (*isr)(struct bfa_s *bfa, struct bfi_msg_s *m))
+{
+	struct bfa_fcp_mod_s *fcp = BFA_FCP_MOD(bfa);
+	struct bfa_itn_s *itn;
+
+	itn =  BFA_ITN_FROM_TAG(fcp, rport->rport_tag);
+	itn->isr = isr;
+}
+
+/*
+ * Itn interrupt processing.
+ */
+void
+bfa_itn_isr(struct bfa_s *bfa, struct bfi_msg_s *m)
+{
+	struct bfa_fcp_mod_s *fcp = BFA_FCP_MOD(bfa);
+	union bfi_itn_i2h_msg_u msg;
+	struct bfa_itn_s *itn;
+
+	msg.msg = m;
+	itn =  BFA_ITN_FROM_TAG(fcp, msg.create_rsp->bfa_handle);
+
+	if (itn->isr)
+		itn->isr(bfa, m);
+	else
+		WARN_ON(1);
+}
+
+void
+bfa_iotag_attach(struct bfa_fcp_mod_s *fcp)
+{
+	struct bfa_iotag_s *iotag;
+	u16	num_io_req, i;
+
+	iotag = (struct bfa_iotag_s *) bfa_mem_kva_curp(fcp);
+	fcp->iotag_arr = iotag;
+
+	INIT_LIST_HEAD(&fcp->iotag_ioim_free_q);
+	INIT_LIST_HEAD(&fcp->iotag_tio_free_q);
+	INIT_LIST_HEAD(&fcp->iotag_unused_q);
+
+	num_io_req = fcp->num_ioim_reqs + fcp->num_fwtio_reqs;
+	for (i = 0; i < num_io_req; i++, iotag++) {
+		memset(iotag, 0, sizeof(struct bfa_iotag_s));
+		iotag->tag = i;
+		if (i < fcp->num_ioim_reqs)
+			list_add_tail(&iotag->qe, &fcp->iotag_ioim_free_q);
+		else
+			list_add_tail(&iotag->qe, &fcp->iotag_tio_free_q);
+	}
+
+	bfa_mem_kva_curp(fcp) = (u8 *) iotag;
 }

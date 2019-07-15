@@ -47,9 +47,8 @@ static ssize_t ecryptfs_read_update_atime(struct kiocb *iocb,
 				const struct iovec *iov,
 				unsigned long nr_segs, loff_t pos)
 {
-	int rc;
-	struct dentry *lower_dentry;
-	struct vfsmount *lower_vfsmount;
+	ssize_t rc;
+	struct path lower;
 	struct file *file = iocb->ki_filp;
 
 	rc = generic_file_aio_read(iocb, iov, nr_segs, pos);
@@ -60,9 +59,9 @@ static ssize_t ecryptfs_read_update_atime(struct kiocb *iocb,
 	if (-EIOCBQUEUED == rc)
 		rc = wait_on_sync_kiocb(iocb);
 	if (rc >= 0) {
-		lower_dentry = ecryptfs_dentry_to_lower(file->f_path.dentry);
-		lower_vfsmount = ecryptfs_dentry_to_lower_mnt(file->f_path.dentry);
-		touch_atime(lower_vfsmount, lower_dentry);
+		lower.dentry = ecryptfs_dentry_to_lower(file->f_path.dentry);
+		lower.mnt = ecryptfs_dentry_to_lower_mnt(file->f_path.dentry);
+		touch_atime(&lower);
 	}
 	return rc;
 }
@@ -141,6 +140,48 @@ out:
 
 struct kmem_cache *ecryptfs_file_info_cache;
 
+static int read_or_initialize_metadata(struct dentry *dentry)
+{
+	struct inode *inode = dentry->d_inode;
+	struct ecryptfs_mount_crypt_stat *mount_crypt_stat;
+	struct ecryptfs_crypt_stat *crypt_stat;
+	int rc;
+
+	crypt_stat = &ecryptfs_inode_to_private(inode)->crypt_stat;
+	mount_crypt_stat = &ecryptfs_superblock_to_private(
+						inode->i_sb)->mount_crypt_stat;
+	mutex_lock(&crypt_stat->cs_mutex);
+
+	if (crypt_stat->flags & ECRYPTFS_POLICY_APPLIED &&
+	    crypt_stat->flags & ECRYPTFS_KEY_VALID) {
+		rc = 0;
+		goto out;
+	}
+
+	rc = ecryptfs_read_metadata(dentry);
+	if (!rc)
+		goto out;
+
+	if (mount_crypt_stat->flags & ECRYPTFS_PLAINTEXT_PASSTHROUGH_ENABLED) {
+		crypt_stat->flags &= ~(ECRYPTFS_I_SIZE_INITIALIZED
+				       | ECRYPTFS_ENCRYPTED);
+		rc = 0;
+		goto out;
+	}
+
+	if (!(mount_crypt_stat->flags & ECRYPTFS_XATTR_METADATA_ENABLED) &&
+	    !i_size_read(ecryptfs_inode_to_lower(inode))) {
+		rc = ecryptfs_initialize_file(dentry, inode);
+		if (!rc)
+			goto out;
+	}
+
+	rc = -EIO;
+out:
+	mutex_unlock(&crypt_stat->cs_mutex);
+	return rc;
+}
+
 /**
  * ecryptfs_open
  * @inode: inode speciying file to open
@@ -191,22 +232,20 @@ static int ecryptfs_open(struct inode *inode, struct file *file)
 				      | ECRYPTFS_ENCRYPTED);
 	}
 	mutex_unlock(&crypt_stat->cs_mutex);
-	if (!ecryptfs_inode_to_private(inode)->lower_file) {
-		rc = ecryptfs_init_persistent_file(ecryptfs_dentry);
-		if (rc) {
-			printk(KERN_ERR "%s: Error attempting to initialize "
-			       "the persistent file for the dentry with name "
-			       "[%s]; rc = [%d]\n", __func__,
-			       ecryptfs_dentry->d_name.name, rc);
-			goto out_free;
-		}
-	}
-	if ((ecryptfs_inode_to_private(inode)->lower_file->f_flags & O_RDONLY)
-	    && !(file->f_flags & O_RDONLY)) {
-		rc = -EPERM;
-		printk(KERN_WARNING "%s: Lower persistent file is RO; eCryptfs "
-		       "file must hence be opened RO\n", __func__);
+	rc = ecryptfs_get_lower_file(ecryptfs_dentry, inode);
+	if (rc) {
+		printk(KERN_ERR "%s: Error attempting to initialize "
+			"the lower file for the dentry with name "
+			"[%s]; rc = [%d]\n", __func__,
+			ecryptfs_dentry->d_name.name, rc);
 		goto out_free;
+	}
+	if ((ecryptfs_inode_to_private(inode)->lower_file->f_flags & O_ACCMODE)
+	    == O_RDONLY && (file->f_flags & O_ACCMODE) != O_RDONLY) {
+		rc = -EPERM;
+		printk(KERN_WARNING "%s: Lower file is RO; eCryptfs "
+		       "file must hence be opened RO\n", __func__);
+		goto out_put;
 	}
 	ecryptfs_set_file_lower(
 		file, ecryptfs_inode_to_private(inode)->lower_file);
@@ -218,35 +257,15 @@ static int ecryptfs_open(struct inode *inode, struct file *file)
 		rc = 0;
 		goto out;
 	}
-	mutex_lock(&crypt_stat->cs_mutex);
-	if (!(crypt_stat->flags & ECRYPTFS_POLICY_APPLIED)
-	    || !(crypt_stat->flags & ECRYPTFS_KEY_VALID)) {
-		rc = ecryptfs_read_metadata(ecryptfs_dentry);
-		if (rc) {
-			ecryptfs_printk(KERN_DEBUG,
-					"Valid headers not found\n");
-			if (!(mount_crypt_stat->flags
-			      & ECRYPTFS_PLAINTEXT_PASSTHROUGH_ENABLED)) {
-				rc = -EIO;
-				printk(KERN_WARNING "Either the lower file "
-				       "is not in a valid eCryptfs format, "
-				       "or the key could not be retrieved. "
-				       "Plaintext passthrough mode is not "
-				       "enabled; returning -EIO\n");
-				mutex_unlock(&crypt_stat->cs_mutex);
-				goto out_free;
-			}
-			rc = 0;
-			crypt_stat->flags &= ~(ECRYPTFS_ENCRYPTED);
-			mutex_unlock(&crypt_stat->cs_mutex);
-			goto out;
-		}
-	}
-	mutex_unlock(&crypt_stat->cs_mutex);
-	ecryptfs_printk(KERN_DEBUG, "inode w/ addr = [0x%p], i_ino = [0x%.16x] "
-			"size: [0x%.16x]\n", inode, inode->i_ino,
-			i_size_read(inode));
+	rc = read_or_initialize_metadata(ecryptfs_dentry);
+	if (rc)
+		goto out_put;
+	ecryptfs_printk(KERN_DEBUG, "inode w/ addr = [0x%p], i_ino = "
+			"[0x%.16lx] size: [0x%.16llx]\n", inode, inode->i_ino,
+			(unsigned long long)i_size_read(inode));
 	goto out;
+out_put:
+	ecryptfs_put_lower_file(inode);
 out_free:
 	kmem_cache_free(ecryptfs_file_info_cache,
 			ecryptfs_file_to_private(file));
@@ -256,24 +275,26 @@ out:
 
 static int ecryptfs_flush(struct file *file, fl_owner_t td)
 {
-	int rc = 0;
-	struct file *lower_file = NULL;
+	struct file *lower_file = ecryptfs_file_to_lower(file);
 
-	lower_file = ecryptfs_file_to_lower(file);
-	if (lower_file->f_op && lower_file->f_op->flush)
-		rc = lower_file->f_op->flush(lower_file, td);
-	return rc;
+	if (lower_file->f_op && lower_file->f_op->flush) {
+		filemap_write_and_wait(file->f_mapping);
+		return lower_file->f_op->flush(lower_file, td);
+	}
+
+	return 0;
 }
 
 static int ecryptfs_release(struct inode *inode, struct file *file)
 {
+	ecryptfs_put_lower_file(inode);
 	kmem_cache_free(ecryptfs_file_info_cache,
 			ecryptfs_file_to_private(file));
 	return 0;
 }
 
 static int
-ecryptfs_fsync(struct file *file, int datasync)
+ecryptfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
 	return vfs_fsync(ecryptfs_file_to_lower(file), datasync);
 }
@@ -319,6 +340,7 @@ ecryptfs_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 const struct file_operations ecryptfs_dir_fops = {
 	.readdir = ecryptfs_readdir,
+	.read = generic_read_dir,
 	.unlocked_ioctl = ecryptfs_unlocked_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl = ecryptfs_compat_ioctl,

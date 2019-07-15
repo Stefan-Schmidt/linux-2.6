@@ -16,6 +16,8 @@
  *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
+#include <linux/module.h>
+
 MODULE_AUTHOR("Giuliano Pochini <pochini@shiny.it>");
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("Echoaudio " ECHOCARD_NAME " soundcards driver");
@@ -24,7 +26,7 @@ MODULE_DEVICE_TABLE(pci, snd_echo_ids);
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;
-static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
 
 module_param_array(index, int, NULL, 0444);
 MODULE_PARM_DESC(index, "Index value for " ECHOCARD_NAME " soundcard.");
@@ -1995,7 +1997,7 @@ static __devinit int snd_echo_create(struct snd_card *card,
 		ioremap_nocache(chip->dsp_registers_phys, sz);
 
 	if (request_irq(pci->irq, snd_echo_interrupt, IRQF_SHARED,
-			ECHOCARD_NAME, chip)) {
+			KBUILD_MODNAME, chip)) {
 		snd_echo_free(chip);
 		snd_printk(KERN_ERR "cannot grab irq\n");
 		return -EBUSY;
@@ -2203,9 +2205,10 @@ ctl_error:
 
 #if defined(CONFIG_PM)
 
-static int snd_echo_suspend(struct pci_dev *pci, pm_message_t state)
+static int snd_echo_suspend(struct device *dev)
 {
-	struct echoaudio *chip = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct echoaudio *chip = dev_get_drvdata(dev);
 
 	DE_INIT(("suspend start\n"));
 	snd_pcm_suspend_all(chip->analog_pcm);
@@ -2240,9 +2243,10 @@ static int snd_echo_suspend(struct pci_dev *pci, pm_message_t state)
 
 
 
-static int snd_echo_resume(struct pci_dev *pci)
+static int snd_echo_resume(struct device *dev)
 {
-	struct echoaudio *chip = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct echoaudio *chip = dev_get_drvdata(dev);
 	struct comm_page *commpage, *commpage_bak;
 	u32 pipe_alloc_mask;
 	int err;
@@ -2286,7 +2290,7 @@ static int snd_echo_resume(struct pci_dev *pci)
 	kfree(commpage_bak);
 
 	if (request_irq(pci->irq, snd_echo_interrupt, IRQF_SHARED,
-			ECHOCARD_NAME, chip)) {
+			KBUILD_MODNAME, chip)) {
 		snd_echo_free(chip);
 		snd_printk(KERN_ERR "cannot grab irq\n");
 		return -EBUSY;
@@ -2305,8 +2309,11 @@ static int snd_echo_resume(struct pci_dev *pci)
 	return 0;
 }
 
+static SIMPLE_DEV_PM_OPS(snd_echo_pm, snd_echo_suspend, snd_echo_resume);
+#define SND_ECHO_PM_OPS	&snd_echo_pm
+#else
+#define SND_ECHO_PM_OPS	NULL
 #endif /* CONFIG_PM */
-
 
 
 static void __devexit snd_echo_remove(struct pci_dev *pci)
@@ -2326,33 +2333,14 @@ static void __devexit snd_echo_remove(struct pci_dev *pci)
 ******************************************************************************/
 
 /* pci_driver definition */
-static struct pci_driver driver = {
-	.name = "Echoaudio " ECHOCARD_NAME,
+static struct pci_driver echo_driver = {
+	.name = KBUILD_MODNAME,
 	.id_table = snd_echo_ids,
 	.probe = snd_echo_probe,
 	.remove = __devexit_p(snd_echo_remove),
-#ifdef CONFIG_PM
-	.suspend = snd_echo_suspend,
-	.resume = snd_echo_resume,
-#endif /* CONFIG_PM */
+	.driver = {
+		.pm = SND_ECHO_PM_OPS,
+	},
 };
 
-
-
-/* initialization of the module */
-static int __init alsa_card_echo_init(void)
-{
-	return pci_register_driver(&driver);
-}
-
-
-
-/* clean up the module */
-static void __exit alsa_card_echo_exit(void)
-{
-	pci_unregister_driver(&driver);
-}
-
-
-module_init(alsa_card_echo_init)
-module_exit(alsa_card_echo_exit)
+module_pci_driver(echo_driver);

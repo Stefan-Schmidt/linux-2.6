@@ -21,7 +21,6 @@
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/soc.h>
-#include <sound/soc-dapm.h>
 #include <sound/jack.h>
 
 #include <asm/mach-types.h>
@@ -57,18 +56,6 @@ static int z2_hw_params(struct snd_pcm_substream *substream,
 		break;
 	}
 
-	/* set codec DAI configuration */
-	ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_I2S |
-		SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBS_CFS);
-	if (ret < 0)
-		return ret;
-
-	/* set cpu DAI configuration */
-	ret = snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S |
-		SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBS_CFS);
-	if (ret < 0)
-		return ret;
-
 	/* set the codec system clock for DAC and ADC */
 	ret = snd_soc_dai_set_sysclk(codec_dai, WM8750_SYSCLK, clk,
 		SND_SOC_CLOCK_IN);
@@ -96,6 +83,11 @@ static struct snd_soc_jack_pin hs_jack_pins[] = {
 		.pin	= "Headphone Jack",
 		.mask	= SND_JACK_HEADPHONE,
 	},
+	{
+		.pin    = "Ext Spk",
+		.mask   = SND_JACK_HEADPHONE,
+		.invert = 1
+	},
 };
 
 /* Headset jack detection gpios */
@@ -105,6 +97,7 @@ static struct snd_soc_jack_gpio hs_jack_gpios[] = {
 		.name		= "hsdet-gpio",
 		.report		= SND_JACK_HEADSET,
 		.debounce_time	= 200,
+		.invert		= 1,
 	},
 };
 
@@ -119,7 +112,7 @@ static const struct snd_soc_dapm_widget wm8750_dapm_widgets[] = {
 };
 
 /* Z2 machine audio_map */
-static const struct snd_soc_dapm_route audio_map[] = {
+static const struct snd_soc_dapm_route z2_audio_map[] = {
 
 	/* headphone connected to LOUT1, ROUT1 */
 	{"Headphone Jack", NULL, "LOUT1"},
@@ -140,24 +133,14 @@ static const struct snd_soc_dapm_route audio_map[] = {
 static int z2_wm8750_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_dapm_context *dapm = &codec->dapm;
 	int ret;
 
 	/* NC codec pins */
-	snd_soc_dapm_disable_pin(codec, "LINPUT3");
-	snd_soc_dapm_disable_pin(codec, "RINPUT3");
-	snd_soc_dapm_disable_pin(codec, "OUT3");
-	snd_soc_dapm_disable_pin(codec, "MONO");
-
-	/* Add z2 specific widgets */
-	snd_soc_dapm_new_controls(codec, wm8750_dapm_widgets,
-				 ARRAY_SIZE(wm8750_dapm_widgets));
-
-	/* Set up z2 specific audio paths */
-	snd_soc_dapm_add_routes(codec, audio_map, ARRAY_SIZE(audio_map));
-
-	ret = snd_soc_dapm_sync(codec);
-	if (ret)
-		goto err;
+	snd_soc_dapm_disable_pin(dapm, "LINPUT3");
+	snd_soc_dapm_disable_pin(dapm, "RINPUT3");
+	snd_soc_dapm_disable_pin(dapm, "OUT3");
+	snd_soc_dapm_disable_pin(dapm, "MONO1");
 
 	/* Jack detection API stuff */
 	ret = snd_soc_jack_new(codec, "Headset Jack", SND_JACK_HEADSET,
@@ -192,16 +175,24 @@ static struct snd_soc_dai_link z2_dai = {
 	.cpu_dai_name	= "pxa2xx-i2s",
 	.codec_dai_name	= "wm8750-hifi",
 	.platform_name = "pxa-pcm-audio",
-	.codec_name	= "wm8750-codec.0-001a",
+	.codec_name	= "wm8750.0-001b",
 	.init		= z2_wm8750_init,
+	.dai_fmt	= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
+			  SND_SOC_DAIFMT_CBS_CFS,
 	.ops		= &z2_ops,
 };
 
 /* z2 audio machine driver */
 static struct snd_soc_card snd_soc_z2 = {
 	.name		= "Z2",
+	.owner		= THIS_MODULE,
 	.dai_link	= &z2_dai,
 	.num_links	= 1,
+
+	.dapm_widgets = wm8750_dapm_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(wm8750_dapm_widgets),
+	.dapm_routes = z2_audio_map,
+	.num_dapm_routes = ARRAY_SIZE(z2_audio_map),
 };
 
 static struct platform_device *z2_snd_device;

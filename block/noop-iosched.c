@@ -39,13 +39,6 @@ static void noop_add_request(struct request_queue *q, struct request *rq)
 	list_add_tail(&rq->queuelist, &nd->queue);
 }
 
-static int noop_queue_empty(struct request_queue *q)
-{
-	struct noop_data *nd = q->elevator->elevator_data;
-
-	return list_empty(&nd->queue);
-}
-
 static struct request *
 noop_former_request(struct request_queue *q, struct request *rq)
 {
@@ -66,15 +59,17 @@ noop_latter_request(struct request_queue *q, struct request *rq)
 	return list_entry(rq->queuelist.next, struct request, queuelist);
 }
 
-static void *noop_init_queue(struct request_queue *q)
+static int noop_init_queue(struct request_queue *q)
 {
 	struct noop_data *nd;
 
 	nd = kmalloc_node(sizeof(*nd), GFP_KERNEL, q->node);
 	if (!nd)
-		return NULL;
+		return -ENOMEM;
+
 	INIT_LIST_HEAD(&nd->queue);
-	return nd;
+	q->elevator->elevator_data = nd;
+	return 0;
 }
 
 static void noop_exit_queue(struct elevator_queue *e)
@@ -90,7 +85,6 @@ static struct elevator_type elevator_noop = {
 		.elevator_merge_req_fn		= noop_merged_requests,
 		.elevator_dispatch_fn		= noop_dispatch,
 		.elevator_add_req_fn		= noop_add_request,
-		.elevator_queue_empty_fn	= noop_queue_empty,
 		.elevator_former_req_fn		= noop_former_request,
 		.elevator_latter_req_fn		= noop_latter_request,
 		.elevator_init_fn		= noop_init_queue,
@@ -102,9 +96,7 @@ static struct elevator_type elevator_noop = {
 
 static int __init noop_init(void)
 {
-	elv_register(&elevator_noop);
-
-	return 0;
+	return elv_register(&elevator_noop);
 }
 
 static void __exit noop_exit(void)

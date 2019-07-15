@@ -150,7 +150,6 @@ static int vidioc_querycap(struct file *file, void *fh,
 	strcpy(cap->driver, "tele-video");
 	strcpy(cap->card, "Telegent Poseidon");
 	usb_make_path(p->udev, cap->bus_info, sizeof(cap->bus_info));
-	cap->version = KERNEL_VERSION(0, 0, 1);
 	cap->capabilities = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_TUNER |
 				V4L2_CAP_AUDIO | V4L2_CAP_STREAMING |
 				V4L2_CAP_READWRITE | V4L2_CAP_VBI_CAPTURE;
@@ -512,19 +511,20 @@ int alloc_bulk_urbs_generic(struct urb **urb_array, int num,
 			int buf_size, gfp_t gfp_flags,
 			usb_complete_t complete_fn, void *context)
 {
-	struct urb *urb;
-	void *mem;
-	int i;
+	int i = 0;
 
-	for (i = 0; i < num; i++) {
-		urb = usb_alloc_urb(0, gfp_flags);
+	for (; i < num; i++) {
+		void *mem;
+		struct urb *urb = usb_alloc_urb(0, gfp_flags);
 		if (urb == NULL)
 			return i;
 
 		mem = usb_alloc_coherent(udev, buf_size, gfp_flags,
 					 &urb->transfer_dma);
-		if (mem == NULL)
+		if (mem == NULL) {
+			usb_free_urb(urb);
 			return i;
+		}
 
 		usb_fill_bulk_urb(urb, udev, usb_rcvbulkpipe(udev, ep_addr),
 				mem, buf_size, complete_fn, context);
@@ -763,10 +763,8 @@ static int pd_vidioc_s_fmt(struct poseidon *pd, struct v4l2_pix_format *pix)
 	}
 	ret |= send_set_req(pd, VIDEO_ROSOLU_SEL,
 				vid_resol, &cmd_status);
-	if (ret || cmd_status) {
-		mutex_unlock(&pd->lock);
+	if (ret || cmd_status)
 		return -EBUSY;
-	}
 
 	pix_def->pixelformat = pix->pixelformat; /* save it */
 	pix->height = (context->tvnormid & V4L2_STD_525_60) ?  480 : 576;

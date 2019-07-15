@@ -9,7 +9,7 @@
  *
  * However, virtual mappings need a page table and TLBs. Many Linux
  * architectures already map their physical space using 1-1 mappings
- * via TLBs. For those arches the virtual memmory map is essentially
+ * via TLBs. For those arches the virtual memory map is essentially
  * for free if we use the same page size as the 1-1 mappings. In that
  * case the overhead consists of a few additional pages that are
  * allocated to create a view of memory for vmemmap.
@@ -21,7 +21,6 @@
 #include <linux/mmzone.h>
 #include <linux/bootmem.h>
 #include <linux/highmem.h>
-#include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/vmalloc.h>

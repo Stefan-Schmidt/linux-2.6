@@ -139,12 +139,13 @@ work_pending:
 	! r8: current_thread_info
 	! t:  result of "tst	#_TIF_NEED_RESCHED, r0"
 	bf/s	work_resched
-	 tst	#_TIF_SIGPENDING, r0
+	 tst	#(_TIF_SIGPENDING | _TIF_NOTIFY_RESUME), r0
 work_notifysig:
 	bt/s	__restore_all
 	 mov	r15, r4
 	mov	r12, r5		! set arg1(save_r0)
 	mov	r0, r6
+	sti
 	mov.l	2f, r1
 	mov.l	3f, r0
 	jmp	@r1

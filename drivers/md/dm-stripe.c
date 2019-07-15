@@ -26,25 +26,21 @@ struct stripe {
 struct stripe_c {
 	uint32_t stripes;
 	int stripes_shift;
-	sector_t stripes_mask;
 
 	/* The size of this target / num. stripes */
 	sector_t stripe_width;
 
-	/* stripe chunk size */
-	uint32_t chunk_shift;
-	sector_t chunk_mask;
+	uint32_t chunk_size;
+	int chunk_size_shift;
 
 	/* Needed for handling events */
 	struct dm_target *ti;
 
 	/* Work struct used for triggering events*/
-	struct work_struct kstriped_ws;
+	struct work_struct trigger_event;
 
 	struct stripe stripe[0];
 };
-
-static struct workqueue_struct *kstriped;
 
 /*
  * An event is triggered whenever a drive
@@ -52,10 +48,9 @@ static struct workqueue_struct *kstriped;
  */
 static void trigger_event(struct work_struct *work)
 {
-	struct stripe_c *sc = container_of(work, struct stripe_c, kstriped_ws);
-
+	struct stripe_c *sc = container_of(work, struct stripe_c,
+					   trigger_event);
 	dm_table_event(sc->ti->table);
-
 }
 
 static inline struct stripe_c *alloc_context(unsigned int stripes)
@@ -78,8 +73,9 @@ static int get_stripe(struct dm_target *ti, struct stripe_c *sc,
 		      unsigned int stripe, char **argv)
 {
 	unsigned long long start;
+	char dummy;
 
-	if (sscanf(argv[1], "%llu", &start) != 1)
+	if (sscanf(argv[1], "%llu%c", &start, &dummy) != 1)
 		return -EINVAL;
 
 	if (dm_get_device(ti, argv[0], dm_table_get_mode(ti->table),
@@ -93,7 +89,7 @@ static int get_stripe(struct dm_target *ti, struct stripe_c *sc,
 
 /*
  * Construct a striped mapping.
- * <number of stripes> <chunk size (2^^n)> [<dev_path> <offset>]+
+ * <number of stripes> <chunk size> [<dev_path> <offset>]+
  */
 static int stripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
@@ -101,7 +97,6 @@ static int stripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	sector_t width;
 	uint32_t stripes;
 	uint32_t chunk_size;
-	char *end;
 	int r;
 	unsigned int i;
 
@@ -110,34 +105,23 @@ static int stripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		return -EINVAL;
 	}
 
-	stripes = simple_strtoul(argv[0], &end, 10);
-	if (!stripes || *end) {
+	if (kstrtouint(argv[0], 10, &stripes) || !stripes) {
 		ti->error = "Invalid stripe count";
 		return -EINVAL;
 	}
 
-	chunk_size = simple_strtoul(argv[1], &end, 10);
-	if (*end) {
+	if (kstrtouint(argv[1], 10, &chunk_size) || !chunk_size) {
 		ti->error = "Invalid chunk_size";
 		return -EINVAL;
 	}
 
-	/*
-	 * chunk_size is a power of two
-	 */
-	if (!is_power_of_2(chunk_size) ||
-	    (chunk_size < (PAGE_SIZE >> SECTOR_SHIFT))) {
-		ti->error = "Invalid chunk size";
-		return -EINVAL;
-	}
-
-	if (ti->len & (chunk_size - 1)) {
+	width = ti->len;
+	if (sector_div(width, chunk_size)) {
 		ti->error = "Target length not divisible by "
 		    "chunk size";
 		return -EINVAL;
 	}
 
-	width = ti->len;
 	if (sector_div(width, stripes)) {
 		ti->error = "Target length not divisible by "
 		    "number of stripes";
@@ -160,7 +144,7 @@ static int stripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		return -ENOMEM;
 	}
 
-	INIT_WORK(&sc->kstriped_ws, trigger_event);
+	INIT_WORK(&sc->trigger_event, trigger_event);
 
 	/* Set pointer to dm target; used in trigger_event */
 	sc->ti = ti;
@@ -169,17 +153,21 @@ static int stripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	if (stripes & (stripes - 1))
 		sc->stripes_shift = -1;
-	else {
-		sc->stripes_shift = ffs(stripes) - 1;
-		sc->stripes_mask = ((sector_t) stripes) - 1;
-	}
+	else
+		sc->stripes_shift = __ffs(stripes);
 
-	ti->split_io = chunk_size;
+	r = dm_set_target_max_io_len(ti, chunk_size);
+	if (r)
+		return r;
+
 	ti->num_flush_requests = stripes;
 	ti->num_discard_requests = stripes;
 
-	sc->chunk_shift = ffs(chunk_size) - 1;
-	sc->chunk_mask = ((sector_t) chunk_size) - 1;
+	sc->chunk_size = chunk_size;
+	if (chunk_size & (chunk_size - 1))
+		sc->chunk_size_shift = -1;
+	else
+		sc->chunk_size_shift = __ffs(chunk_size);
 
 	/*
 	 * Get the stripe destinations.
@@ -211,24 +199,36 @@ static void stripe_dtr(struct dm_target *ti)
 	for (i = 0; i < sc->stripes; i++)
 		dm_put_device(ti, sc->stripe[i].dev);
 
-	flush_workqueue(kstriped);
+	flush_work_sync(&sc->trigger_event);
 	kfree(sc);
 }
 
 static void stripe_map_sector(struct stripe_c *sc, sector_t sector,
 			      uint32_t *stripe, sector_t *result)
 {
-	sector_t offset = dm_target_offset(sc->ti, sector);
-	sector_t chunk = offset >> sc->chunk_shift;
+	sector_t chunk = dm_target_offset(sc->ti, sector);
+	sector_t chunk_offset;
+
+	if (sc->chunk_size_shift < 0)
+		chunk_offset = sector_div(chunk, sc->chunk_size);
+	else {
+		chunk_offset = chunk & (sc->chunk_size - 1);
+		chunk >>= sc->chunk_size_shift;
+	}
 
 	if (sc->stripes_shift < 0)
 		*stripe = sector_div(chunk, sc->stripes);
 	else {
-		*stripe = chunk & sc->stripes_mask;
+		*stripe = chunk & (sc->stripes - 1);
 		chunk >>= sc->stripes_shift;
 	}
 
-	*result = (chunk << sc->chunk_shift) | (offset & sc->chunk_mask);
+	if (sc->chunk_size_shift < 0)
+		chunk *= sc->chunk_size;
+	else
+		chunk <<= sc->chunk_size_shift;
+
+	*result = chunk + chunk_offset;
 }
 
 static void stripe_map_range_sector(struct stripe_c *sc, sector_t sector,
@@ -239,9 +239,16 @@ static void stripe_map_range_sector(struct stripe_c *sc, sector_t sector,
 	stripe_map_sector(sc, sector, &stripe, result);
 	if (stripe == target_stripe)
 		return;
-	*result &= ~sc->chunk_mask;			/* round down */
+
+	/* round down */
+	sector = *result;
+	if (sc->chunk_size_shift < 0)
+		*result -= sector_div(sector, sc->chunk_size);
+	else
+		*result = sector & ~(sector_t)(sc->chunk_size - 1);
+
 	if (target_stripe < stripe)
-		*result += sc->chunk_mask + 1;		/* next chunk */
+		*result += sc->chunk_size;		/* next chunk */
 }
 
 static int stripe_map_discard(struct stripe_c *sc, struct bio *bio,
@@ -304,8 +311,8 @@ static int stripe_map(struct dm_target *ti, struct bio *bio,
  *
  */
 
-static int stripe_status(struct dm_target *ti,
-			 status_type_t type, char *result, unsigned int maxlen)
+static int stripe_status(struct dm_target *ti, status_type_t type,
+			 unsigned status_flags, char *result, unsigned maxlen)
 {
 	struct stripe_c *sc = (struct stripe_c *) ti->private;
 	char buffer[sc->stripes + 1];
@@ -326,7 +333,7 @@ static int stripe_status(struct dm_target *ti,
 
 	case STATUSTYPE_TABLE:
 		DMEMIT("%d %llu", sc->stripes,
-			(unsigned long long)sc->chunk_mask + 1);
+			(unsigned long long)sc->chunk_size);
 		for (i = 0; i < sc->stripes; i++)
 			DMEMIT(" %s %llu", sc->stripe[i].dev->name,
 			    (unsigned long long)sc->stripe[i].physical_start);
@@ -367,7 +374,7 @@ static int stripe_end_io(struct dm_target *ti, struct bio *bio,
 			atomic_inc(&(sc->stripe[i].error_count));
 			if (atomic_read(&(sc->stripe[i].error_count)) <
 			    DM_IO_ERROR_THRESHOLD)
-				queue_work(kstriped, &sc->kstriped_ws);
+				schedule_work(&sc->trigger_event);
 		}
 
 	return error;
@@ -393,15 +400,35 @@ static void stripe_io_hints(struct dm_target *ti,
 			    struct queue_limits *limits)
 {
 	struct stripe_c *sc = ti->private;
-	unsigned chunk_size = (sc->chunk_mask + 1) << 9;
+	unsigned chunk_size = sc->chunk_size << SECTOR_SHIFT;
 
 	blk_limits_io_min(limits, chunk_size);
 	blk_limits_io_opt(limits, chunk_size * sc->stripes);
 }
 
+static int stripe_merge(struct dm_target *ti, struct bvec_merge_data *bvm,
+			struct bio_vec *biovec, int max_size)
+{
+	struct stripe_c *sc = ti->private;
+	sector_t bvm_sector = bvm->bi_sector;
+	uint32_t stripe;
+	struct request_queue *q;
+
+	stripe_map_sector(sc, bvm_sector, &stripe, &bvm_sector);
+
+	q = bdev_get_queue(sc->stripe[stripe].dev->bdev);
+	if (!q->merge_bvec_fn)
+		return max_size;
+
+	bvm->bi_bdev = sc->stripe[stripe].dev->bdev;
+	bvm->bi_sector = sc->stripe[stripe].physical_start + bvm_sector;
+
+	return min(max_size, q->merge_bvec_fn(q, bvm, biovec));
+}
+
 static struct target_type stripe_target = {
 	.name   = "striped",
-	.version = {1, 3, 0},
+	.version = {1, 5, 0},
 	.module = THIS_MODULE,
 	.ctr    = stripe_ctr,
 	.dtr    = stripe_dtr,
@@ -410,6 +437,7 @@ static struct target_type stripe_target = {
 	.status = stripe_status,
 	.iterate_devices = stripe_iterate_devices,
 	.io_hints = stripe_io_hints,
+	.merge  = stripe_merge,
 };
 
 int __init dm_stripe_init(void)
@@ -422,20 +450,10 @@ int __init dm_stripe_init(void)
 		return r;
 	}
 
-	kstriped = create_singlethread_workqueue("kstriped");
-	if (!kstriped) {
-		DMERR("failed to create workqueue kstriped");
-		dm_unregister_target(&stripe_target);
-		return -ENOMEM;
-	}
-
 	return r;
 }
 
 void dm_stripe_exit(void)
 {
 	dm_unregister_target(&stripe_target);
-	destroy_workqueue(kstriped);
-
-	return;
 }

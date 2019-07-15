@@ -3,7 +3,7 @@
  *
  * Global definitions for the zfcp device driver.
  *
- * Copyright IBM Corporation 2002, 2010
+ * Copyright IBM Corp. 2002, 2010
  */
 
 #ifndef ZFCP_DEF_H
@@ -72,6 +72,7 @@ struct zfcp_reqlist;
 #define ZFCP_STATUS_COMMON_NOESC		0x00200000
 
 /* adapter status */
+#define ZFCP_STATUS_ADAPTER_MB_ACT		0x00000001
 #define ZFCP_STATUS_ADAPTER_QDIOUP		0x00000002
 #define ZFCP_STATUS_ADAPTER_SIOSL_ISSUED	0x00000004
 #define ZFCP_STATUS_ADAPTER_XCONFIG_OK		0x00000008
@@ -89,7 +90,6 @@ struct zfcp_reqlist;
 #define ZFCP_STATUS_LUN_READONLY		0x00000008
 
 /* FSF request status (this does not have a common part) */
-#define ZFCP_STATUS_FSFREQ_TASK_MANAGEMENT	0x00000002
 #define ZFCP_STATUS_FSFREQ_ERROR		0x00000008
 #define ZFCP_STATUS_FSFREQ_CLEANUP		0x00000010
 #define ZFCP_STATUS_FSFREQ_ABORTSUCCEEDED	0x00000040
@@ -108,7 +108,7 @@ struct zfcp_adapter_mempool {
 	mempool_t *scsi_req;
 	mempool_t *scsi_abort;
 	mempool_t *status_read_req;
-	mempool_t *status_read_data;
+	mempool_t *sr_data;
 	mempool_t *gid_pn;
 	mempool_t *qtcb_pool;
 };
@@ -190,6 +190,7 @@ struct zfcp_adapter {
 	struct fsf_qtcb_bottom_port *stats_reset_data;
 	unsigned long		stats_reset;
 	struct work_struct	scan_work;
+	struct work_struct	ns_up_work;
 	struct service_level	service_level;
 	struct workqueue_struct	*work_queue;
 	struct device_dma_parameters dma_parms;
@@ -314,15 +315,10 @@ struct zfcp_fsf_req {
 	void			(*handler)(struct zfcp_fsf_req *);
 };
 
-/* driver data */
-struct zfcp_data {
-	struct scsi_host_template scsi_host_template;
-	struct scsi_transport_template *scsi_transport_template;
-	struct kmem_cache	*gpn_ft_cache;
-	struct kmem_cache	*qtcb_cache;
-	struct kmem_cache	*sr_buffer_cache;
-	struct kmem_cache	*gid_pn_cache;
-	struct kmem_cache	*adisc_cache;
-};
+static inline
+int zfcp_adapter_multi_buffer_active(struct zfcp_adapter *adapter)
+{
+	return atomic_read(&adapter->status) & ZFCP_STATUS_ADAPTER_MB_ACT;
+}
 
 #endif /* ZFCP_DEF_H */

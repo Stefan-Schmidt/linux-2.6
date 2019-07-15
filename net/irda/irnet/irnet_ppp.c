@@ -15,7 +15,6 @@
 
 #include <linux/sched.h>
 #include <linux/slab.h>
-#include <linux/smp_lock.h>
 #include "irnet_ppp.h"		/* Private header */
 /* Please put other headers in irnet.h - Thanks */
 
@@ -105,6 +104,9 @@ irnet_ctrl_write(irnet_socket *	ap,
 	      /* Strip out trailing whitespaces */
 	      while(isspace(start[length - 1]))
 		length--;
+
+	      DABORT(length < 5 || length > NICKNAME_MAX_LEN + 5,
+		     -EINVAL, CTRL_ERROR, "Invalid nickname.\n");
 
 	      /* Copy the name for later reuse */
 	      memcpy(ap->rname, start + 5, length - 5);

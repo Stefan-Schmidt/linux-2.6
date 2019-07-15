@@ -72,7 +72,7 @@ static int ix2505v_read_status_reg(struct ix2505v_state *state)
 	ret = i2c_transfer(state->i2c, msg, 1);
 	deb_i2c("Read %s ", __func__);
 
-	return (ret = 1) ? (int) b2[0] : -1;
+	return (ret == 1) ? (int) b2[0] : -1;
 }
 
 static int ix2505v_write(struct ix2505v_state *state, u8 buf[], u8 count)
@@ -129,12 +129,12 @@ static int ix2505v_release(struct dvb_frontend *fe)
  *  1 -> 8 -> 6
  */
 
-static int ix2505v_set_params(struct dvb_frontend *fe,
-		struct dvb_frontend_parameters *params)
+static int ix2505v_set_params(struct dvb_frontend *fe)
 {
+	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
 	struct ix2505v_state *state = fe->tuner_priv;
-	u32 frequency = params->frequency;
-	u32 b_w  = (params->u.qpsk.symbol_rate * 27) / 32000;
+	u32 frequency = c->frequency;
+	u32 b_w  = (c->symbol_rate * 27) / 32000;
 	u32 div_factor, N , A, x;
 	int ret = 0, len;
 	u8 gain, cc, ref, psc, local_osc, lpf;
@@ -218,10 +218,12 @@ static int ix2505v_set_params(struct dvb_frontend *fe,
 		fe->ops.i2c_gate_ctrl(fe, 1);
 
 	len = sizeof(data);
-
 	ret |= ix2505v_write(state, data, len);
 
 	data[2] |= 0x4; /* set TM = 1 other bits same */
+
+	if (fe->ops.i2c_gate_ctrl)
+		fe->ops.i2c_gate_ctrl(fe, 1);
 
 	len = 1;
 	ret |= ix2505v_write(state, &data[2], len); /* write byte 4 only */
@@ -233,11 +235,11 @@ static int ix2505v_set_params(struct dvb_frontend *fe,
 
 	deb_info("Data 2=[%x%x]\n", data[2], data[3]);
 
+	if (fe->ops.i2c_gate_ctrl)
+		fe->ops.i2c_gate_ctrl(fe, 1);
+
 	len = 2;
 	ret |= ix2505v_write(state, &data[2], len); /* write byte 4 & 5 */
-
-	if (fe->ops.i2c_gate_ctrl)
-		fe->ops.i2c_gate_ctrl(fe, 0);
 
 	if (state->config->min_delay_ms)
 		msleep(state->config->min_delay_ms);
@@ -311,7 +313,7 @@ struct dvb_frontend *ix2505v_attach(struct dvb_frontend *fe,
 	return fe;
 
 error:
-	ix2505v_release(fe);
+	kfree(state);
 	return NULL;
 }
 EXPORT_SYMBOL(ix2505v_attach);

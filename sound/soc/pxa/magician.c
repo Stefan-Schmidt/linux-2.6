@@ -26,7 +26,6 @@
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
-#include <sound/soc-dapm.h>
 #include <sound/uda1380.h>
 
 #include <mach/magician.h>
@@ -44,27 +43,29 @@ static int magician_in_sel = MAGICIAN_MIC;
 
 static void magician_ext_control(struct snd_soc_codec *codec)
 {
+	struct snd_soc_dapm_context *dapm = &codec->dapm;
+
 	if (magician_spk_switch)
-		snd_soc_dapm_enable_pin(codec, "Speaker");
+		snd_soc_dapm_enable_pin(dapm, "Speaker");
 	else
-		snd_soc_dapm_disable_pin(codec, "Speaker");
+		snd_soc_dapm_disable_pin(dapm, "Speaker");
 	if (magician_hp_switch)
-		snd_soc_dapm_enable_pin(codec, "Headphone Jack");
+		snd_soc_dapm_enable_pin(dapm, "Headphone Jack");
 	else
-		snd_soc_dapm_disable_pin(codec, "Headphone Jack");
+		snd_soc_dapm_disable_pin(dapm, "Headphone Jack");
 
 	switch (magician_in_sel) {
 	case MAGICIAN_MIC:
-		snd_soc_dapm_disable_pin(codec, "Headset Mic");
-		snd_soc_dapm_enable_pin(codec, "Call Mic");
+		snd_soc_dapm_disable_pin(dapm, "Headset Mic");
+		snd_soc_dapm_enable_pin(dapm, "Call Mic");
 		break;
 	case MAGICIAN_MIC_EXT:
-		snd_soc_dapm_disable_pin(codec, "Call Mic");
-		snd_soc_dapm_enable_pin(codec, "Headset Mic");
+		snd_soc_dapm_disable_pin(dapm, "Call Mic");
+		snd_soc_dapm_enable_pin(dapm, "Headset Mic");
 		break;
 	}
 
-	snd_soc_dapm_sync(codec);
+	snd_soc_dapm_sync(dapm);
 }
 
 static int magician_startup(struct snd_pcm_substream *substream)
@@ -72,8 +73,12 @@ static int magician_startup(struct snd_pcm_substream *substream)
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_codec *codec = rtd->codec;
 
+	mutex_lock(&codec->mutex);
+
 	/* check the jack status at stream startup */
 	magician_ext_control(codec);
+
+	mutex_unlock(&codec->mutex);
 
 	return 0;
 }
@@ -87,11 +92,10 @@ static int magician_playback_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_dai *codec_dai = rtd->codec_dai;
 	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
-	unsigned int acps, acds, width, rate;
+	unsigned int acps, acds, width;
 	unsigned int div4 = PXA_SSP_CLK_SCDB_4;
 	int ret = 0;
 
-	rate = params_rate(params);
 	width = snd_pcm_format_physical_width(params_format(params));
 
 	/*
@@ -395,30 +399,30 @@ static const struct snd_kcontrol_new uda1380_magician_controls[] = {
 static int magician_uda1380_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_dapm_context *dapm = &codec->dapm;
 	int err;
 
 	/* NC codec pins */
-	snd_soc_dapm_nc_pin(codec, "VOUTLHP");
-	snd_soc_dapm_nc_pin(codec, "VOUTRHP");
+	snd_soc_dapm_nc_pin(dapm, "VOUTLHP");
+	snd_soc_dapm_nc_pin(dapm, "VOUTRHP");
 
 	/* FIXME: is anything connected here? */
-	snd_soc_dapm_nc_pin(codec, "VINL");
-	snd_soc_dapm_nc_pin(codec, "VINR");
+	snd_soc_dapm_nc_pin(dapm, "VINL");
+	snd_soc_dapm_nc_pin(dapm, "VINR");
 
 	/* Add magician specific controls */
-	err = snd_soc_add_controls(codec, uda1380_magician_controls,
+	err = snd_soc_add_codec_controls(codec, uda1380_magician_controls,
 				ARRAY_SIZE(uda1380_magician_controls));
 	if (err < 0)
 		return err;
 
 	/* Add magician specific widgets */
-	snd_soc_dapm_new_controls(codec, uda1380_dapm_widgets,
+	snd_soc_dapm_new_controls(dapm, uda1380_dapm_widgets,
 				  ARRAY_SIZE(uda1380_dapm_widgets));
 
 	/* Set up magician specific audio path interconnects */
-	snd_soc_dapm_add_routes(codec, audio_map, ARRAY_SIZE(audio_map));
+	snd_soc_dapm_add_routes(dapm, audio_map, ARRAY_SIZE(audio_map));
 
-	snd_soc_dapm_sync(codec);
 	return 0;
 }
 
@@ -448,6 +452,7 @@ static struct snd_soc_dai_link magician_dai[] = {
 /* magician audio machine driver */
 static struct snd_soc_card snd_soc_card_magician = {
 	.name = "Magician",
+	.owner = THIS_MODULE,
 	.dai_link = magician_dai,
 	.num_links = ARRAY_SIZE(magician_dai),
 

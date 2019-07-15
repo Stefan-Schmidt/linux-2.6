@@ -77,8 +77,8 @@ int rs400_gart_init(struct radeon_device *rdev)
 {
 	int r;
 
-	if (rdev->gart.table.ram.ptr) {
-		WARN(1, "RS400 GART already initialized.\n");
+	if (rdev->gart.ptr) {
+		WARN(1, "RS400 GART already initialized\n");
 		return 0;
 	}
 	/* Check gart size */
@@ -182,6 +182,9 @@ int rs400_gart_enable(struct radeon_device *rdev)
 	/* Enable gart */
 	WREG32_MC(RS480_AGP_ADDRESS_SPACE_SIZE, (RS480_GART_EN | size_reg));
 	rs400_gart_tlb_flush(rdev);
+	DRM_INFO("PCIE GART of %uM enabled (table at 0x%016llX).\n",
+		 (unsigned)(rdev->mc.gtt_size >> 20),
+		 (unsigned long long)rdev->gart.table_addr);
 	rdev->gart.ready = true;
 	return 0;
 }
@@ -203,9 +206,13 @@ void rs400_gart_fini(struct radeon_device *rdev)
 	radeon_gart_table_ram_free(rdev);
 }
 
+#define RS400_PTE_WRITEABLE (1 << 2)
+#define RS400_PTE_READABLE  (1 << 3)
+
 int rs400_gart_set_page(struct radeon_device *rdev, int i, uint64_t addr)
 {
 	uint32_t entry;
+	u32 *gtt = rdev->gart.ptr;
 
 	if (i < 0 || i > rdev->gart.num_gpu_pages) {
 		return -EINVAL;
@@ -213,9 +220,9 @@ int rs400_gart_set_page(struct radeon_device *rdev, int i, uint64_t addr)
 
 	entry = (lower_32_bits(addr) & PAGE_MASK) |
 		((upper_32_bits(addr) & 0xff) << 4) |
-		0xc;
+		RS400_PTE_WRITEABLE | RS400_PTE_READABLE;
 	entry = cpu_to_le32(entry);
-	rdev->gart.table.ram.ptr[i] = entry;
+	gtt[i] = entry;
 	return 0;
 }
 
@@ -226,8 +233,8 @@ int rs400_mc_wait_for_idle(struct radeon_device *rdev)
 
 	for (i = 0; i < rdev->usec_timeout; i++) {
 		/* read MC_STATUS */
-		tmp = RREG32(0x0150);
-		if (tmp & (1 << 2)) {
+		tmp = RREG32(RADEON_MC_STATUS);
+		if (tmp & RADEON_MC_IDLE) {
 			return 0;
 		}
 		DRM_UDELAY(1);
@@ -241,7 +248,7 @@ void rs400_gpu_init(struct radeon_device *rdev)
 	r420_pipes_init(rdev);
 	if (rs400_mc_wait_for_idle(rdev)) {
 		printk(KERN_WARNING "rs400: Failed to wait MC idle while "
-		       "programming pipes. Bad things might happen. %08x\n", RREG32(0x150));
+		       "programming pipes. Bad things might happen. %08x\n", RREG32(RADEON_MC_STATUS));
 	}
 }
 
@@ -300,9 +307,9 @@ static int rs400_debugfs_gart_info(struct seq_file *m, void *data)
 		seq_printf(m, "MCCFG_AGP_BASE_2 0x%08x\n", tmp);
 		tmp = RREG32_MC(RS690_MCCFG_AGP_LOCATION);
 		seq_printf(m, "MCCFG_AGP_LOCATION 0x%08x\n", tmp);
-		tmp = RREG32_MC(0x100);
+		tmp = RREG32_MC(RS690_MCCFG_FB_LOCATION);
 		seq_printf(m, "MCCFG_FB_LOCATION 0x%08x\n", tmp);
-		tmp = RREG32(0x134);
+		tmp = RREG32(RS690_HDP_FB_LOCATION);
 		seq_printf(m, "HDP_FB_LOCATION 0x%08x\n", tmp);
 	} else {
 		tmp = RREG32(RADEON_AGP_BASE);
@@ -403,25 +410,35 @@ static int rs400_startup(struct radeon_device *rdev)
 	if (r)
 		return r;
 
+	r = radeon_fence_driver_start_ring(rdev, RADEON_RING_TYPE_GFX_INDEX);
+	if (r) {
+		dev_err(rdev->dev, "failed initializing CP fences (%d).\n", r);
+		return r;
+	}
+
 	/* Enable IRQ */
 	r100_irq_set(rdev);
 	rdev->config.r300.hdp_cntl = RREG32(RADEON_HOST_PATH_CNTL);
 	/* 1M ring buffer */
 	r = r100_cp_init(rdev, 1024 * 1024);
 	if (r) {
-		dev_err(rdev->dev, "failled initializing CP (%d).\n", r);
+		dev_err(rdev->dev, "failed initializing CP (%d).\n", r);
 		return r;
 	}
-	r = r100_ib_init(rdev);
+
+	r = radeon_ib_pool_init(rdev);
 	if (r) {
-		dev_err(rdev->dev, "failled initializing IB (%d).\n", r);
+		dev_err(rdev->dev, "IB initialization failed (%d).\n", r);
 		return r;
 	}
+
 	return 0;
 }
 
 int rs400_resume(struct radeon_device *rdev)
 {
+	int r;
+
 	/* Make sur GART are not working */
 	rs400_gart_disable(rdev);
 	/* Resume clock before doing reset */
@@ -440,7 +457,13 @@ int rs400_resume(struct radeon_device *rdev)
 	r300_clock_startup(rdev);
 	/* Initialize surface registers */
 	radeon_surface_init(rdev);
-	return rs400_startup(rdev);
+
+	rdev->accel_working = true;
+	r = rs400_startup(rdev);
+	if (r) {
+		rdev->accel_working = false;
+	}
+	return r;
 }
 
 int rs400_suspend(struct radeon_device *rdev)
@@ -456,7 +479,7 @@ void rs400_fini(struct radeon_device *rdev)
 {
 	r100_cp_fini(rdev);
 	radeon_wb_fini(rdev);
-	r100_ib_fini(rdev);
+	radeon_ib_pool_fini(rdev);
 	radeon_gem_fini(rdev);
 	rs400_gart_fini(rdev);
 	radeon_irq_kms_fini(rdev);
@@ -523,6 +546,7 @@ int rs400_init(struct radeon_device *rdev)
 	if (r)
 		return r;
 	r300_set_reg_safe(rdev);
+
 	rdev->accel_working = true;
 	r = rs400_startup(rdev);
 	if (r) {
@@ -530,7 +554,7 @@ int rs400_init(struct radeon_device *rdev)
 		dev_err(rdev->dev, "Disabling GPU acceleration\n");
 		r100_cp_fini(rdev);
 		radeon_wb_fini(rdev);
-		r100_ib_fini(rdev);
+		radeon_ib_pool_fini(rdev);
 		rs400_gart_fini(rdev);
 		radeon_irq_kms_fini(rdev);
 		rdev->accel_working = false;

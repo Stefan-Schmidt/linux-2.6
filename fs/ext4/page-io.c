@@ -6,7 +6,6 @@
  * Written by Theodore Ts'o, 2010.
  */
 
-#include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/time.h>
 #include <linux/jbd2.h>
@@ -38,11 +37,10 @@ int __init ext4_init_pageio(void)
 	if (io_page_cachep == NULL)
 		return -ENOMEM;
 	io_end_cachep = KMEM_CACHE(ext4_io_end, SLAB_RECLAIM_ACCOUNT);
-	if (io_page_cachep == NULL) {
+	if (io_end_cachep == NULL) {
 		kmem_cache_destroy(io_page_cachep);
 		return -ENOMEM;
 	}
-
 	return 0;
 }
 
@@ -52,6 +50,22 @@ void ext4_exit_pageio(void)
 	kmem_cache_destroy(io_page_cachep);
 }
 
+void ext4_ioend_wait(struct inode *inode)
+{
+	wait_queue_head_t *wq = ext4_ioend_wq(inode);
+
+	wait_event(*wq, (atomic_read(&EXT4_I(inode)->i_ioend_count) == 0));
+}
+
+static void put_io_page(struct ext4_io_page *io_page)
+{
+	if (atomic_dec_and_test(&io_page->p_count)) {
+		end_page_writeback(io_page->p_page);
+		put_page(io_page->p_page);
+		kmem_cache_free(io_page_cachep, io_page);
+	}
+}
+
 void ext4_free_io_end(ext4_io_end_t *io)
 {
 	int i;
@@ -59,22 +73,19 @@ void ext4_free_io_end(ext4_io_end_t *io)
 	BUG_ON(!io);
 	if (io->page)
 		put_page(io->page);
-	for (i = 0; i < io->num_io_pages; i++) {
-		if (--io->pages[i]->p_count == 0) {
-			struct page *page = io->pages[i]->p_page;
-
-			end_page_writeback(page);
-			put_page(page);
-			kmem_cache_free(io_page_cachep, io->pages[i]);
-		}
-	}
+	for (i = 0; i < io->num_io_pages; i++)
+		put_io_page(io->pages[i]);
 	io->num_io_pages = 0;
-	iput(io->inode);
+	if (atomic_dec_and_test(&EXT4_I(io->inode)->i_ioend_count))
+		wake_up_all(ext4_ioend_wq(io->inode));
 	kmem_cache_free(io_end_cachep, io);
 }
 
 /*
  * check a range of space and convert unwritten extents to written.
+ *
+ * Called with inode->i_mutex; we depend on this when we manipulate
+ * io->flag, since we could otherwise race with ext4_flush_completed_IO()
  */
 int ext4_end_io_nolock(ext4_io_end_t *io)
 {
@@ -87,25 +98,23 @@ int ext4_end_io_nolock(ext4_io_end_t *io)
 		   "list->prev 0x%p\n",
 		   io, inode->i_ino, io->list.next, io->list.prev);
 
-	if (list_empty(&io->list))
-		return ret;
-
-	if (!(io->flag & EXT4_IO_END_UNWRITTEN))
-		return ret;
-
 	ret = ext4_convert_unwritten_extents(inode, offset, size);
 	if (ret < 0) {
-		printk(KERN_EMERG "%s: failed to convert unwritten "
-			"extents to written extents, error is %d "
-			"io is still on inode %lu aio dio list\n",
-		       __func__, ret, inode->i_ino);
-		return ret;
+		ext4_msg(inode->i_sb, KERN_EMERG,
+			 "failed to convert unwritten extents to written "
+			 "extents -- potential data loss!  "
+			 "(inode %lu, offset %llu, size %zd, error %d)",
+			 inode->i_ino, offset, size, ret);
 	}
 
 	if (io->iocb)
 		aio_complete(io->iocb, io->result, 0);
-	/* clear the DIO AIO unwritten flag */
-	io->flag &= ~EXT4_IO_END_UNWRITTEN;
+
+	if (io->flag & EXT4_IO_END_DIRECT)
+		inode_dio_done(inode);
+	/* Wake up anyone waiting on unwritten extent conversion */
+	if (atomic_dec_and_test(&EXT4_I(inode)->i_aiodio_unwritten))
+		wake_up_all(ext4_ioend_wq(io->inode));
 	return ret;
 }
 
@@ -118,32 +127,50 @@ static void ext4_end_io_work(struct work_struct *work)
 	struct inode		*inode = io->inode;
 	struct ext4_inode_info	*ei = EXT4_I(inode);
 	unsigned long		flags;
-	int			ret;
-
-	mutex_lock(&inode->i_mutex);
-	ret = ext4_end_io_nolock(io);
-	if (ret < 0) {
-		mutex_unlock(&inode->i_mutex);
-		return;
-	}
 
 	spin_lock_irqsave(&ei->i_completed_io_lock, flags);
-	if (!list_empty(&io->list))
-		list_del_init(&io->list);
+	if (io->flag & EXT4_IO_END_IN_FSYNC)
+		goto requeue;
+	if (list_empty(&io->list)) {
+		spin_unlock_irqrestore(&ei->i_completed_io_lock, flags);
+		goto free;
+	}
+
+	if (!mutex_trylock(&inode->i_mutex)) {
+		bool was_queued;
+requeue:
+		was_queued = !!(io->flag & EXT4_IO_END_QUEUED);
+		io->flag |= EXT4_IO_END_QUEUED;
+		spin_unlock_irqrestore(&ei->i_completed_io_lock, flags);
+		/*
+		 * Requeue the work instead of waiting so that the work
+		 * items queued after this can be processed.
+		 */
+		queue_work(EXT4_SB(inode->i_sb)->dio_unwritten_wq, &io->work);
+		/*
+		 * To prevent the ext4-dio-unwritten thread from keeping
+		 * requeueing end_io requests and occupying cpu for too long,
+		 * yield the cpu if it sees an end_io request that has already
+		 * been requeued.
+		 */
+		if (was_queued)
+			yield();
+		return;
+	}
+	list_del_init(&io->list);
 	spin_unlock_irqrestore(&ei->i_completed_io_lock, flags);
+	(void) ext4_end_io_nolock(io);
 	mutex_unlock(&inode->i_mutex);
+free:
 	ext4_free_io_end(io);
 }
 
 ext4_io_end_t *ext4_init_io_end(struct inode *inode, gfp_t flags)
 {
-	ext4_io_end_t *io = NULL;
-
-	io = kmem_cache_alloc(io_end_cachep, flags);
+	ext4_io_end_t *io = kmem_cache_zalloc(io_end_cachep, flags);
 	if (io) {
-		memset(io, 0, sizeof(*io));
-		io->inode = igrab(inode);
-		BUG_ON(!io->inode);
+		atomic_inc(&EXT4_I(inode)->i_ioend_count);
+		io->inode = inode;
 		INIT_WORK(&io->work, ext4_end_io_work);
 		INIT_LIST_HEAD(&io->list);
 	}
@@ -171,24 +198,46 @@ static void ext4_end_bio(struct bio *bio, int error)
 	struct workqueue_struct *wq;
 	struct inode *inode;
 	unsigned long flags;
-	ext4_fsblk_t err_block;
 	int i;
+	sector_t bi_sector = bio->bi_sector;
 
 	BUG_ON(!io_end);
-	inode = io_end->inode;
 	bio->bi_private = NULL;
 	bio->bi_end_io = NULL;
 	if (test_bit(BIO_UPTODATE, &bio->bi_flags))
 		error = 0;
-	err_block = bio->bi_sector >> (inode->i_blkbits - 9);
 	bio_put(bio);
 
-	if (!(inode->i_sb->s_flags & MS_ACTIVE)) {
-		pr_err("sb umounted, discard end_io request for inode %lu\n",
-			io_end->inode->i_ino);
-		ext4_free_io_end(io_end);
-		return;
+	for (i = 0; i < io_end->num_io_pages; i++) {
+		struct page *page = io_end->pages[i]->p_page;
+		struct buffer_head *bh, *head;
+		loff_t offset;
+		loff_t io_end_offset;
+
+		if (error) {
+			SetPageError(page);
+			set_bit(AS_EIO, &page->mapping->flags);
+			head = page_buffers(page);
+			BUG_ON(!head);
+
+			io_end_offset = io_end->offset + io_end->size;
+
+			offset = (sector_t) page->index << PAGE_CACHE_SHIFT;
+			bh = head;
+			do {
+				if ((offset >= io_end->offset) &&
+				    (offset+bh->b_size <= io_end_offset))
+					buffer_io_error(bh);
+
+				offset += bh->b_size;
+				bh = bh->b_this_page;
+			} while (bh != head);
+		}
+
+		put_io_page(io_end->pages[i]);
 	}
+	io_end->num_io_pages = 0;
+	inode = io_end->inode;
 
 	if (error) {
 		io_end->flag |= EXT4_IO_END_ERROR;
@@ -197,65 +246,14 @@ static void ext4_end_bio(struct bio *bio, int error)
 			     inode->i_ino,
 			     (unsigned long long) io_end->offset,
 			     (long) io_end->size,
-			     (unsigned long long) err_block);
+			     (unsigned long long)
+			     bi_sector >> (inode->i_blkbits - 9));
 	}
 
-	for (i = 0; i < io_end->num_io_pages; i++) {
-		struct page *page = io_end->pages[i]->p_page;
-		struct buffer_head *bh, *head;
-		int partial_write = 0;
-
-		head = page_buffers(page);
-		if (error)
-			SetPageError(page);
-		BUG_ON(!head);
-		if (head->b_size == PAGE_CACHE_SIZE)
-			clear_buffer_dirty(head);
-		else {
-			loff_t offset;
-			loff_t io_end_offset = io_end->offset + io_end->size;
-
-			offset = (sector_t) page->index << PAGE_CACHE_SHIFT;
-			bh = head;
-			do {
-				if ((offset >= io_end->offset) &&
-				    (offset+bh->b_size <= io_end_offset)) {
-					if (error)
-						buffer_io_error(bh);
-
-					clear_buffer_dirty(bh);
-				}
-				if (buffer_delay(bh))
-					partial_write = 1;
-				else if (!buffer_mapped(bh))
-					clear_buffer_dirty(bh);
-				else if (buffer_dirty(bh))
-					partial_write = 1;
-				offset += bh->b_size;
-				bh = bh->b_this_page;
-			} while (bh != head);
-		}
-
-		if (--io_end->pages[i]->p_count == 0) {
-			struct page *page = io_end->pages[i]->p_page;
-
-			end_page_writeback(page);
-			put_page(page);
-			kmem_cache_free(io_page_cachep, io_end->pages[i]);
-		}
-
-		/*
-		 * If this is a partial write which happened to make
-		 * all buffers uptodate then we can optimize away a
-		 * bogus readpage() for the next read(). Here we
-		 * 'discover' whether the page went uptodate as a
-		 * result of this (potentially partial) write.
-		 */
-		if (!partial_write)
-			SetPageUptodate(page);
+	if (!(io_end->flag & EXT4_IO_END_UNWRITTEN)) {
+		ext4_free_io_end(io_end);
+		return;
 	}
-
-	io_end->num_io_pages = 0;
 
 	/* Add the io_end to per-inode completed io list*/
 	spin_lock_irqsave(&EXT4_I(inode)->i_completed_io_lock, flags);
@@ -277,9 +275,9 @@ void ext4_io_submit(struct ext4_io_submit *io)
 		BUG_ON(bio_flagged(io->io_bio, BIO_EOPNOTSUPP));
 		bio_put(io->io_bio);
 	}
-	io->io_bio = 0;
+	io->io_bio = NULL;
 	io->io_op = 0;
-	io->io_end = 0;
+	io->io_end = NULL;
 }
 
 static int io_submit_init(struct ext4_io_submit *io,
@@ -295,22 +293,16 @@ static int io_submit_init(struct ext4_io_submit *io,
 	io_end = ext4_init_io_end(inode, GFP_NOFS);
 	if (!io_end)
 		return -ENOMEM;
-	do {
-		bio = bio_alloc(GFP_NOIO, nvecs);
-		nvecs >>= 1;
-	} while (bio == NULL);
-
+	bio = bio_alloc(GFP_NOIO, min(nvecs, BIO_MAX_PAGES));
 	bio->bi_sector = bh->b_blocknr * (bh->b_size >> 9);
 	bio->bi_bdev = bh->b_bdev;
 	bio->bi_private = io->io_end = io_end;
 	bio->bi_end_io = ext4_end_bio;
 
-	io_end->inode = inode;
 	io_end->offset = (page->index << PAGE_CACHE_SHIFT) + bh_offset(bh);
 
 	io->io_bio = bio;
-	io->io_op = (wbc->sync_mode == WB_SYNC_ALL ?
-			WRITE_SYNC_PLUG : WRITE);
+	io->io_op = (wbc->sync_mode == WB_SYNC_ALL ?  WRITE_SYNC : WRITE);
 	io->io_next_block = bh->b_blocknr;
 	return 0;
 }
@@ -351,7 +343,7 @@ submit_and_retry:
 	    (io_end->pages[io_end->num_io_pages-1] != io_page))
 		goto submit_and_retry;
 	if (buffer_uninit(bh))
-		io->io_end->flag |= EXT4_IO_END_UNWRITTEN;
+		ext4_set_io_unwritten_flag(inode, io_end);
 	io->io_end->size += bh->b_size;
 	io->io_next_block++;
 	ret = bio_add_page(io->io_bio, bh->b_page, bh->b_size, bh_offset(bh));
@@ -360,7 +352,7 @@ submit_and_retry:
 	if ((io_end->num_io_pages == 0) ||
 	    (io_end->pages[io_end->num_io_pages-1] != io_page)) {
 		io_end->pages[io_end->num_io_pages++] = io_page;
-		io_page->p_count++;
+		atomic_inc(&io_page->p_count);
 	}
 	return 0;
 }
@@ -378,9 +370,8 @@ int ext4_bio_write_page(struct ext4_io_submit *io,
 
 	blocksize = 1 << inode->i_blkbits;
 
+	BUG_ON(!PageLocked(page));
 	BUG_ON(PageWriteback(page));
-	set_page_writeback(page);
-	ClearPageError(page);
 
 	io_page = kmem_cache_alloc(io_page_cachep, GFP_NOFS);
 	if (!io_page) {
@@ -389,18 +380,34 @@ int ext4_bio_write_page(struct ext4_io_submit *io,
 		return -ENOMEM;
 	}
 	io_page->p_page = page;
-	io_page->p_count = 0;
+	atomic_set(&io_page->p_count, 1);
 	get_page(page);
+	set_page_writeback(page);
+	ClearPageError(page);
 
 	for (bh = head = page_buffers(page), block_start = 0;
 	     bh != head || !block_start;
 	     block_start = block_end, bh = bh->b_this_page) {
+
 		block_end = block_start + blocksize;
 		if (block_start >= len) {
+			/*
+			 * Comments copied from block_write_full_page_endio:
+			 *
+			 * The page straddles i_size.  It must be zeroed out on
+			 * each and every writepage invocation because it may
+			 * be mmapped.  "A file is mapped in multiples of the
+			 * page size.  For a file that is not a multiple of
+			 * the  page size, the remaining memory is zeroed when
+			 * mapped, and writes to that region are not written
+			 * out to the file."
+			 */
+			zero_user_segment(page, block_start, block_end);
 			clear_buffer_dirty(bh);
 			set_buffer_uptodate(bh);
 			continue;
 		}
+		clear_buffer_dirty(bh);
 		ret = io_submit_add_bh(io, io_page, inode, wbc, bh);
 		if (ret) {
 			/*
@@ -421,10 +428,6 @@ int ext4_bio_write_page(struct ext4_io_submit *io,
 	 * PageWriteback bit from the page to prevent the system from
 	 * wedging later on.
 	 */
-	if (io_page->p_count == 0) {
-		put_page(page);
-		end_page_writeback(page);
-		kmem_cache_free(io_page_cachep, io_page);
-	}
+	put_io_page(io_page);
 	return ret;
 }

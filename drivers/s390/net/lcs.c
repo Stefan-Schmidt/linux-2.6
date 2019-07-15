@@ -30,7 +30,6 @@
 #include <linux/if.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
-#include <linux/trdevice.h>
 #include <linux/fddidevice.h>
 #include <linux/inetdevice.h>
 #include <linux/in.h>
@@ -50,8 +49,7 @@
 #include "lcs.h"
 
 
-#if !defined(CONFIG_NET_ETHERNET) && \
-    !defined(CONFIG_TR) && !defined(CONFIG_FDDI)
+#if !defined(CONFIG_ETHERNET) && !defined(CONFIG_FDDI)
 #error Cannot compile lcs.c without some net devices switched on.
 #endif
 
@@ -840,7 +838,7 @@ lcs_notify_lancmd_waiters(struct lcs_card *card, struct lcs_cmd *cmd)
 }
 
 /**
- * Emit buffer of a lan comand.
+ * Emit buffer of a lan command.
  */
 static void
 lcs_lancmd_timeout(unsigned long data)
@@ -1122,7 +1120,7 @@ list_modified:
 	list_for_each_entry_safe(ipm, tmp, &card->ipm_list, list){
 		switch (ipm->ipm_state) {
 		case LCS_IPM_STATE_SET_REQUIRED:
-			/* del from ipm_list so noone else can tamper with
+			/* del from ipm_list so no one else can tamper with
 			 * this entry */
 			list_del_init(&ipm->list);
 			spin_unlock_irqrestore(&card->ipm_lock, flags);
@@ -1166,10 +1164,7 @@ static void
 lcs_get_mac_for_ipm(__be32 ipm, char *mac, struct net_device *dev)
 {
 	LCS_DBF_TEXT(4,trace, "getmac");
-	if (dev->type == ARPHRD_IEEE802_TR)
-		ip_tr_mc_map(ipm, mac);
-	else
-		ip_eth_mc_map(ipm, mac);
+	ip_eth_mc_map(ipm, mac);
 }
 
 /**
@@ -1188,7 +1183,8 @@ lcs_remove_mc_addresses(struct lcs_card *card, struct in_device *in4_dev)
 	spin_lock_irqsave(&card->ipm_lock, flags);
 	list_for_each(l, &card->ipm_list) {
 		ipm = list_entry(l, struct lcs_ipm_list, list);
-		for (im4 = in4_dev->mc_list; im4 != NULL; im4 = im4->next) {
+		for (im4 = rcu_dereference(in4_dev->mc_list);
+		     im4 != NULL; im4 = rcu_dereference(im4->next_rcu)) {
 			lcs_get_mac_for_ipm(im4->multiaddr, buf, card->dev);
 			if ( (ipm->ipm.ip_addr == im4->multiaddr) &&
 			     (memcmp(buf, &ipm->ipm.mac_addr,
@@ -1233,7 +1229,8 @@ lcs_set_mc_addresses(struct lcs_card *card, struct in_device *in4_dev)
 	unsigned long flags;
 
 	LCS_DBF_TEXT(4, trace, "setmclst");
-	for (im4 = in4_dev->mc_list; im4; im4 = im4->next) {
+	for (im4 = rcu_dereference(in4_dev->mc_list); im4 != NULL;
+	     im4 = rcu_dereference(im4->next_rcu)) {
 		lcs_get_mac_for_ipm(im4->multiaddr, buf, card->dev);
 		ipm = lcs_check_addr_entry(card, im4, buf);
 		if (ipm != NULL)
@@ -1269,10 +1266,10 @@ lcs_register_mc_addresses(void *data)
 	in4_dev = in_dev_get(card->dev);
 	if (in4_dev == NULL)
 		goto out;
-	read_lock(&in4_dev->mc_list_lock);
+	rcu_read_lock();
 	lcs_remove_mc_addresses(card,in4_dev);
 	lcs_set_mc_addresses(card, in4_dev);
-	read_unlock(&in4_dev->mc_list_lock);
+	rcu_read_unlock();
 	in_dev_put(in4_dev);
 
 	netif_carrier_off(card->dev);
@@ -1479,7 +1476,6 @@ lcs_tasklet(unsigned long data)
 	struct lcs_channel *channel;
 	struct lcs_buffer *iob;
 	int buf_idx;
-	int rc;
 
 	channel = (struct lcs_channel *) data;
 	LCS_DBF_TEXT_(5, trace, "tlet%s", dev_name(&channel->ccwdev->dev));
@@ -1496,14 +1492,11 @@ lcs_tasklet(unsigned long data)
 	channel->buf_idx = buf_idx;
 
 	if (channel->state == LCS_CH_STATE_STOPPED)
-		// FIXME: what if rc != 0 ??
-		rc = lcs_start_channel(channel);
+		lcs_start_channel(channel);
 	spin_lock_irqsave(get_ccwdev_lock(channel->ccwdev), flags);
 	if (channel->state == LCS_CH_STATE_SUSPENDED &&
-	    channel->iob[channel->io_idx].state == LCS_BUF_STATE_READY) {
-		// FIXME: what if rc != 0 ??
-		rc = __lcs_resume_channel(channel);
-	}
+	    channel->iob[channel->io_idx].state == LCS_BUF_STATE_READY)
+		__lcs_resume_channel(channel);
 	spin_unlock_irqrestore(get_ccwdev_lock(channel->ccwdev), flags);
 
 	/* Something happened on the channel. Wake up waiters. */
@@ -1636,18 +1629,12 @@ lcs_startlan_auto(struct lcs_card *card)
 	int rc;
 
 	LCS_DBF_TEXT(2, trace, "strtauto");
-#ifdef CONFIG_NET_ETHERNET
+#ifdef CONFIG_ETHERNET
 	card->lan_type = LCS_FRAME_TYPE_ENET;
 	rc = lcs_send_startlan(card, LCS_INITIATOR_TCPIP);
 	if (rc == 0)
 		return 0;
 
-#endif
-#ifdef CONFIG_TR
-	card->lan_type = LCS_FRAME_TYPE_TR;
-	rc = lcs_send_startlan(card, LCS_INITIATOR_TCPIP);
-	if (rc == 0)
-		return 0;
 #endif
 #ifdef CONFIG_FDDI
 	card->lan_type = LCS_FRAME_TYPE_FDDI;
@@ -1972,7 +1959,7 @@ lcs_portno_store (struct device *dev, struct device_attribute *attr, const char 
 
 static DEVICE_ATTR(portno, 0644, lcs_portno_show, lcs_portno_store);
 
-const char *lcs_type[] = {
+static const char *lcs_type[] = {
 	"not a channel",
 	"2216 parallel",
 	"2216 channel",
@@ -2053,9 +2040,16 @@ static struct attribute * lcs_attrs[] = {
 	&dev_attr_recover.attr,
 	NULL,
 };
-
 static struct attribute_group lcs_attr_group = {
 	.attrs = lcs_attrs,
+};
+static const struct attribute_group *lcs_attr_groups[] = {
+	&lcs_attr_group,
+	NULL,
+};
+static const struct device_type lcs_devtype = {
+	.name = "lcs",
+	.groups = lcs_attr_groups,
 };
 
 /**
@@ -2065,7 +2059,6 @@ static int
 lcs_probe_device(struct ccwgroup_device *ccwgdev)
 {
 	struct lcs_card *card;
-	int ret;
 
 	if (!get_device(&ccwgdev->dev))
 		return -ENODEV;
@@ -2077,12 +2070,6 @@ lcs_probe_device(struct ccwgroup_device *ccwgdev)
 		put_device(&ccwgdev->dev);
                 return -ENOMEM;
         }
-	ret = sysfs_create_group(&ccwgdev->dev.kobj, &lcs_attr_group);
-	if (ret) {
-		lcs_free_card(card);
-		put_device(&ccwgdev->dev);
-		return ret;
-        }
 	dev_set_drvdata(&ccwgdev->dev, card);
 	ccwgdev->cdev[0]->handler = lcs_irq;
 	ccwgdev->cdev[1]->handler = lcs_irq;
@@ -2091,7 +2078,9 @@ lcs_probe_device(struct ccwgroup_device *ccwgdev)
 	card->thread_start_mask = 0;
 	card->thread_allowed_mask = 0;
 	card->thread_running_mask = 0;
-        return 0;
+	ccwgdev->dev.type = &lcs_devtype;
+
+	return 0;
 }
 
 static int
@@ -2122,7 +2111,7 @@ static const struct net_device_ops lcs_mc_netdev_ops = {
 	.ndo_stop		= lcs_stop_device,
 	.ndo_get_stats		= lcs_getstats,
 	.ndo_start_xmit		= lcs_start_xmit,
-	.ndo_set_multicast_list = lcs_set_multicast_list,
+	.ndo_set_rx_mode	= lcs_set_multicast_list,
 };
 
 static int
@@ -2168,16 +2157,10 @@ lcs_new_device(struct ccwgroup_device *ccwgdev)
 		goto netdev_out;
 	}
 	switch (card->lan_type) {
-#ifdef CONFIG_NET_ETHERNET
+#ifdef CONFIG_ETHERNET
 	case LCS_FRAME_TYPE_ENET:
 		card->lan_type_trans = eth_type_trans;
 		dev = alloc_etherdev(0);
-		break;
-#endif
-#ifdef CONFIG_TR
-	case LCS_FRAME_TYPE_TR:
-		card->lan_type_trans = tr_type_trans;
-		dev = alloc_trdev(0);
 		break;
 #endif
 #ifdef CONFIG_FDDI
@@ -2242,7 +2225,7 @@ __lcs_shutdown_device(struct ccwgroup_device *ccwgdev, int recovery_mode)
 {
 	struct lcs_card *card;
 	enum lcs_dev_states recover_state;
-	int ret;
+	int ret = 0, ret2 = 0, ret3 = 0;
 
 	LCS_DBF_TEXT(3, setup, "shtdndev");
 	card = dev_get_drvdata(&ccwgdev->dev);
@@ -2257,13 +2240,15 @@ __lcs_shutdown_device(struct ccwgroup_device *ccwgdev, int recovery_mode)
 	recover_state = card->state;
 
 	ret = lcs_stop_device(card->dev);
-	ret = ccw_device_set_offline(card->read.ccwdev);
-	ret = ccw_device_set_offline(card->write.ccwdev);
+	ret2 = ccw_device_set_offline(card->read.ccwdev);
+	ret3 = ccw_device_set_offline(card->write.ccwdev);
+	if (!ret)
+		ret = (ret2) ? ret2 : ret3;
+	if (ret)
+		LCS_DBF_TEXT_(3, setup, "1err:%d", ret);
 	if (recover_state == DEV_STATE_UP) {
 		card->state = DEV_STATE_RECOVER;
 	}
-	if (ret)
-		return ret;
 	return 0;
 }
 
@@ -2323,9 +2308,9 @@ lcs_remove_device(struct ccwgroup_device *ccwgdev)
 	}
 	if (card->dev)
 		unregister_netdev(card->dev);
-	sysfs_remove_group(&ccwgdev->dev.kobj, &lcs_attr_group);
 	lcs_cleanup_card(card);
 	lcs_free_card(card);
+	dev_set_drvdata(&ccwgdev->dev, NULL);
 	put_device(&ccwgdev->dev);
 }
 
@@ -2392,22 +2377,25 @@ static struct ccw_device_id lcs_ids[] = {
 MODULE_DEVICE_TABLE(ccw, lcs_ids);
 
 static struct ccw_driver lcs_ccw_driver = {
-	.owner	= THIS_MODULE,
-	.name	= "lcs",
+	.driver = {
+		.owner	= THIS_MODULE,
+		.name	= "lcs",
+	},
 	.ids	= lcs_ids,
 	.probe	= ccwgroup_probe_ccwdev,
 	.remove	= ccwgroup_remove_ccwdev,
+	.int_class = IOINT_LCS,
 };
 
 /**
  * LCS ccwgroup driver registration
  */
 static struct ccwgroup_driver lcs_group_driver = {
-	.owner       = THIS_MODULE,
-	.name        = "lcs",
-	.max_slaves  = 2,
-	.driver_id   = 0xD3C3E2,
-	.probe       = lcs_probe_device,
+	.driver = {
+		.owner	= THIS_MODULE,
+		.name	= "lcs",
+	},
+	.setup	     = lcs_probe_device,
 	.remove      = lcs_remove_device,
 	.set_online  = lcs_new_device,
 	.set_offline = lcs_shutdown_device,
@@ -2418,30 +2406,24 @@ static struct ccwgroup_driver lcs_group_driver = {
 	.restore     = lcs_restore,
 };
 
-static ssize_t
-lcs_driver_group_store(struct device_driver *ddrv, const char *buf,
-		       size_t count)
+static ssize_t lcs_driver_group_store(struct device_driver *ddrv,
+				      const char *buf, size_t count)
 {
 	int err;
-	err = ccwgroup_create_from_string(lcs_root_dev,
-					  lcs_group_driver.driver_id,
-					  &lcs_ccw_driver, 2, buf);
+	err = ccwgroup_create_dev(lcs_root_dev, &lcs_group_driver, 2, buf);
 	return err ? err : count;
 }
-
 static DRIVER_ATTR(group, 0200, NULL, lcs_driver_group_store);
 
-static struct attribute *lcs_group_attrs[] = {
+static struct attribute *lcs_drv_attrs[] = {
 	&driver_attr_group.attr,
 	NULL,
 };
-
-static struct attribute_group lcs_group_attr_group = {
-	.attrs = lcs_group_attrs,
+static struct attribute_group lcs_drv_attr_group = {
+	.attrs = lcs_drv_attrs,
 };
-
-static const struct attribute_group *lcs_group_attr_groups[] = {
-	&lcs_group_attr_group,
+static const struct attribute_group *lcs_drv_attr_groups[] = {
+	&lcs_drv_attr_group,
 	NULL,
 };
 
@@ -2465,7 +2447,7 @@ __init lcs_init_module(void)
 	rc = ccw_driver_register(&lcs_ccw_driver);
 	if (rc)
 		goto ccw_err;
-	lcs_group_driver.driver.groups = lcs_group_attr_groups;
+	lcs_group_driver.driver.groups = lcs_drv_attr_groups;
 	rc = ccwgroup_driver_register(&lcs_group_driver);
 	if (rc)
 		goto ccwgroup_err;
@@ -2491,8 +2473,6 @@ __exit lcs_cleanup_module(void)
 {
 	pr_info("Terminating lcs module.\n");
 	LCS_DBF_TEXT(0, trace, "cleanup");
-	driver_remove_file(&lcs_group_driver.driver,
-			   &driver_attr_group);
 	ccwgroup_driver_unregister(&lcs_group_driver);
 	ccw_driver_unregister(&lcs_ccw_driver);
 	root_device_unregister(lcs_root_dev);

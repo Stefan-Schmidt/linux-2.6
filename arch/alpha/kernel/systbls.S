@@ -111,7 +111,7 @@ sys_call_table:
 	.quad sys_socket
 	.quad sys_connect
 	.quad sys_accept
-	.quad osf_getpriority			/* 100 */
+	.quad sys_osf_getpriority			/* 100 */
 	.quad sys_send
 	.quad sys_recv
 	.quad sys_sigreturn
@@ -241,11 +241,11 @@ sys_call_table:
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall
-	.quad alpha_ni_syscall
-	.quad alpha_ni_syscall			/* 225 */
-	.quad alpha_ni_syscall
-	.quad alpha_ni_syscall
-	.quad alpha_ni_syscall
+	.quad sys_osf_stat
+	.quad sys_osf_lstat			/* 225 */
+	.quad sys_osf_fstat
+	.quad sys_osf_statfs64
+	.quad sys_osf_fstatfs64
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall			/* 230 */
 	.quad alpha_ni_syscall
@@ -360,7 +360,7 @@ sys_call_table:
 	.quad sys_newuname
 	.quad sys_nanosleep			/* 340 */
 	.quad sys_mremap
-	.quad sys_nfsservctl
+	.quad sys_ni_syscall			/* old nfsservctl */
 	.quad sys_setresuid
 	.quad sys_getresuid
 	.quad sys_pciconfig_read		/* 345 */
@@ -498,23 +498,32 @@ sys_call_table:
 	.quad sys_ni_syscall			/* sys_timerfd */
 	.quad sys_eventfd
 	.quad sys_recvmmsg
-	.quad sys_fallocate				/* 480 */
+	.quad sys_fallocate			/* 480 */
 	.quad sys_timerfd_create
 	.quad sys_timerfd_settime
 	.quad sys_timerfd_gettime
 	.quad sys_signalfd4
-	.quad sys_eventfd2				/* 485 */
+	.quad sys_eventfd2			/* 485 */
 	.quad sys_epoll_create1
 	.quad sys_dup3
 	.quad sys_pipe2
 	.quad sys_inotify_init1
-	.quad sys_preadv				/* 490 */
+	.quad sys_preadv			/* 490 */
 	.quad sys_pwritev
 	.quad sys_rt_tgsigqueueinfo
 	.quad sys_perf_event_open
 	.quad sys_fanotify_init
-	.quad sys_fanotify_mark				/* 495 */
+	.quad sys_fanotify_mark			/* 495 */
 	.quad sys_prlimit64
+	.quad sys_name_to_handle_at
+	.quad sys_open_by_handle_at
+	.quad sys_clock_adjtime
+	.quad sys_syncfs			/* 500 */
+	.quad sys_setns
+	.quad sys_accept4
+	.quad sys_sendmmsg
+	.quad sys_process_vm_readv
+	.quad sys_process_vm_writev		/* 505 */
 
 	.size sys_call_table, . - sys_call_table
 	.type sys_call_table, @object

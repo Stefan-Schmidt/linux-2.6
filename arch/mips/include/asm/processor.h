@@ -19,7 +19,6 @@
 #include <asm/cpu-info.h>
 #include <asm/mipsregs.h>
 #include <asm/prefetch.h>
-#include <asm/system.h>
 
 /*
  * Return current * instruction pointer ("program counter").
@@ -311,9 +310,6 @@ struct task_struct;
 /* Free all resources held by a thread. */
 #define release_thread(thread) do { } while(0)
 
-/* Prepare to copy thread state - unlazy all lazy status */
-#define prepare_to_copy(tsk)	do { } while (0)
-
 extern long kernel_thread(int (*fn)(void *), void * arg, unsigned long flags);
 
 extern unsigned long thread_saved_pc(struct task_struct *tsk);
@@ -337,7 +333,7 @@ unsigned long get_wchan(struct task_struct *p);
 /*
  * Return_address is a replacement for __builtin_return_address(count)
  * which on certain architectures cannot reasonably be implemented in GCC
- * (MIPS, Alpha) or is unuseable with -fomit-frame-pointer (i386).
+ * (MIPS, Alpha) or is unusable with -fomit-frame-pointer (i386).
  * Note that __builtin_return_address(x>=1) is forbidden because GCC
  * aborts compilation on some CPUs.  It's simply not possible to unwind
  * some CPU's stackframes.
@@ -355,6 +351,12 @@ unsigned long get_wchan(struct task_struct *p);
 
 #define ARCH_HAS_PREFETCHW
 #define prefetchw(x) __builtin_prefetch((x), 1, 1)
+
+/*
+ * See Documentation/scheduler/sched-arch.txt; prevents deadlock on SMP
+ * systems.
+ */
+#define __ARCH_WANT_UNLOCKED_CTXSW
 
 #endif
 

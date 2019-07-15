@@ -50,7 +50,6 @@
 * --------------------------------------------------------------------
 */
 
-#include <linux/version.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/kernel.h>
@@ -1948,8 +1947,8 @@ static wlandevice_t *create_wlan(void)
 	hfa384x_t *hw = NULL;
 
 	/* Alloc our structures */
-	wlandev = kmalloc(sizeof(wlandevice_t), GFP_KERNEL);
-	hw = kmalloc(sizeof(hfa384x_t), GFP_KERNEL);
+	wlandev = kzalloc(sizeof(wlandevice_t), GFP_KERNEL);
+	hw = kzalloc(sizeof(hfa384x_t), GFP_KERNEL);
 
 	if (!wlandev || !hw) {
 		printk(KERN_ERR "%s: Memory allocation failure.\n", dev_info);
@@ -1957,10 +1956,6 @@ static wlandevice_t *create_wlan(void)
 		kfree(hw);
 		return NULL;
 	}
-
-	/* Clear all the structs */
-	memset(wlandev, 0, sizeof(wlandevice_t));
-	memset(hw, 0, sizeof(hfa384x_t));
 
 	/* Initialize the network device object. */
 	wlandev->nsdname = dev_info;
@@ -1976,7 +1971,7 @@ static wlandevice_t *create_wlan(void)
 
 	wlandev->nsdcaps = P80211_NSDCAP_HWFRAGMENT | P80211_NSDCAP_AUTOJOIN;
 
-	/* Initialize the device private data stucture. */
+	/* Initialize the device private data structure. */
 	hw->dot11_desired_bss_type = 1;
 
 	return wlandev;

@@ -81,10 +81,6 @@ void rxrpc_UDP_error_report(struct sock *sk)
 			_net("I/F MTU %u", mtu);
 		}
 
-		/* ip_rt_frag_needed() may have eaten the info */
-		if (mtu == 0)
-			mtu = ntohs(icmp_hdr(skb)->un.frag.mtu);
-
 		if (mtu == 0) {
 			/* they didn't give us a size, estimate one */
 			if (mtu > 1500) {
@@ -139,7 +135,7 @@ void rxrpc_UDP_error_handler(struct work_struct *work)
 	struct rxrpc_transport *trans =
 		container_of(work, struct rxrpc_transport, error_handler);
 	struct sk_buff *skb;
-	int local, err;
+	int err;
 
 	_enter("");
 
@@ -157,7 +153,6 @@ void rxrpc_UDP_error_handler(struct work_struct *work)
 
 	switch (ee->ee_origin) {
 	case SO_EE_ORIGIN_ICMP:
-		local = 0;
 		switch (ee->ee_type) {
 		case ICMP_DEST_UNREACH:
 			switch (ee->ee_code) {
@@ -207,7 +202,6 @@ void rxrpc_UDP_error_handler(struct work_struct *work)
 	case SO_EE_ORIGIN_LOCAL:
 		_proto("Rx Received local error { error=%d }",
 		       ee->ee_errno);
-		local = 1;
 		break;
 
 	case SO_EE_ORIGIN_NONE:
@@ -215,7 +209,6 @@ void rxrpc_UDP_error_handler(struct work_struct *work)
 	default:
 		_proto("Rx Received error report { orig=%u }",
 		       ee->ee_origin);
-		local = 0;
 		break;
 	}
 

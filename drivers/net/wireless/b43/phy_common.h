@@ -39,6 +39,9 @@ struct b43_c32 { s32 i, q; };
 #define B43_PHYVER_TYPE_SHIFT		8
 #define B43_PHYVER_VERSION		0x00FF
 
+/* PHY writes need to be flushed if we reach limit */
+#define B43_MAX_WRITES_IN_ROW		24
+
 /**
  * enum b43_interference_mitigation - Interference Mitigation mode
  *
@@ -191,6 +194,8 @@ struct b43_phy_a;
 struct b43_phy_g;
 struct b43_phy_n;
 struct b43_phy_lp;
+struct b43_phy_ht;
+struct b43_phy_lcn;
 
 struct b43_phy {
 	/* Hardware operation callbacks. */
@@ -213,6 +218,10 @@ struct b43_phy {
 		struct b43_phy_n *n;
 		/* LP-PHY specific information */
 		struct b43_phy_lp *lp;
+		/* HT-PHY specific information */
+		struct b43_phy_ht *ht;
+		/* LCN-PHY specific information */
+		struct b43_phy_lcn *lcn;
 	};
 
 	/* Band support flags. */
@@ -231,6 +240,9 @@ struct b43_phy {
 	u8 type;
 	/* PHY revision number. */
 	u8 rev;
+
+	/* Count writes since last read */
+	u8 writes_counter;
 
 	/* Radio versioning */
 	u16 radio_manuf;	/* Radio manufacturer */
@@ -429,6 +441,10 @@ int b43_phy_shm_tssi_read(struct b43_wldev *dev, u16 shm_offset);
  * for struct b43_phy_operations.
  */
 void b43_phyop_switch_analog_generic(struct b43_wldev *dev, bool on);
+
+bool b43_channel_type_is_40mhz(enum nl80211_channel_type channel_type);
+
+void b43_phy_force_clock(struct b43_wldev *dev, bool force);
 
 struct b43_c32 b43_cordic(int theta);
 

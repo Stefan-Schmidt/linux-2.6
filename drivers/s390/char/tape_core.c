@@ -1,5 +1,4 @@
 /*
- *  drivers/s390/char/tape_core.c
  *    basic function of the tape device driver
  *
  *  S390 and zSeries version
@@ -209,29 +208,79 @@ tape_state_set(struct tape_device *device, enum tape_state newstate)
 	wake_up(&device->state_change_wq);
 }
 
+struct tape_med_state_work_data {
+	struct tape_device *device;
+	enum tape_medium_state state;
+	struct work_struct  work;
+};
+
+static void
+tape_med_state_work_handler(struct work_struct *work)
+{
+	static char env_state_loaded[] = "MEDIUM_STATE=LOADED";
+	static char env_state_unloaded[] = "MEDIUM_STATE=UNLOADED";
+	struct tape_med_state_work_data *p =
+		container_of(work, struct tape_med_state_work_data, work);
+	struct tape_device *device = p->device;
+	char *envp[] = { NULL, NULL };
+
+	switch (p->state) {
+	case MS_UNLOADED:
+		pr_info("%s: The tape cartridge has been successfully "
+			"unloaded\n", dev_name(&device->cdev->dev));
+		envp[0] = env_state_unloaded;
+		kobject_uevent_env(&device->cdev->dev.kobj, KOBJ_CHANGE, envp);
+		break;
+	case MS_LOADED:
+		pr_info("%s: A tape cartridge has been mounted\n",
+			dev_name(&device->cdev->dev));
+		envp[0] = env_state_loaded;
+		kobject_uevent_env(&device->cdev->dev.kobj, KOBJ_CHANGE, envp);
+		break;
+	default:
+		break;
+	}
+	tape_put_device(device);
+	kfree(p);
+}
+
+static void
+tape_med_state_work(struct tape_device *device, enum tape_medium_state state)
+{
+	struct tape_med_state_work_data *p;
+
+	p = kzalloc(sizeof(*p), GFP_ATOMIC);
+	if (p) {
+		INIT_WORK(&p->work, tape_med_state_work_handler);
+		p->device = tape_get_device(device);
+		p->state = state;
+		schedule_work(&p->work);
+	}
+}
+
 void
 tape_med_state_set(struct tape_device *device, enum tape_medium_state newstate)
 {
-	if (device->medium_state == newstate)
+	enum tape_medium_state oldstate;
+
+	oldstate = device->medium_state;
+	if (oldstate == newstate)
 		return;
+	device->medium_state = newstate;
 	switch(newstate){
 	case MS_UNLOADED:
 		device->tape_generic_status |= GMT_DR_OPEN(~0);
-		if (device->medium_state == MS_LOADED)
-			pr_info("%s: The tape cartridge has been successfully "
-				"unloaded\n", dev_name(&device->cdev->dev));
+		if (oldstate == MS_LOADED)
+			tape_med_state_work(device, MS_UNLOADED);
 		break;
 	case MS_LOADED:
 		device->tape_generic_status &= ~GMT_DR_OPEN(~0);
-		if (device->medium_state == MS_UNLOADED)
-			pr_info("%s: A tape cartridge has been mounted\n",
-				dev_name(&device->cdev->dev));
+		if (oldstate == MS_UNLOADED)
+			tape_med_state_work(device, MS_LOADED);
 		break;
 	default:
-		// print nothing
 		break;
 	}
-	device->medium_state = newstate;
 	wake_up(&device->state_change_wq);
 }
 
@@ -351,9 +400,6 @@ tape_generic_online(struct tape_device *device,
 	rc = tapechar_setup_device(device);
 	if (rc)
 		goto out_minor;
-	rc = tapeblock_setup_device(device);
-	if (rc)
-		goto out_char;
 
 	tape_state_set(device, TS_UNUSED);
 
@@ -361,8 +407,6 @@ tape_generic_online(struct tape_device *device,
 
 	return 0;
 
-out_char:
-	tapechar_cleanup_device(device);
 out_minor:
 	tape_remove_minor(device);
 out_discipline:
@@ -376,7 +420,6 @@ out:
 static void
 tape_cleanup_device(struct tape_device *device)
 {
-	tapeblock_cleanup_device(device);
 	tapechar_cleanup_device(device);
 	device->discipline->cleanup_device(device);
 	module_put(device->discipline->owner);
@@ -735,10 +778,6 @@ __tape_start_io(struct tape_device *device, struct tape_request *request)
 {
 	int rc;
 
-#ifdef CONFIG_S390_TAPE_BLOCK
-	if (request->op == TO_BLOCK)
-		device->discipline->check_locate(device, request);
-#endif
 	rc = ccw_device_start(
 		device->cdev,
 		request->cpaddr,
@@ -1203,7 +1242,7 @@ __tape_do_irq (struct ccw_device *cdev, unsigned long intparm, struct irb *irb)
 }
 
 /*
- * Tape device open function used by tape_char & tape_block frontends.
+ * Tape device open function used by tape_char frontend.
  */
 int
 tape_open(struct tape_device *device)
@@ -1233,7 +1272,7 @@ tape_open(struct tape_device *device)
 }
 
 /*
- * Tape device release function used by tape_char & tape_block frontends.
+ * Tape device release function used by tape_char frontend.
  */
 int
 tape_release(struct tape_device *device)
@@ -1294,7 +1333,6 @@ tape_init (void)
 	DBF_EVENT(3, "tape init\n");
 	tape_proc_init();
 	tapechar_init ();
-	tapeblock_init ();
 	return 0;
 }
 
@@ -1308,7 +1346,6 @@ tape_exit(void)
 
 	/* Get rid of the frontends */
 	tapechar_exit();
-	tapeblock_exit();
 	tape_proc_cleanup();
 	debug_unregister (TAPE_DBF_AREA);
 }

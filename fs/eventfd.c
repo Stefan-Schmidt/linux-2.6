@@ -16,7 +16,7 @@
 #include <linux/spinlock.h>
 #include <linux/anon_inodes.h>
 #include <linux/syscalls.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/kref.h>
 #include <linux/eventfd.h>
 
@@ -46,20 +46,16 @@ struct eventfd_ctx {
  * value, and we signal this as overflow condition by returining a POLLERR
  * to poll(2).
  *
- * Returns @n in case of success, a non-negative number lower than @n in case
- * of overflow, or the following error codes:
- *
- * -EINVAL    : The value of @n is negative.
+ * Returns the amount by which the counter was incrememnted.  This will be less
+ * than @n if the counter has overflowed.
  */
-int eventfd_signal(struct eventfd_ctx *ctx, int n)
+__u64 eventfd_signal(struct eventfd_ctx *ctx, __u64 n)
 {
 	unsigned long flags;
 
-	if (n < 0)
-		return -EINVAL;
 	spin_lock_irqsave(&ctx->wqh.lock, flags);
 	if (ULLONG_MAX - ctx->count < n)
-		n = (int) (ULLONG_MAX - ctx->count);
+		n = ULLONG_MAX - ctx->count;
 	ctx->count += n;
 	if (waitqueue_active(&ctx->wqh))
 		wake_up_locked_poll(&ctx->wqh, POLLIN);
@@ -99,7 +95,7 @@ EXPORT_SYMBOL_GPL(eventfd_ctx_get);
  * @ctx: [in] Pointer to eventfd context.
  *
  * The eventfd context reference must have been previously acquired either
- * with eventfd_ctx_get() or eventfd_ctx_fdget()).
+ * with eventfd_ctx_get() or eventfd_ctx_fdget().
  */
 void eventfd_ctx_put(struct eventfd_ctx *ctx)
 {
@@ -146,9 +142,9 @@ static void eventfd_ctx_do_read(struct eventfd_ctx *ctx, __u64 *cnt)
  * eventfd_ctx_remove_wait_queue - Read the current counter and removes wait queue.
  * @ctx: [in] Pointer to eventfd context.
  * @wait: [in] Wait queue to be removed.
- * @cnt: [out] Pointer to the 64bit conter value.
+ * @cnt: [out] Pointer to the 64-bit counter value.
  *
- * Returns zero if successful, or the following error codes:
+ * Returns %0 if successful, or the following error codes:
  *
  * -EAGAIN      : The operation would have blocked.
  *
@@ -175,11 +171,11 @@ EXPORT_SYMBOL_GPL(eventfd_ctx_remove_wait_queue);
  * eventfd_ctx_read - Reads the eventfd counter or wait if it is zero.
  * @ctx: [in] Pointer to eventfd context.
  * @no_wait: [in] Different from zero if the operation should not block.
- * @cnt: [out] Pointer to the 64bit conter value.
+ * @cnt: [out] Pointer to the 64-bit counter value.
  *
- * Returns zero if successful, or the following error codes:
+ * Returns %0 if successful, or the following error codes:
  *
- * -EAGAIN      : The operation would have blocked but @no_wait was nonzero.
+ * -EAGAIN      : The operation would have blocked but @no_wait was non-zero.
  * -ERESTARTSYS : A signal interrupted the wait operation.
  *
  * If @no_wait is zero, the function might sleep until the eventfd internal

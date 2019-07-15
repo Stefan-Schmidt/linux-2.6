@@ -60,7 +60,6 @@
 #include <linux/ioctl.h>
 #include <linux/synclink.h>
 
-#include <asm/system.h>
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/dma.h>
@@ -418,9 +417,9 @@ static void bh_status(MGSLPC_INFO *info);
 /*
  * ioctl handlers
  */
-static int tiocmget(struct tty_struct *tty, struct file *file);
-static int tiocmset(struct tty_struct *tty, struct file *file,
-		    unsigned int set, unsigned int clear);
+static int tiocmget(struct tty_struct *tty);
+static int tiocmset(struct tty_struct *tty,
+					unsigned int set, unsigned int clear);
 static int get_stats(MGSLPC_INFO *info, struct mgsl_icount __user *user_icount);
 static int get_params(MGSLPC_INFO *info, MGSL_PARAMS __user *user_params);
 static int set_params(MGSLPC_INFO *info, MGSL_PARAMS __user *new_params, struct tty_struct *tty);
@@ -439,7 +438,7 @@ static int mgslpc_device_count = 0;
  * .text section address and breakpoint on module load.
  * This is useful for use with gdb and add-symbol-file command.
  */
-static int break_on_load=0;
+static bool break_on_load=0;
 
 /*
  * Driver major number, defaults to zero to get auto
@@ -1290,7 +1289,7 @@ static int startup(MGSLPC_INFO * info, struct tty_struct *tty)
 	/* Allocate and claim adapter resources */
 	retval = claim_resources(info);
 
-	/* perform existance check and diagnostics */
+	/* perform existence check and diagnostics */
 	if ( !retval )
 		retval = adapter_test(info);
 
@@ -2114,7 +2113,7 @@ static int modem_input_wait(MGSLPC_INFO *info,int arg)
 
 /* return the state of the serial control and status signals
  */
-static int tiocmget(struct tty_struct *tty, struct file *file)
+static int tiocmget(struct tty_struct *tty)
 {
 	MGSLPC_INFO *info = (MGSLPC_INFO *)tty->driver_data;
 	unsigned int result;
@@ -2139,7 +2138,7 @@ static int tiocmget(struct tty_struct *tty, struct file *file)
 
 /* set modem control signals (DTR/RTS)
  */
-static int tiocmset(struct tty_struct *tty, struct file *file,
+static int tiocmset(struct tty_struct *tty,
 		    unsigned int set, unsigned int clear)
 {
 	MGSLPC_INFO *info = (MGSLPC_INFO *)tty->driver_data;
@@ -2222,13 +2221,12 @@ static int mgslpc_get_icount(struct tty_struct *tty,
  * Arguments:
  *
  * 	tty	pointer to tty instance data
- * 	file	pointer to associated file object for device
  * 	cmd	IOCTL command code
  * 	arg	command argument/context
  *
  * Return Value:	0 if success, otherwise error code
  */
-static int mgslpc_ioctl(struct tty_struct *tty, struct file * file,
+static int mgslpc_ioctl(struct tty_struct *tty,
 			unsigned int cmd, unsigned long arg)
 {
 	MGSLPC_INFO * info = (MGSLPC_INFO *)tty->driver_data;
@@ -2485,7 +2483,7 @@ static int mgslpc_open(struct tty_struct *tty, struct file * filp)
 
 	/* verify range of specified line number */
 	line = tty->index;
-	if ((line < 0) || (line >= mgslpc_device_count)) {
+	if (line >= mgslpc_device_count) {
 		printk("%s(%d):mgslpc_open with invalid line #%d.\n",
 			__FILE__,__LINE__,line);
 		return -ENODEV;
@@ -2681,7 +2679,7 @@ static void rx_free_buffers(MGSLPC_INFO *info)
 static int claim_resources(MGSLPC_INFO *info)
 {
 	if (rx_alloc_buffers(info) < 0 ) {
-		printk( "Cant allocate rx buffer %s\n", info->device_name);
+		printk( "Can't allocate rx buffer %s\n", info->device_name);
 		release_resources(info);
 		return -ENODEV;
 	}
@@ -2759,7 +2757,7 @@ static void mgslpc_remove_device(MGSLPC_INFO *remove_info)
 	}
 }
 
-static struct pcmcia_device_id mgslpc_ids[] = {
+static const struct pcmcia_device_id mgslpc_ids[] = {
 	PCMCIA_DEVICE_MANF_CARD(0x02c5, 0x0050),
 	PCMCIA_DEVICE_NULL
 };
@@ -2796,6 +2794,7 @@ static const struct tty_operations mgslpc_ops = {
 	.hangup = mgslpc_hangup,
 	.tiocmget = tiocmget,
 	.tiocmset = tiocmset,
+	.get_icount = mgslpc_get_icount,
 	.proc_fops = &mgslpc_proc_fops,
 };
 
@@ -2836,7 +2835,6 @@ static int __init synclink_cs_init(void)
 
     /* Initialize the tty_driver structure */
 
-    serial_driver->owner = THIS_MODULE;
     serial_driver->driver_name = "synclink_cs";
     serial_driver->name = "ttySLP";
     serial_driver->major = ttymajor;

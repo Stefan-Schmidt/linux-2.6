@@ -24,11 +24,14 @@
 #include <linux/mempool.h>
 #include <linux/bio.h>
 #include <linux/scatterlist.h>
+#include <linux/export.h>
 #include <linux/slab.h>
 
 #include "blk.h"
 
 static struct kmem_cache *integrity_cachep;
+
+static const char *bi_unsupported_name = "unsupported";
 
 /**
  * blk_rq_count_integrity_sg - Count number of integrity scatterlist elements
@@ -358,6 +361,14 @@ static struct kobj_type integrity_ktype = {
 	.release	= blk_integrity_release,
 };
 
+bool blk_integrity_is_initialized(struct gendisk *disk)
+{
+	struct blk_integrity *bi = blk_get_integrity(disk);
+
+	return (bi && bi->name && strcmp(bi->name, bi_unsupported_name) != 0);
+}
+EXPORT_SYMBOL(blk_integrity_is_initialized);
+
 /**
  * blk_integrity_register - Register a gendisk as being integrity-capable
  * @disk:	struct gendisk pointer to make integrity-aware
@@ -407,7 +418,7 @@ int blk_integrity_register(struct gendisk *disk, struct blk_integrity *template)
 		bi->get_tag_fn = template->get_tag_fn;
 		bi->tag_size = template->tag_size;
 	} else
-		bi->name = "unsupported";
+		bi->name = bi_unsupported_name;
 
 	return 0;
 }

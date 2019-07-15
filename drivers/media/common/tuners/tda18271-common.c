@@ -533,16 +533,7 @@ int tda18271_calc_main_pll(struct dvb_frontend *fe, u32 freq)
 	if (tda_fail(ret))
 		goto fail;
 
-	regs[R_MPD]   = (0x77 & pd);
-
-	switch (priv->mode) {
-	case TDA18271_ANALOG:
-		regs[R_MPD]  &= ~0x08;
-		break;
-	case TDA18271_DIGITAL:
-		regs[R_MPD]  |=  0x08;
-		break;
-	}
+	regs[R_MPD]   = (0x7f & pd);
 
 	div =  ((d * (freq / 1000)) << 7) / 125;
 
@@ -685,10 +676,28 @@ fail:
 	return ret;
 }
 
-/*
- * Overrides for Emacs so that we follow Linus's tabbing style.
- * ---------------------------------------------------------------------------
- * Local variables:
- * c-basic-offset: 8
- * End:
- */
+int _tda_printk(struct tda18271_priv *state, const char *level,
+		const char *func, const char *fmt, ...)
+{
+	struct va_format vaf;
+	va_list args;
+	int rtn;
+
+	va_start(args, fmt);
+
+	vaf.fmt = fmt;
+	vaf.va = &args;
+
+	if (state)
+		rtn = printk("%s%s: [%d-%04x|%c] %pV",
+			     level, func, i2c_adapter_id(state->i2c_props.adap),
+			     state->i2c_props.addr,
+			     (state->role == TDA18271_MASTER) ? 'M' : 'S',
+			     &vaf);
+	else
+		rtn = printk("%s%s: %pV", level, func, &vaf);
+
+	va_end(args);
+
+	return rtn;
+}

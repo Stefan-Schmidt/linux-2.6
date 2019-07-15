@@ -355,7 +355,7 @@ i2c_davinci_xfer_msg(struct i2c_adapter *adap, struct i2c_msg *msg, int stop)
 	/*
 	 * Write mode register first as needed for correct behaviour
 	 * on OMAP-L138, but don't set STT yet to avoid a race with XRDY
-	 * occuring before we have loaded DXR
+	 * occurring before we have loaded DXR
 	 */
 	davinci_i2c_write_reg(dev, DAVINCI_I2C_MDR_REG, flag);
 
@@ -755,7 +755,7 @@ static int davinci_i2c_remove(struct platform_device *pdev)
 	dev->clk = NULL;
 
 	davinci_i2c_write_reg(dev, DAVINCI_I2C_MDR_REG, 0);
-	free_irq(IRQ_I2C, dev);
+	free_irq(dev->irq, dev);
 	iounmap(dev->base);
 	kfree(dev);
 

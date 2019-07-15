@@ -137,10 +137,10 @@ static int dsmark_change(struct Qdisc *sch, u32 classid, u32 parent,
 		mask = nla_get_u8(tb[TCA_DSMARK_MASK]);
 
 	if (tb[TCA_DSMARK_VALUE])
-		p->value[*arg-1] = nla_get_u8(tb[TCA_DSMARK_VALUE]);
+		p->value[*arg - 1] = nla_get_u8(tb[TCA_DSMARK_VALUE]);
 
 	if (tb[TCA_DSMARK_MASK])
-		p->mask[*arg-1] = mask;
+		p->mask[*arg - 1] = mask;
 
 	err = 0;
 
@@ -155,8 +155,8 @@ static int dsmark_delete(struct Qdisc *sch, unsigned long arg)
 	if (!dsmark_valid_index(p, arg))
 		return -EINVAL;
 
-	p->mask[arg-1] = 0xff;
-	p->value[arg-1] = 0;
+	p->mask[arg - 1] = 0xff;
+	p->value[arg - 1] = 0;
 
 	return 0;
 }
@@ -175,7 +175,7 @@ static void dsmark_walk(struct Qdisc *sch, struct qdisc_walker *walker)
 		if (p->mask[i] == 0xff && !p->value[i])
 			goto ignore;
 		if (walker->count >= walker->skip) {
-			if (walker->fn(sch, i+1, walker) < 0) {
+			if (walker->fn(sch, i + 1, walker) < 0) {
 				walker->stop = 1;
 				break;
 			}
@@ -260,15 +260,12 @@ static int dsmark_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 		return err;
 	}
 
-	sch->bstats.bytes += qdisc_pkt_len(skb);
-	sch->bstats.packets++;
 	sch->q.qlen++;
 
 	return NET_XMIT_SUCCESS;
 
 drop:
-	kfree_skb(skb);
-	sch->qstats.drops++;
+	qdisc_drop(skb, sch);
 	return NET_XMIT_SUCCESS | __NET_XMIT_BYPASS;
 }
 
@@ -284,6 +281,7 @@ static struct sk_buff *dsmark_dequeue(struct Qdisc *sch)
 	if (skb == NULL)
 		return NULL;
 
+	qdisc_bstats_update(sch, skb);
 	sch->q.qlen--;
 
 	index = skb->tc_index & (p->indices - 1);
@@ -305,9 +303,8 @@ static struct sk_buff *dsmark_dequeue(struct Qdisc *sch)
 		 * and don't need yet another qdisc as a bypass.
 		 */
 		if (p->mask[index] != 0xff || p->value[index])
-			printk(KERN_WARNING
-			       "dsmark_dequeue: unsupported protocol %d\n",
-			       ntohs(skb->protocol));
+			pr_warning("dsmark_dequeue: unsupported protocol %d\n",
+				   ntohs(skb->protocol));
 		break;
 	}
 
@@ -425,14 +422,15 @@ static int dsmark_dump_class(struct Qdisc *sch, unsigned long cl,
 	if (!dsmark_valid_index(p, cl))
 		return -EINVAL;
 
-	tcm->tcm_handle = TC_H_MAKE(TC_H_MAJ(sch->handle), cl-1);
+	tcm->tcm_handle = TC_H_MAKE(TC_H_MAJ(sch->handle), cl - 1);
 	tcm->tcm_info = p->q->handle;
 
 	opts = nla_nest_start(skb, TCA_OPTIONS);
 	if (opts == NULL)
 		goto nla_put_failure;
-	NLA_PUT_U8(skb, TCA_DSMARK_MASK, p->mask[cl-1]);
-	NLA_PUT_U8(skb, TCA_DSMARK_VALUE, p->value[cl-1]);
+	if (nla_put_u8(skb, TCA_DSMARK_MASK, p->mask[cl - 1]) ||
+	    nla_put_u8(skb, TCA_DSMARK_VALUE, p->value[cl - 1]))
+		goto nla_put_failure;
 
 	return nla_nest_end(skb, opts);
 
@@ -449,13 +447,16 @@ static int dsmark_dump(struct Qdisc *sch, struct sk_buff *skb)
 	opts = nla_nest_start(skb, TCA_OPTIONS);
 	if (opts == NULL)
 		goto nla_put_failure;
-	NLA_PUT_U16(skb, TCA_DSMARK_INDICES, p->indices);
+	if (nla_put_u16(skb, TCA_DSMARK_INDICES, p->indices))
+		goto nla_put_failure;
 
-	if (p->default_index != NO_DEFAULT_INDEX)
-		NLA_PUT_U16(skb, TCA_DSMARK_DEFAULT_INDEX, p->default_index);
+	if (p->default_index != NO_DEFAULT_INDEX &&
+	    nla_put_u16(skb, TCA_DSMARK_DEFAULT_INDEX, p->default_index))
+		goto nla_put_failure;
 
-	if (p->set_tc_index)
-		NLA_PUT_FLAG(skb, TCA_DSMARK_SET_TC_INDEX);
+	if (p->set_tc_index &&
+	    nla_put_flag(skb, TCA_DSMARK_SET_TC_INDEX))
+		goto nla_put_failure;
 
 	return nla_nest_end(skb, opts);
 

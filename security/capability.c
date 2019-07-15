@@ -12,7 +12,7 @@
 
 #include <linux/security.h>
 
-static int cap_sysctl(ctl_table *table, int op)
+static int cap_syslog(int type)
 {
 	return 0;
 }
@@ -50,6 +50,11 @@ static void cap_sb_free_security(struct super_block *sb)
 }
 
 static int cap_sb_copy_data(char *orig, char *copy)
+{
+	return 0;
+}
+
+static int cap_sb_remount(struct super_block *sb, void *data)
 {
 	return 0;
 }
@@ -113,13 +118,14 @@ static void cap_inode_free_security(struct inode *inode)
 }
 
 static int cap_inode_init_security(struct inode *inode, struct inode *dir,
-				   char **name, void **value, size_t *len)
+				   const struct qstr *qstr, char **name,
+				   void **value, size_t *len)
 {
 	return -EOPNOTSUPP;
 }
 
 static int cap_inode_create(struct inode *inode, struct dentry *dentry,
-			    int mask)
+			    umode_t mask)
 {
 	return 0;
 }
@@ -142,7 +148,7 @@ static int cap_inode_symlink(struct inode *inode, struct dentry *dentry,
 }
 
 static int cap_inode_mkdir(struct inode *inode, struct dentry *dentry,
-			   int mask)
+			   umode_t mask)
 {
 	return 0;
 }
@@ -153,7 +159,7 @@ static int cap_inode_rmdir(struct inode *inode, struct dentry *dentry)
 }
 
 static int cap_inode_mknod(struct inode *inode, struct dentry *dentry,
-			   int mode, dev_t dev)
+			   umode_t mode, dev_t dev)
 {
 	return 0;
 }
@@ -229,13 +235,13 @@ static void cap_inode_getsecid(const struct inode *inode, u32 *secid)
 }
 
 #ifdef CONFIG_SECURITY_PATH
-static int cap_path_mknod(struct path *dir, struct dentry *dentry, int mode,
+static int cap_path_mknod(struct path *dir, struct dentry *dentry, umode_t mode,
 			  unsigned int dev)
 {
 	return 0;
 }
 
-static int cap_path_mkdir(struct path *dir, struct dentry *dentry, int mode)
+static int cap_path_mkdir(struct path *dir, struct dentry *dentry, umode_t mode)
 {
 	return 0;
 }
@@ -273,8 +279,7 @@ static int cap_path_truncate(struct path *path)
 	return 0;
 }
 
-static int cap_path_chmod(struct dentry *dentry, struct vfsmount *mnt,
-			  mode_t mode)
+static int cap_path_chmod(struct path *path, umode_t mode)
 {
 	return 0;
 }
@@ -343,7 +348,7 @@ static int cap_file_receive(struct file *file)
 	return 0;
 }
 
-static int cap_dentry_open(struct file *file, const struct cred *cred)
+static int cap_file_open(struct file *file, const struct cred *cred)
 {
 	return 0;
 }
@@ -351,6 +356,10 @@ static int cap_dentry_open(struct file *file, const struct cred *cred)
 static int cap_task_create(unsigned long clone_flags)
 {
 	return 0;
+}
+
+static void cap_task_free(struct task_struct *task)
+{
 }
 
 static int cap_cred_alloc_blank(struct cred *cred, gfp_t gfp)
@@ -543,7 +552,7 @@ static int cap_sem_semop(struct sem_array *sma, struct sembuf *sops,
 }
 
 #ifdef CONFIG_SECURITY_NETWORK
-static int cap_unix_stream_connect(struct socket *sock, struct socket *other,
+static int cap_unix_stream_connect(struct sock *sock, struct sock *other,
 				   struct sock *newsk)
 {
 	return 0;
@@ -755,7 +764,7 @@ static int cap_xfrm_policy_lookup(struct xfrm_sec_ctx *ctx, u32 sk_sid, u8 dir)
 
 static int cap_xfrm_state_pol_flow_match(struct xfrm_state *x,
 					 struct xfrm_policy *xp,
-					 struct flowi *fl)
+					 const struct flowi *fl)
 {
 	return 1;
 }
@@ -875,7 +884,6 @@ void __init security_fixup_ops(struct security_operations *ops)
 	set_to_cap_if_null(ops, capable);
 	set_to_cap_if_null(ops, quotactl);
 	set_to_cap_if_null(ops, quota_on);
-	set_to_cap_if_null(ops, sysctl);
 	set_to_cap_if_null(ops, syslog);
 	set_to_cap_if_null(ops, settime);
 	set_to_cap_if_null(ops, vm_enough_memory);
@@ -887,6 +895,7 @@ void __init security_fixup_ops(struct security_operations *ops)
 	set_to_cap_if_null(ops, sb_alloc_security);
 	set_to_cap_if_null(ops, sb_free_security);
 	set_to_cap_if_null(ops, sb_copy_data);
+	set_to_cap_if_null(ops, sb_remount);
 	set_to_cap_if_null(ops, sb_kern_mount);
 	set_to_cap_if_null(ops, sb_show_options);
 	set_to_cap_if_null(ops, sb_statfs);
@@ -940,15 +949,17 @@ void __init security_fixup_ops(struct security_operations *ops)
 	set_to_cap_if_null(ops, file_alloc_security);
 	set_to_cap_if_null(ops, file_free_security);
 	set_to_cap_if_null(ops, file_ioctl);
-	set_to_cap_if_null(ops, file_mmap);
+	set_to_cap_if_null(ops, mmap_addr);
+	set_to_cap_if_null(ops, mmap_file);
 	set_to_cap_if_null(ops, file_mprotect);
 	set_to_cap_if_null(ops, file_lock);
 	set_to_cap_if_null(ops, file_fcntl);
 	set_to_cap_if_null(ops, file_set_fowner);
 	set_to_cap_if_null(ops, file_send_sigiotask);
 	set_to_cap_if_null(ops, file_receive);
-	set_to_cap_if_null(ops, dentry_open);
+	set_to_cap_if_null(ops, file_open);
 	set_to_cap_if_null(ops, task_create);
+	set_to_cap_if_null(ops, task_free);
 	set_to_cap_if_null(ops, cred_alloc_blank);
 	set_to_cap_if_null(ops, cred_free);
 	set_to_cap_if_null(ops, cred_prepare);
@@ -993,7 +1004,6 @@ void __init security_fixup_ops(struct security_operations *ops)
 	set_to_cap_if_null(ops, sem_semctl);
 	set_to_cap_if_null(ops, sem_semop);
 	set_to_cap_if_null(ops, netlink_send);
-	set_to_cap_if_null(ops, netlink_recv);
 	set_to_cap_if_null(ops, d_instantiate);
 	set_to_cap_if_null(ops, getprocattr);
 	set_to_cap_if_null(ops, setprocattr);

@@ -13,15 +13,19 @@
 #include <asm/mach/map.h>
 
 #include <linux/dma-mapping.h>
+#include <linux/gpio.h>
 #include <linux/platform_device.h>
 #include <linux/i2c-gpio.h>
 
+#include <linux/platform_data/at91_adc.h>
+
 #include <mach/board.h>
-#include <mach/gpio.h>
 #include <mach/cpu.h>
 #include <mach/at91sam9260.h>
 #include <mach/at91sam9260_matrix.h>
+#include <mach/at91_matrix.h>
 #include <mach/at91sam9_smc.h>
+#include <mach/at91_adc.h>
 
 #include "generic.h"
 
@@ -41,8 +45,8 @@ static struct resource usbh_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_UHP,
-		.end	= AT91SAM9260_ID_UHP,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_UHP,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_UHP,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -61,8 +65,16 @@ static struct platform_device at91_usbh_device = {
 
 void __init at91_add_device_usbh(struct at91_usbh_data *data)
 {
+	int i;
+
 	if (!data)
 		return;
+
+	/* Enable overcurrent notification */
+	for (i = 0; i < data->ports; i++) {
+		if (data->overcurrent_pin[i])
+			at91_set_gpio_input(data->overcurrent_pin[i], 1);
+	}
 
 	usbh_data = *data;
 	platform_device_register(&at91_usbh_device);
@@ -76,7 +88,7 @@ void __init at91_add_device_usbh(struct at91_usbh_data *data) {}
  *  USB Device (Gadget)
  * -------------------------------------------------------------------- */
 
-#ifdef CONFIG_USB_GADGET_AT91
+#if defined(CONFIG_USB_AT91) || defined(CONFIG_USB_AT91_MODULE)
 static struct at91_udc_data udc_data;
 
 static struct resource udc_resources[] = {
@@ -86,8 +98,8 @@ static struct resource udc_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_UDP,
-		.end	= AT91SAM9260_ID_UDP,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_UDP,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_UDP,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -107,7 +119,7 @@ void __init at91_add_device_udc(struct at91_udc_data *data)
 	if (!data)
 		return;
 
-	if (data->vbus_pin) {
+	if (gpio_is_valid(data->vbus_pin)) {
 		at91_set_gpio_input(data->vbus_pin, 0);
 		at91_set_deglitch(data->vbus_pin, 1);
 	}
@@ -128,7 +140,7 @@ void __init at91_add_device_udc(struct at91_udc_data *data) {}
 
 #if defined(CONFIG_MACB) || defined(CONFIG_MACB_MODULE)
 static u64 eth_dmamask = DMA_BIT_MASK(32);
-static struct at91_eth_data eth_data;
+static struct macb_platform_data eth_data;
 
 static struct resource eth_resources[] = {
 	[0] = {
@@ -137,8 +149,8 @@ static struct resource eth_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_EMAC,
-		.end	= AT91SAM9260_ID_EMAC,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_EMAC,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_EMAC,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -155,12 +167,12 @@ static struct platform_device at91sam9260_eth_device = {
 	.num_resources	= ARRAY_SIZE(eth_resources),
 };
 
-void __init at91_add_device_eth(struct at91_eth_data *data)
+void __init at91_add_device_eth(struct macb_platform_data *data)
 {
 	if (!data)
 		return;
 
-	if (data->phy_irq_pin) {
+	if (gpio_is_valid(data->phy_irq_pin)) {
 		at91_set_gpio_input(data->phy_irq_pin, 0);
 		at91_set_deglitch(data->phy_irq_pin, 1);
 	}
@@ -192,7 +204,7 @@ void __init at91_add_device_eth(struct at91_eth_data *data)
 	platform_device_register(&at91sam9260_eth_device);
 }
 #else
-void __init at91_add_device_eth(struct at91_eth_data *data) {}
+void __init at91_add_device_eth(struct macb_platform_data *data) {}
 #endif
 
 
@@ -211,8 +223,8 @@ static struct resource mmc_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_MCI,
-		.end	= AT91SAM9260_ID_MCI,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_MCI,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_MCI,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -235,13 +247,13 @@ void __init at91_add_device_mmc(short mmc_id, struct at91_mmc_data *data)
 		return;
 
 	/* input/irq */
-	if (data->det_pin) {
+	if (gpio_is_valid(data->det_pin)) {
 		at91_set_gpio_input(data->det_pin, 1);
 		at91_set_deglitch(data->det_pin, 1);
 	}
-	if (data->wp_pin)
+	if (gpio_is_valid(data->wp_pin))
 		at91_set_gpio_input(data->wp_pin, 1);
-	if (data->vcc_pin)
+	if (gpio_is_valid(data->vcc_pin))
 		at91_set_gpio_output(data->vcc_pin, 0);
 
 	/* CLK */
@@ -293,8 +305,8 @@ static struct resource mmc_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_MCI,
-		.end	= AT91SAM9260_ID_MCI,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_MCI,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_MCI,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -319,14 +331,14 @@ void __init at91_add_device_mci(short mmc_id, struct mci_platform_data *data)
 	if (!data)
 		return;
 
-	for (i = 0; i < ATMEL_MCI_MAX_NR_SLOTS; i++) {
+	for (i = 0; i < ATMCI_MAX_NR_SLOTS; i++) {
 		if (data->slot[i].bus_width) {
 			/* input/irq */
-			if (data->slot[i].detect_pin) {
+			if (gpio_is_valid(data->slot[i].detect_pin)) {
 				at91_set_gpio_input(data->slot[i].detect_pin, 1);
 				at91_set_deglitch(data->slot[i].detect_pin, 1);
 			}
-			if (data->slot[i].wp_pin)
+			if (gpio_is_valid(data->slot[i].wp_pin))
 				at91_set_gpio_input(data->slot[i].wp_pin, 1);
 
 			switch (i) {
@@ -391,8 +403,8 @@ static struct resource nand_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91_BASE_SYS + AT91_ECC,
-		.end	= AT91_BASE_SYS + AT91_ECC + SZ_512 - 1,
+		.start	= AT91SAM9260_BASE_ECC,
+		.end	= AT91SAM9260_BASE_ECC + SZ_512 - 1,
 		.flags	= IORESOURCE_MEM,
 	}
 };
@@ -414,19 +426,19 @@ void __init at91_add_device_nand(struct atmel_nand_data *data)
 	if (!data)
 		return;
 
-	csa = at91_sys_read(AT91_MATRIX_EBICSA);
-	at91_sys_write(AT91_MATRIX_EBICSA, csa | AT91_MATRIX_CS3A_SMC_SMARTMEDIA);
+	csa = at91_matrix_read(AT91_MATRIX_EBICSA);
+	at91_matrix_write(AT91_MATRIX_EBICSA, csa | AT91_MATRIX_CS3A_SMC_SMARTMEDIA);
 
 	/* enable pin */
-	if (data->enable_pin)
+	if (gpio_is_valid(data->enable_pin))
 		at91_set_gpio_output(data->enable_pin, 1);
 
 	/* ready/busy pin */
-	if (data->rdy_pin)
+	if (gpio_is_valid(data->rdy_pin))
 		at91_set_gpio_input(data->rdy_pin, 1);
 
 	/* card detect pin */
-	if (data->det_pin)
+	if (gpio_is_valid(data->det_pin))
 		at91_set_gpio_input(data->det_pin, 1);
 
 	nand_data = *data;
@@ -484,8 +496,8 @@ static struct resource twi_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_TWI,
-		.end	= AT91SAM9260_ID_TWI,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_TWI,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_TWI,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -528,8 +540,8 @@ static struct resource spi0_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_SPI0,
-		.end	= AT91SAM9260_ID_SPI0,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_SPI0,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_SPI0,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -554,8 +566,8 @@ static struct resource spi1_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_SPI1,
-		.end	= AT91SAM9260_ID_SPI1,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_SPI1,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_SPI1,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -589,6 +601,9 @@ void __init at91_add_device_spi(struct spi_board_info *devices, int nr_devices)
 		else
 			cs_pin = spi1_standard_cs[devices[i].chip_select];
 
+		if (!gpio_is_valid(cs_pin))
+			continue;
+
 		if (devices[i].bus_num == 0)
 			enable_spi0 = 1;
 		else
@@ -609,7 +624,6 @@ void __init at91_add_device_spi(struct spi_board_info *devices, int nr_devices)
 		at91_set_A_periph(AT91_PIN_PA1, 0);	/* SPI0_MOSI */
 		at91_set_A_periph(AT91_PIN_PA2, 0);	/* SPI1_SPCK */
 
-		at91_clock_associate("spi0_clk", &at91sam9260_spi0_device.dev, "spi_clk");
 		platform_device_register(&at91sam9260_spi0_device);
 	}
 	if (enable_spi1) {
@@ -617,7 +631,6 @@ void __init at91_add_device_spi(struct spi_board_info *devices, int nr_devices)
 		at91_set_A_periph(AT91_PIN_PB1, 0);	/* SPI1_MOSI */
 		at91_set_A_periph(AT91_PIN_PB2, 0);	/* SPI1_SPCK */
 
-		at91_clock_associate("spi1_clk", &at91sam9260_spi1_device.dev, "spi_clk");
 		platform_device_register(&at91sam9260_spi1_device);
 	}
 }
@@ -635,22 +648,22 @@ void __init at91_add_device_spi(struct spi_board_info *devices, int nr_devices) 
 static struct resource tcb0_resources[] = {
 	[0] = {
 		.start	= AT91SAM9260_BASE_TCB0,
-		.end	= AT91SAM9260_BASE_TCB0 + SZ_16K - 1,
+		.end	= AT91SAM9260_BASE_TCB0 + SZ_256 - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_TC0,
-		.end	= AT91SAM9260_ID_TC0,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_TC0,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_TC0,
 		.flags	= IORESOURCE_IRQ,
 	},
 	[2] = {
-		.start	= AT91SAM9260_ID_TC1,
-		.end	= AT91SAM9260_ID_TC1,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_TC1,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_TC1,
 		.flags	= IORESOURCE_IRQ,
 	},
 	[3] = {
-		.start	= AT91SAM9260_ID_TC2,
-		.end	= AT91SAM9260_ID_TC2,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_TC2,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_TC2,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -665,22 +678,22 @@ static struct platform_device at91sam9260_tcb0_device = {
 static struct resource tcb1_resources[] = {
 	[0] = {
 		.start	= AT91SAM9260_BASE_TCB1,
-		.end	= AT91SAM9260_BASE_TCB1 + SZ_16K - 1,
+		.end	= AT91SAM9260_BASE_TCB1 + SZ_256 - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_TC3,
-		.end	= AT91SAM9260_ID_TC3,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_TC3,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_TC3,
 		.flags	= IORESOURCE_IRQ,
 	},
 	[2] = {
-		.start	= AT91SAM9260_ID_TC4,
-		.end	= AT91SAM9260_ID_TC4,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_TC4,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_TC4,
 		.flags	= IORESOURCE_IRQ,
 	},
 	[3] = {
-		.start	= AT91SAM9260_ID_TC5,
-		.end	= AT91SAM9260_ID_TC5,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_TC5,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_TC5,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -694,15 +707,7 @@ static struct platform_device at91sam9260_tcb1_device = {
 
 static void __init at91_add_device_tc(void)
 {
-	/* this chip has a separate clock and irq for each TC channel */
-	at91_clock_associate("tc0_clk", &at91sam9260_tcb0_device.dev, "t0_clk");
-	at91_clock_associate("tc1_clk", &at91sam9260_tcb0_device.dev, "t1_clk");
-	at91_clock_associate("tc2_clk", &at91sam9260_tcb0_device.dev, "t2_clk");
 	platform_device_register(&at91sam9260_tcb0_device);
-
-	at91_clock_associate("tc3_clk", &at91sam9260_tcb1_device.dev, "t0_clk");
-	at91_clock_associate("tc4_clk", &at91sam9260_tcb1_device.dev, "t1_clk");
-	at91_clock_associate("tc5_clk", &at91sam9260_tcb1_device.dev, "t2_clk");
 	platform_device_register(&at91sam9260_tcb1_device);
 }
 #else
@@ -716,21 +721,49 @@ static void __init at91_add_device_tc(void) { }
 
 static struct resource rtt_resources[] = {
 	{
-		.start	= AT91_BASE_SYS + AT91_RTT,
-		.end	= AT91_BASE_SYS + AT91_RTT + SZ_16 - 1,
+		.start	= AT91SAM9260_BASE_RTT,
+		.end	= AT91SAM9260_BASE_RTT + SZ_16 - 1,
 		.flags	= IORESOURCE_MEM,
-	}
+	}, {
+		.flags	= IORESOURCE_MEM,
+	}, {
+		.flags  = IORESOURCE_IRQ,
+	},
 };
 
 static struct platform_device at91sam9260_rtt_device = {
 	.name		= "at91_rtt",
 	.id		= 0,
 	.resource	= rtt_resources,
-	.num_resources	= ARRAY_SIZE(rtt_resources),
 };
+
+
+#if IS_ENABLED(CONFIG_RTC_DRV_AT91SAM9)
+static void __init at91_add_device_rtt_rtc(void)
+{
+	at91sam9260_rtt_device.name = "rtc-at91sam9";
+	/*
+	 * The second resource is needed:
+	 * GPBR will serve as the storage for RTC time offset
+	 */
+	at91sam9260_rtt_device.num_resources = 3;
+	rtt_resources[1].start = AT91SAM9260_BASE_GPBR +
+				 4 * CONFIG_RTC_DRV_AT91SAM9_GPBR;
+	rtt_resources[1].end = rtt_resources[1].start + 3;
+	rtt_resources[2].start = NR_IRQS_LEGACY + AT91_ID_SYS;
+	rtt_resources[2].end = NR_IRQS_LEGACY + AT91_ID_SYS;
+}
+#else
+static void __init at91_add_device_rtt_rtc(void)
+{
+	/* Only one resource is needed: RTT not used as RTC */
+	at91sam9260_rtt_device.num_resources = 1;
+}
+#endif
 
 static void __init at91_add_device_rtt(void)
 {
+	at91_add_device_rtt_rtc();
 	platform_device_register(&at91sam9260_rtt_device);
 }
 
@@ -740,10 +773,19 @@ static void __init at91_add_device_rtt(void)
  * -------------------------------------------------------------------- */
 
 #if defined(CONFIG_AT91SAM9X_WATCHDOG) || defined(CONFIG_AT91SAM9X_WATCHDOG_MODULE)
+static struct resource wdt_resources[] = {
+	{
+		.start	= AT91SAM9260_BASE_WDT,
+		.end	= AT91SAM9260_BASE_WDT + SZ_16 - 1,
+		.flags	= IORESOURCE_MEM,
+	}
+};
+
 static struct platform_device at91sam9260_wdt_device = {
 	.name		= "at91_wdt",
 	.id		= -1,
-	.num_resources	= 0,
+	.resource	= wdt_resources,
+	.num_resources	= ARRAY_SIZE(wdt_resources),
 };
 
 static void __init at91_add_device_watchdog(void)
@@ -769,8 +811,8 @@ static struct resource ssc_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_SSC,
-		.end	= AT91SAM9260_ID_SSC,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_SSC,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_SSC,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -820,7 +862,6 @@ void __init at91_add_device_ssc(unsigned id, unsigned pins)
 	case AT91SAM9260_ID_SSC:
 		pdev = &at91sam9260_ssc_device;
 		configure_ssc_pins(pins);
-		at91_clock_associate("ssc_clk", &pdev->dev, "pclk");
 		break;
 	default:
 		return;
@@ -840,13 +881,13 @@ void __init at91_add_device_ssc(unsigned id, unsigned pins) {}
 #if defined(CONFIG_SERIAL_ATMEL)
 static struct resource dbgu_resources[] = {
 	[0] = {
-		.start	= AT91_VA_BASE_SYS + AT91_DBGU,
-		.end	= AT91_VA_BASE_SYS + AT91_DBGU + SZ_512 - 1,
+		.start	= AT91SAM9260_BASE_DBGU,
+		.end	= AT91SAM9260_BASE_DBGU + SZ_512 - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91_ID_SYS,
-		.end	= AT91_ID_SYS,
+		.start	= NR_IRQS_LEGACY + AT91_ID_SYS,
+		.end	= NR_IRQS_LEGACY + AT91_ID_SYS,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -854,7 +895,6 @@ static struct resource dbgu_resources[] = {
 static struct atmel_uart_data dbgu_data = {
 	.use_dma_tx	= 0,
 	.use_dma_rx	= 0,		/* DBGU not capable of receive DMA */
-	.regs		= (void __iomem *)(AT91_VA_BASE_SYS + AT91_DBGU),
 };
 
 static u64 dbgu_dmamask = DMA_BIT_MASK(32);
@@ -884,8 +924,8 @@ static struct resource uart0_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_US0,
-		.end	= AT91SAM9260_ID_US0,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_US0,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_US0,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -935,8 +975,8 @@ static struct resource uart1_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_US1,
-		.end	= AT91SAM9260_ID_US1,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_US1,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_US1,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -978,8 +1018,8 @@ static struct resource uart2_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_US2,
-		.end	= AT91SAM9260_ID_US2,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_US2,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_US2,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -1021,8 +1061,8 @@ static struct resource uart3_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_US3,
-		.end	= AT91SAM9260_ID_US3,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_US3,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_US3,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -1064,8 +1104,8 @@ static struct resource uart4_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_US4,
-		.end	= AT91SAM9260_ID_US4,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_US4,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_US4,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -1102,8 +1142,8 @@ static struct resource uart5_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9260_ID_US5,
-		.end	= AT91SAM9260_ID_US5,
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_US5,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_US5,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -1134,61 +1174,49 @@ static inline void configure_usart5_pins(void)
 }
 
 static struct platform_device *__initdata at91_uarts[ATMEL_MAX_UART];	/* the UARTs to use */
-struct platform_device *atmel_default_console_device;	/* the serial console device */
 
 void __init at91_register_uart(unsigned id, unsigned portnr, unsigned pins)
 {
 	struct platform_device *pdev;
+	struct atmel_uart_data *pdata;
 
 	switch (id) {
 		case 0:		/* DBGU */
 			pdev = &at91sam9260_dbgu_device;
 			configure_dbgu_pins();
-			at91_clock_associate("mck", &pdev->dev, "usart");
 			break;
 		case AT91SAM9260_ID_US0:
 			pdev = &at91sam9260_uart0_device;
 			configure_usart0_pins(pins);
-			at91_clock_associate("usart0_clk", &pdev->dev, "usart");
 			break;
 		case AT91SAM9260_ID_US1:
 			pdev = &at91sam9260_uart1_device;
 			configure_usart1_pins(pins);
-			at91_clock_associate("usart1_clk", &pdev->dev, "usart");
 			break;
 		case AT91SAM9260_ID_US2:
 			pdev = &at91sam9260_uart2_device;
 			configure_usart2_pins(pins);
-			at91_clock_associate("usart2_clk", &pdev->dev, "usart");
 			break;
 		case AT91SAM9260_ID_US3:
 			pdev = &at91sam9260_uart3_device;
 			configure_usart3_pins(pins);
-			at91_clock_associate("usart3_clk", &pdev->dev, "usart");
 			break;
 		case AT91SAM9260_ID_US4:
 			pdev = &at91sam9260_uart4_device;
 			configure_usart4_pins();
-			at91_clock_associate("usart4_clk", &pdev->dev, "usart");
 			break;
 		case AT91SAM9260_ID_US5:
 			pdev = &at91sam9260_uart5_device;
 			configure_usart5_pins();
-			at91_clock_associate("usart5_clk", &pdev->dev, "usart");
 			break;
 		default:
 			return;
 	}
-	pdev->id = portnr;		/* update to mapped ID */
+	pdata = pdev->dev.platform_data;
+	pdata->num = portnr;		/* update to mapped ID */
 
 	if (portnr < ATMEL_MAX_UART)
 		at91_uarts[portnr] = pdev;
-}
-
-void __init at91_set_serial_console(unsigned portnr)
-{
-	if (portnr < ATMEL_MAX_UART)
-		atmel_default_console_device = at91_uarts[portnr];
 }
 
 void __init at91_add_device_serial(void)
@@ -1199,13 +1227,9 @@ void __init at91_add_device_serial(void)
 		if (at91_uarts[i])
 			platform_device_register(at91_uarts[i]);
 	}
-
-	if (!atmel_default_console_device)
-		printk(KERN_INFO "AT91: No default serial console defined.\n");
 }
 #else
 void __init at91_register_uart(unsigned id, unsigned portnr, unsigned pins) {}
-void __init at91_set_serial_console(unsigned portnr) {}
 void __init at91_add_device_serial(void) {}
 #endif
 
@@ -1213,8 +1237,7 @@ void __init at91_add_device_serial(void) {}
  *  CF/IDE
  * -------------------------------------------------------------------- */
 
-#if defined(CONFIG_BLK_DEV_IDE_AT91) || defined(CONFIG_BLK_DEV_IDE_AT91_MODULE) || \
-	defined(CONFIG_PATA_AT91) || defined(CONFIG_PATA_AT91_MODULE) || \
+#if defined(CONFIG_PATA_AT91) || defined(CONFIG_PATA_AT91_MODULE) || \
 	defined(CONFIG_AT91_CF) || defined(CONFIG_AT91_CF_MODULE)
 
 static struct at91_cf_data cf0_data;
@@ -1263,7 +1286,7 @@ void __init at91_add_device_cf(struct at91_cf_data *data)
 	if (!data)
 		return;
 
-	csa = at91_sys_read(AT91_MATRIX_EBICSA);
+	csa = at91_matrix_read(AT91_MATRIX_EBICSA);
 
 	switch (data->chipselect) {
 	case 4:
@@ -1286,19 +1309,19 @@ void __init at91_add_device_cf(struct at91_cf_data *data)
 		return;
 	}
 
-	at91_sys_write(AT91_MATRIX_EBICSA, csa);
+	at91_matrix_write(AT91_MATRIX_EBICSA, csa);
 
-	if (data->rst_pin) {
+	if (gpio_is_valid(data->rst_pin)) {
 		at91_set_multi_drive(data->rst_pin, 0);
 		at91_set_gpio_output(data->rst_pin, 1);
 	}
 
-	if (data->irq_pin) {
+	if (gpio_is_valid(data->irq_pin)) {
 		at91_set_gpio_input(data->irq_pin, 0);
 		at91_set_deglitch(data->irq_pin, 1);
 	}
 
-	if (data->det_pin) {
+	if (gpio_is_valid(data->det_pin)) {
 		at91_set_gpio_input(data->det_pin, 0);
 		at91_set_deglitch(data->det_pin, 1);
 	}
@@ -1311,10 +1334,8 @@ void __init at91_add_device_cf(struct at91_cf_data *data)
 	if (data->flags & AT91_CF_TRUE_IDE)
 #if defined(CONFIG_PATA_AT91) || defined(CONFIG_PATA_AT91_MODULE)
 		pdev->name = "pata_at91";
-#elif defined(CONFIG_BLK_DEV_IDE_AT91) || defined(CONFIG_BLK_DEV_IDE_AT91_MODULE)
-		pdev->name = "at91_ide";
 #else
-#warning "board requires AT91_CF_TRUE_IDE: enable either at91_ide or pata_at91"
+#warning "board requires AT91_CF_TRUE_IDE: enable pata_at91"
 #endif
 	else
 		pdev->name = "at91_cf";
@@ -1326,6 +1347,93 @@ void __init at91_add_device_cf(struct at91_cf_data *data)
 void __init at91_add_device_cf(struct at91_cf_data * data) {}
 #endif
 
+/* --------------------------------------------------------------------
+ *  ADCs
+ * -------------------------------------------------------------------- */
+
+#if IS_ENABLED(CONFIG_AT91_ADC)
+static struct at91_adc_data adc_data;
+
+static struct resource adc_resources[] = {
+	[0] = {
+		.start	= AT91SAM9260_BASE_ADC,
+		.end	= AT91SAM9260_BASE_ADC + SZ_16K - 1,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= NR_IRQS_LEGACY + AT91SAM9260_ID_ADC,
+		.end	= NR_IRQS_LEGACY + AT91SAM9260_ID_ADC,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device at91_adc_device = {
+	.name		= "at91_adc",
+	.id		= -1,
+	.dev		= {
+				.platform_data		= &adc_data,
+	},
+	.resource	= adc_resources,
+	.num_resources	= ARRAY_SIZE(adc_resources),
+};
+
+static struct at91_adc_trigger at91_adc_triggers[] = {
+	[0] = {
+		.name = "timer-counter-0",
+		.value = AT91_ADC_TRGSEL_TC0 | AT91_ADC_TRGEN,
+	},
+	[1] = {
+		.name = "timer-counter-1",
+		.value = AT91_ADC_TRGSEL_TC1 | AT91_ADC_TRGEN,
+	},
+	[2] = {
+		.name = "timer-counter-2",
+		.value = AT91_ADC_TRGSEL_TC2 | AT91_ADC_TRGEN,
+	},
+	[3] = {
+		.name = "external",
+		.value = AT91_ADC_TRGSEL_EXTERNAL | AT91_ADC_TRGEN,
+		.is_external = true,
+	},
+};
+
+static struct at91_adc_reg_desc at91_adc_register_g20 = {
+	.channel_base = AT91_ADC_CHR(0),
+	.drdy_mask = AT91_ADC_DRDY,
+	.status_register = AT91_ADC_SR,
+	.trigger_register = AT91_ADC_MR,
+};
+
+void __init at91_add_device_adc(struct at91_adc_data *data)
+{
+	if (!data)
+		return;
+
+	if (test_bit(0, &data->channels_used))
+		at91_set_A_periph(AT91_PIN_PC0, 0);
+	if (test_bit(1, &data->channels_used))
+		at91_set_A_periph(AT91_PIN_PC1, 0);
+	if (test_bit(2, &data->channels_used))
+		at91_set_A_periph(AT91_PIN_PC2, 0);
+	if (test_bit(3, &data->channels_used))
+		at91_set_A_periph(AT91_PIN_PC3, 0);
+
+	if (data->use_external_triggers)
+		at91_set_A_periph(AT91_PIN_PA22, 0);
+
+	data->num_channels = 4;
+	data->startup_time = 10;
+	data->registers = &at91_adc_register_g20;
+	data->trigger_number = 4;
+	data->trigger_list = at91_adc_triggers;
+
+	adc_data = *data;
+	platform_device_register(&at91_adc_device);
+}
+#else
+void __init at91_add_device_adc(struct at91_adc_data *data) {}
+#endif
+
 /* -------------------------------------------------------------------- */
 /*
  * These devices are always present and don't need any board-specific
@@ -1333,6 +1441,9 @@ void __init at91_add_device_cf(struct at91_cf_data * data) {}
  */
 static int __init at91_add_standard_devices(void)
 {
+	if (of_have_populated_dt())
+		return 0;
+
 	at91_add_device_rtt();
 	at91_add_device_watchdog();
 	at91_add_device_tc();

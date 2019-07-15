@@ -8,8 +8,8 @@
  * the Free Software Foundation; either version 2 of the License, or (at
  * your option) any later version.
  */
-#ifndef __SDHCI_H
-#define __SDHCI_H
+#ifndef LINUX_MMC_SDHCI_H
+#define LINUX_MMC_SDHCI_H
 
 #include <linux/scatterlist.h>
 #include <linux/compiler.h>
@@ -83,6 +83,14 @@ struct sdhci_host {
 #define SDHCI_QUIRK_MULTIBLOCK_READ_ACMD12		(1<<28)
 /* Controller doesn't have HISPD bit field in HI-SPEED SD card */
 #define SDHCI_QUIRK_NO_HISPD_BIT			(1<<29)
+/* Controller treats ADMA descriptors with length 0000h incorrectly */
+#define SDHCI_QUIRK_BROKEN_ADMA_ZEROLEN_DESC		(1<<30)
+/* The read-only detection via SDHCI_PRESENT_STATE register is unstable */
+#define SDHCI_QUIRK_UNSTABLE_RO_DETECT			(1<<31)
+
+	unsigned int quirks2;	/* More deviations from spec. */
+
+#define SDHCI_QUIRK2_HOST_OFF_CARD_ON			(1<<0)
 
 	int irq;		/* Device IRQ */
 	void __iomem *ioaddr;	/* Mapped address */
@@ -107,14 +115,25 @@ struct sdhci_host {
 #define SDHCI_USE_ADMA		(1<<1)	/* Host is ADMA capable */
 #define SDHCI_REQ_USE_DMA	(1<<2)	/* Use DMA for this req. */
 #define SDHCI_DEVICE_DEAD	(1<<3)	/* Device unresponsive */
+#define SDHCI_SDR50_NEEDS_TUNING (1<<4)	/* SDR50 needs tuning */
+#define SDHCI_NEEDS_RETUNING	(1<<5)	/* Host needs retuning */
+#define SDHCI_AUTO_CMD12	(1<<6)	/* Auto CMD12 support */
+#define SDHCI_AUTO_CMD23	(1<<7)	/* Auto CMD23 support */
+#define SDHCI_PV_ENABLED	(1<<8)	/* Preset value enabled */
+#define SDHCI_SDIO_IRQ_ENABLED	(1<<9)	/* SDIO irq enabled */
+#define SDHCI_HS200_NEEDS_TUNING (1<<10)	/* HS200 needs tuning */
+#define SDHCI_USING_RETUNING_TIMER (1<<11)	/* Host is using a retuning timer for the card */
 
 	unsigned int version;	/* SDHCI spec. version */
 
 	unsigned int max_clk;	/* Max possible freq (MHz) */
 	unsigned int timeout_clk;	/* Timeout freq (KHz) */
+	unsigned int clk_mul;	/* Clock Muliplier value */
 
 	unsigned int clock;	/* Current clock (MHz) */
 	u8 pwr;			/* Current voltage */
+
+	bool runtime_suspended;	/* Host is runtime suspended */
 
 	struct mmc_request *mrq;	/* Current request */
 	struct mmc_command *cmd;	/* Current command */
@@ -137,8 +156,21 @@ struct sdhci_host {
 
 	struct timer_list timer;	/* Timer for timeouts */
 
-	unsigned int caps;	/* Alternative capabilities */
+	unsigned int caps;	/* Alternative CAPABILITY_0 */
+	unsigned int caps1;	/* Alternative CAPABILITY_1 */
+
+	unsigned int            ocr_avail_sdio;	/* OCR bit masks */
+	unsigned int            ocr_avail_sd;
+	unsigned int            ocr_avail_mmc;
+
+	wait_queue_head_t	buf_ready_int;	/* Waitqueue for Buffer Read Ready interrupt */
+	unsigned int		tuning_done;	/* Condition flag set when CMD19 succeeds */
+
+	unsigned int		tuning_count;	/* Timer count for re-tuning */
+	unsigned int		tuning_mode;	/* Re-tuning mode supported by host */
+#define SDHCI_TUNING_MODE_1	0
+	struct timer_list	tuning_timer;	/* Timer for tuning */
 
 	unsigned long private[0] ____cacheline_aligned;
 };
-#endif /* __SDHCI_H */
+#endif /* LINUX_MMC_SDHCI_H */

@@ -20,7 +20,6 @@
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
-#include <sound/soc-dapm.h>
 
 #include "../codecs/wm9713.h"
 #include "pxa2xx-ac97.h"
@@ -73,21 +72,21 @@ static const struct snd_soc_dapm_route audio_map[] = {
 static int zylonite_wm9713_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_dapm_context *dapm = &codec->dapm;
 
 	if (clk_pout)
 		snd_soc_dai_set_pll(rtd->codec_dai, 0, 0,
 				    clk_get_rate(pout), 0);
 
-	snd_soc_dapm_new_controls(codec, zylonite_dapm_widgets,
+	snd_soc_dapm_new_controls(dapm, zylonite_dapm_widgets,
 				  ARRAY_SIZE(zylonite_dapm_widgets));
 
-	snd_soc_dapm_add_routes(codec, audio_map, ARRAY_SIZE(audio_map));
+	snd_soc_dapm_add_routes(dapm, audio_map, ARRAY_SIZE(audio_map));
 
 	/* Static setup for now */
-	snd_soc_dapm_enable_pin(codec, "Headphone");
-	snd_soc_dapm_enable_pin(codec, "Headset Earpiece");
+	snd_soc_dapm_enable_pin(dapm, "Headphone");
+	snd_soc_dapm_enable_pin(dapm, "Headset Earpiece");
 
-	snd_soc_dapm_sync(codec);
 	return 0;
 }
 
@@ -166,8 +165,8 @@ static struct snd_soc_dai_link zylonite_dai[] = {
 	.stream_name = "AC97 HiFi",
 	.codec_name = "wm9713-codec",
 	.platform_name = "pxa-pcm-audio",
-	.cpu_dai_name = "pxa-ac97.0",
-	.codec_name = "wm9713-hifi",
+	.cpu_dai_name = "pxa2xx-ac97",
+	.codec_dai_name = "wm9713-hifi",
 	.init = zylonite_wm9713_init,
 },
 {
@@ -175,8 +174,8 @@ static struct snd_soc_dai_link zylonite_dai[] = {
 	.stream_name = "AC97 Aux",
 	.codec_name = "wm9713-codec",
 	.platform_name = "pxa-pcm-audio",
-	.cpu_dai_name = "pxa-ac97.1",
-	.codec_name = "wm9713-aux",
+	.cpu_dai_name = "pxa2xx-ac97-aux",
+	.codec_dai_name = "wm9713-aux",
 },
 {
 	.name = "WM9713 Voice",
@@ -184,39 +183,39 @@ static struct snd_soc_dai_link zylonite_dai[] = {
 	.codec_name = "wm9713-codec",
 	.platform_name = "pxa-pcm-audio",
 	.cpu_dai_name = "pxa-ssp-dai.2",
-	.codec_name = "wm9713-voice",
+	.codec_dai_name = "wm9713-voice",
 	.ops = &zylonite_voice_ops,
 },
 };
 
-static int zylonite_probe(struct platform_device *pdev)
+static int zylonite_probe(struct snd_soc_card *card)
 {
 	int ret;
 
 	if (clk_pout) {
 		pout = clk_get(NULL, "CLK_POUT");
 		if (IS_ERR(pout)) {
-			dev_err(&pdev->dev, "Unable to obtain CLK_POUT: %ld\n",
+			dev_err(card->dev, "Unable to obtain CLK_POUT: %ld\n",
 				PTR_ERR(pout));
 			return PTR_ERR(pout);
 		}
 
 		ret = clk_enable(pout);
 		if (ret != 0) {
-			dev_err(&pdev->dev, "Unable to enable CLK_POUT: %d\n",
+			dev_err(card->dev, "Unable to enable CLK_POUT: %d\n",
 				ret);
 			clk_put(pout);
 			return ret;
 		}
 
-		dev_dbg(&pdev->dev, "MCLK enabled at %luHz\n",
+		dev_dbg(card->dev, "MCLK enabled at %luHz\n",
 			clk_get_rate(pout));
 	}
 
 	return 0;
 }
 
-static int zylonite_remove(struct platform_device *pdev)
+static int zylonite_remove(struct snd_soc_card *card)
 {
 	if (clk_pout) {
 		clk_disable(pout);
@@ -226,8 +225,7 @@ static int zylonite_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static int zylonite_suspend_post(struct platform_device *pdev,
-				 pm_message_t state)
+static int zylonite_suspend_post(struct snd_soc_card *card)
 {
 	if (clk_pout)
 		clk_disable(pout);
@@ -235,14 +233,14 @@ static int zylonite_suspend_post(struct platform_device *pdev,
 	return 0;
 }
 
-static int zylonite_resume_pre(struct platform_device *pdev)
+static int zylonite_resume_pre(struct snd_soc_card *card)
 {
 	int ret = 0;
 
 	if (clk_pout) {
 		ret = clk_enable(pout);
 		if (ret != 0)
-			dev_err(&pdev->dev, "Unable to enable CLK_POUT: %d\n",
+			dev_err(card->dev, "Unable to enable CLK_POUT: %d\n",
 				ret);
 	}
 
@@ -251,6 +249,7 @@ static int zylonite_resume_pre(struct platform_device *pdev)
 
 static struct snd_soc_card zylonite = {
 	.name = "Zylonite",
+	.owner = THIS_MODULE,
 	.probe = &zylonite_probe,
 	.remove = &zylonite_remove,
 	.suspend_post = &zylonite_suspend_post,

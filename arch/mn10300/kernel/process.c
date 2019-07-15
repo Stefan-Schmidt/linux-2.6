@@ -14,7 +14,6 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/smp.h>
-#include <linux/smp_lock.h>
 #include <linux/stddef.h>
 #include <linux/unistd.h>
 #include <linux/ptrace.h>
@@ -28,7 +27,6 @@
 #include <linux/slab.h>
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
-#include <asm/system.h>
 #include <asm/io.h>
 #include <asm/processor.h>
 #include <asm/mmu_context.h>
@@ -124,9 +122,7 @@ void cpu_idle(void)
 			idle();
 		}
 
-		preempt_enable_no_resched();
-		schedule();
-		preempt_disable();
+		schedule_preempt_disabled();
 	}
 }
 
@@ -136,7 +132,7 @@ void release_segments(struct mm_struct *mm)
 
 void machine_restart(char *cmd)
 {
-#ifdef CONFIG_GDBSTUB
+#ifdef CONFIG_KERNEL_DEBUGGER
 	gdbstub_exit(0);
 #endif
 
@@ -149,14 +145,14 @@ void machine_restart(char *cmd)
 
 void machine_halt(void)
 {
-#ifdef CONFIG_GDBSTUB
+#ifdef CONFIG_KERNEL_DEBUGGER
 	gdbstub_exit(0);
 #endif
 }
 
 void machine_power_off(void)
 {
-#ifdef CONFIG_GDBSTUB
+#ifdef CONFIG_KERNEL_DEBUGGER
 	gdbstub_exit(0);
 #endif
 }
@@ -212,12 +208,14 @@ void copy_segments(struct task_struct *p, struct mm_struct *new_mm)
 }
 
 /*
- * this gets called before we allocate a new thread and copy the current task
- * into it so that we can store lazy state into memory
+ * this gets called so that we can store lazy state into memory and copy the
+ * current task into the new thread.
  */
-void prepare_to_copy(struct task_struct *tsk)
+int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
 {
-	unlazy_fpu(tsk);
+	unlazy_fpu(src);
+	*dst = *src;
+	return 0;
 }
 
 /*

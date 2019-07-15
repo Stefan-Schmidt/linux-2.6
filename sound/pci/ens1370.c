@@ -33,7 +33,7 @@
 #include <linux/pci.h>
 #include <linux/slab.h>
 #include <linux/gameport.h>
-#include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <linux/mutex.h>
 
 #include <sound/core.h>
@@ -83,12 +83,12 @@ MODULE_SUPPORTED_DEVICE("{{Ensoniq,AudioPCI ES1371/73},"
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
-static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable switches */
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable switches */
 #ifdef SUPPORT_JOYSTICK
 #ifdef CHIP1371
 static int joystick_port[SNDRV_CARDS];
 #else
-static int joystick[SNDRV_CARDS];
+static bool joystick[SNDRV_CARDS];
 #endif
 #endif
 #ifdef CHIP1371
@@ -229,6 +229,7 @@ MODULE_PARM_DESC(lineio, "Line In to Rear Out (0 = auto, 1 = force).");
 #define ES_REG_1371_CODEC 0x14	/* W/R: Codec Read/Write register address */
 #define   ES_1371_CODEC_RDY	   (1<<31)	/* codec ready */
 #define   ES_1371_CODEC_WIP	   (1<<30)	/* codec register access in progress */
+#define   EV_1938_CODEC_MAGIC	   (1<<26)
 #define   ES_1371_CODEC_PIRD	   (1<<23)	/* codec read/write select register */
 #define   ES_1371_CODEC_WRITE(a,d) ((((a)&0x7f)<<16)|(((d)&0xffff)<<0))
 #define   ES_1371_CODEC_READS(a)   ((((a)&0x7f)<<16)|ES_1371_CODEC_PIRD)
@@ -603,12 +604,18 @@ static void snd_es1370_codec_write(struct snd_ak4531 *ak4531,
 
 #ifdef CHIP1371
 
+static inline bool is_ev1938(struct ensoniq *ensoniq)
+{
+	return ensoniq->pci->device == 0x8938;
+}
+
 static void snd_es1371_codec_write(struct snd_ac97 *ac97,
 				   unsigned short reg, unsigned short val)
 {
 	struct ensoniq *ensoniq = ac97->private_data;
-	unsigned int t, x;
+	unsigned int t, x, flag;
 
+	flag = is_ev1938(ensoniq) ? EV_1938_CODEC_MAGIC : 0;
 	mutex_lock(&ensoniq->src_mutex);
 	for (t = 0; t < POLL_COUNT; t++) {
 		if (!(inl(ES_REG(ensoniq, 1371_CODEC)) & ES_1371_CODEC_WIP)) {
@@ -630,7 +637,8 @@ static void snd_es1371_codec_write(struct snd_ac97 *ac97,
 				    0x00010000)
 					break;
 			}
-			outl(ES_1371_CODEC_WRITE(reg, val), ES_REG(ensoniq, 1371_CODEC));
+			outl(ES_1371_CODEC_WRITE(reg, val) | flag,
+			     ES_REG(ensoniq, 1371_CODEC));
 			/* restore SRC reg */
 			snd_es1371_wait_src_ready(ensoniq);
 			outl(x, ES_REG(ensoniq, 1371_SMPRATE));
@@ -647,8 +655,9 @@ static unsigned short snd_es1371_codec_read(struct snd_ac97 *ac97,
 					    unsigned short reg)
 {
 	struct ensoniq *ensoniq = ac97->private_data;
-	unsigned int t, x, fail = 0;
+	unsigned int t, x, flag, fail = 0;
 
+	flag = is_ev1938(ensoniq) ? EV_1938_CODEC_MAGIC : 0;
       __again:
 	mutex_lock(&ensoniq->src_mutex);
 	for (t = 0; t < POLL_COUNT; t++) {
@@ -671,7 +680,8 @@ static unsigned short snd_es1371_codec_read(struct snd_ac97 *ac97,
 				    0x00010000)
 					break;
 			}
-			outl(ES_1371_CODEC_READS(reg), ES_REG(ensoniq, 1371_CODEC));
+			outl(ES_1371_CODEC_READS(reg) | flag,
+			     ES_REG(ensoniq, 1371_CODEC));
 			/* restore SRC reg */
 			snd_es1371_wait_src_ready(ensoniq);
 			outl(x, ES_REG(ensoniq, 1371_SMPRATE));
@@ -683,6 +693,11 @@ static unsigned short snd_es1371_codec_read(struct snd_ac97 *ac97,
 			/* now wait for the stinkin' data (RDY) */
 			for (t = 0; t < POLL_COUNT; t++) {
 				if ((x = inl(ES_REG(ensoniq, 1371_CODEC))) & ES_1371_CODEC_RDY) {
+					if (is_ev1938(ensoniq)) {
+						for (t = 0; t < 100; t++)
+							inl(ES_REG(ensoniq, CONTROL));
+						x = inl(ES_REG(ensoniq, 1371_CODEC));
+					}
 					mutex_unlock(&ensoniq->src_mutex);
 					return ES_1371_CODEC_READ(x);
 				}
@@ -2018,9 +2033,10 @@ static void snd_ensoniq_chip_init(struct ensoniq *ensoniq)
 }
 
 #ifdef CONFIG_PM
-static int snd_ensoniq_suspend(struct pci_dev *pci, pm_message_t state)
+static int snd_ensoniq_suspend(struct device *dev)
 {
-	struct snd_card *card = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct ensoniq *ensoniq = card->private_data;
 	
 	snd_power_change_state(card, SNDRV_CTL_POWER_D3hot);
@@ -2043,13 +2059,14 @@ static int snd_ensoniq_suspend(struct pci_dev *pci, pm_message_t state)
 
 	pci_disable_device(pci);
 	pci_save_state(pci);
-	pci_set_power_state(pci, pci_choose_state(pci, state));
+	pci_set_power_state(pci, PCI_D3hot);
 	return 0;
 }
 
-static int snd_ensoniq_resume(struct pci_dev *pci)
+static int snd_ensoniq_resume(struct device *dev)
 {
-	struct snd_card *card = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct ensoniq *ensoniq = card->private_data;
 
 	pci_set_power_state(pci, PCI_D0);
@@ -2072,8 +2089,12 @@ static int snd_ensoniq_resume(struct pci_dev *pci)
 	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
 	return 0;
 }
-#endif /* CONFIG_PM */
 
+static SIMPLE_DEV_PM_OPS(snd_ensoniq_pm, snd_ensoniq_suspend, snd_ensoniq_resume);
+#define SND_ENSONIQ_PM_OPS	&snd_ensoniq_pm
+#else
+#define SND_ENSONIQ_PM_OPS	NULL
+#endif /* CONFIG_PM */
 
 static int __devinit snd_ensoniq_create(struct snd_card *card,
 				     struct pci_dev *pci,
@@ -2105,7 +2126,7 @@ static int __devinit snd_ensoniq_create(struct snd_card *card,
 	}
 	ensoniq->port = pci_resource_start(pci, 0);
 	if (request_irq(pci->irq, snd_audiopci_interrupt, IRQF_SHARED,
-			"Ensoniq AudioPCI", ensoniq)) {
+			KBUILD_MODNAME, ensoniq)) {
 		snd_printk(KERN_ERR "unable to grab IRQ %d\n", pci->irq);
 		snd_ensoniq_free(ensoniq);
 		return -EBUSY;
@@ -2473,26 +2494,14 @@ static void __devexit snd_audiopci_remove(struct pci_dev *pci)
 	pci_set_drvdata(pci, NULL);
 }
 
-static struct pci_driver driver = {
-	.name = DRIVER_NAME,
+static struct pci_driver ens137x_driver = {
+	.name = KBUILD_MODNAME,
 	.id_table = snd_audiopci_ids,
 	.probe = snd_audiopci_probe,
 	.remove = __devexit_p(snd_audiopci_remove),
-#ifdef CONFIG_PM
-	.suspend = snd_ensoniq_suspend,
-	.resume = snd_ensoniq_resume,
-#endif
+	.driver = {
+		.pm = SND_ENSONIQ_PM_OPS,
+	},
 };
 	
-static int __init alsa_card_ens137x_init(void)
-{
-	return pci_register_driver(&driver);
-}
-
-static void __exit alsa_card_ens137x_exit(void)
-{
-	pci_unregister_driver(&driver);
-}
-
-module_init(alsa_card_ens137x_init)
-module_exit(alsa_card_ens137x_exit)
+module_pci_driver(ens137x_driver);

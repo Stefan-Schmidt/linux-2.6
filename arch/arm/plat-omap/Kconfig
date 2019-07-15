@@ -11,15 +11,25 @@ choice
 
 config ARCH_OMAP1
 	bool "TI OMAP1"
-	select COMMON_CLKDEV
+	select CLKDEV_LOOKUP
+	select CLKSRC_MMIO
+	select GENERIC_IRQ_CHIP
+	select IRQ_DOMAIN
+	select HAVE_IDE
+	select NEED_MACH_MEMORY_H
+	select NEED_MACH_IO_H if PCCARD
 	help
 	  "Systems based on omap7xx, omap15xx or omap16xx"
 
 config ARCH_OMAP2PLUS
 	bool "TI OMAP2/3/4"
-	select COMMON_CLKDEV
+	select CLKDEV_LOOKUP
+	select GENERIC_IRQ_CHIP
+	select OMAP_DM_TIMER
+	select USE_OF
+	select PROC_DEVICETREE if PROC_FS
 	help
-	  "Systems based on OMAP2, OMAP3 or OMAP4"
+	  "Systems based on OMAP2, OMAP3, OMAP4 or OMAP5"
 
 endchoice
 
@@ -34,6 +44,36 @@ config OMAP_DEBUG_LEDS
 	bool
 	depends on OMAP_DEBUG_DEVICES
 	default y if LEDS_CLASS
+
+config POWER_AVS_OMAP
+	bool "AVS(Adaptive Voltage Scaling) support for OMAP IP versions 1&2"
+	depends on POWER_AVS && (ARCH_OMAP3 || ARCH_OMAP4) && PM
+	help
+	  Say Y to enable AVS(Adaptive Voltage Scaling)
+	  support on OMAP containing the version 1 or
+	  version 2 of the SmartReflex IP.
+	  V1 is the 65nm version used in OMAP3430.
+	  V2 is the update for the 45nm version of the IP used in OMAP3630
+	  and OMAP4430
+
+	  Please note, that by default SmartReflex is only
+	  initialized and not enabled. To enable the automatic voltage
+	  compensation for vdd mpu and vdd core from user space,
+	  user must write 1 to
+		/debug/smartreflex/sr_<X>/autocomp,
+	  where X is mpu_iva or core for OMAP3.
+	  Optionally autocompensation can be enabled in the kernel
+	  by default during system init via the enable_on_init flag
+	  which an be passed as platform data to the smartreflex driver.
+
+config POWER_AVS_OMAP_CLASS3
+	bool "Class 3 mode of Smartreflex Implementation"
+	depends on POWER_AVS_OMAP && TWL4030_CORE
+	help
+	  Say Y to enable Class 3 implementation of Smartreflex
+
+	  Class 3 implementation of Smartreflex employs continuous hardware
+	  voltage calibration.
 
 config OMAP_RESET_CLOCKS
 	bool "Reset unused clocks during boot"
@@ -73,14 +113,6 @@ config OMAP_MUX_WARNINGS
 	  to change the pin multiplexing setup.	 When there are no warnings
 	  printed, it's safe to deselect OMAP_MUX for your product.
 
-config OMAP_MCBSP
-	bool "McBSP support"
-	depends on ARCH_OMAP
-	default y
-	help
-	  Say Y here if you want support for the OMAP Multichannel
-	  Buffered Serial Port.
-
 config OMAP_MBOX_FWK
 	tristate "Mailbox framework support"
 	depends on ARCH_OMAP
@@ -97,24 +129,12 @@ config OMAP_MBOX_KFIFO_SIZE
 	  This can also be changed at runtime (via the mbox_kfifo_size
 	  module parameter).
 
-config OMAP_IOMMU
-	tristate
-
-config OMAP_IOMMU_DEBUG
-       tristate "Export OMAP IOMMU internals in DebugFS"
-       depends on OMAP_IOMMU && DEBUG_FS
-       help
-         Select this to see extensive information about
-         the internal state of OMAP IOMMU in debugfs.
-
-         Say N unless you know you need this.
-
-choice
-	prompt "System timer"
-	default OMAP_32K_TIMER if !ARCH_OMAP15XX
+config OMAP_IOMMU_IVA2
+	bool
 
 config OMAP_MPU_TIMER
 	bool "Use mpu timer"
+	depends on ARCH_OMAP1
 	help
 	  Select this option if you want to use the OMAP mpu timer. This
 	  timer provides more intra-tick resolution than the 32KHz timer,
@@ -123,14 +143,13 @@ config OMAP_MPU_TIMER
 config OMAP_32K_TIMER
 	bool "Use 32KHz timer"
 	depends on ARCH_OMAP16XX || ARCH_OMAP2PLUS
+	default y if (ARCH_OMAP16XX || ARCH_OMAP2PLUS)
 	help
 	  Select this option if you want to enable the OMAP 32KHz timer.
 	  This timer saves power compared to the OMAP_MPU_TIMER, and has
 	  support for no tick during idle. The 32KHz timer provides less
 	  intra-tick resolution than OMAP_MPU_TIMER. The 32KHz timer is
-	  currently only available for OMAP16XX, 24XX, 34XX and OMAP4.
-
-endchoice
+	  currently only available for OMAP16XX, 24XX, 34XX and OMAP4/5.
 
 config OMAP3_L2_AUX_SECURE_SAVE_RESTORE
 	bool "OMAP3 HS/EMU save and restore for L2 AUX control register"
@@ -177,9 +196,6 @@ choice
 	prompt "OMAP PM layer selection"
 	depends on ARCH_OMAP
 	default OMAP_PM_NOOP
-
-config OMAP_PM_NONE
-	bool "No PM layer"
 
 config OMAP_PM_NOOP
 	bool "No-op/debug PM layer"

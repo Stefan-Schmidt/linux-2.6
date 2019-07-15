@@ -10,12 +10,13 @@ CFLAGS_REMOVE_early_printk.o = -pg
 CFLAGS_REMOVE_selfmod.o = -pg
 CFLAGS_REMOVE_heartbeat.o = -pg
 CFLAGS_REMOVE_ftrace.o = -pg
+CFLAGS_REMOVE_process.o = -pg
 endif
 
 extra-y := head.o vmlinux.lds
 
 obj-y += dma.o exceptions.o \
-	hw_exception_handler.o init_task.o intc.o irq.o \
+	hw_exception_handler.o intc.o irq.o \
 	process.o prom.o prom_parse.o ptrace.o \
 	reset.o setup.o signal.o sys_microblaze.o timer.o traps.o unwind.o
 

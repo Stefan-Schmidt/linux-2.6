@@ -18,7 +18,6 @@
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/soc.h>
-#include <sound/soc-dapm.h>
 
 #include "nuc900-audio.h"
 
@@ -33,6 +32,7 @@ static struct snd_soc_dai_link nuc900evb_ac97_dai = {
 
 static struct snd_soc_card nuc900evb_audio_machine = {
 	.name		= "NUC900EVB_AC97",
+	.owner		= THIS_MODULE,
 	.dai_link	= &nuc900evb_ac97_dai,
 	.num_links	= 1,
 };

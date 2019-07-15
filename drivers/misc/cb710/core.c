@@ -33,7 +33,7 @@ EXPORT_SYMBOL_GPL(cb710_pci_update_config_reg);
 static int __devinit cb710_pci_configure(struct pci_dev *pdev)
 {
 	unsigned int devfn = PCI_DEVFN(PCI_SLOT(pdev->devfn), 0);
-	struct pci_dev *pdev0 = pci_get_slot(pdev->bus, devfn);
+	struct pci_dev *pdev0;
 	u32 val;
 
 	cb710_pci_update_config_reg(pdev, 0x48,
@@ -43,6 +43,7 @@ static int __devinit cb710_pci_configure(struct pci_dev *pdev)
 	if (val & 0x80000000)
 		return 0;
 
+	pdev0 = pci_get_slot(pdev->bus, devfn);
 	if (!pdev0)
 		return -ENODEV;
 
@@ -179,7 +180,7 @@ static int cb710_suspend(struct pci_dev *pdev, pm_message_t state)
 	pci_save_state(pdev);
 	pci_disable_device(pdev);
 	if (state.event & PM_EVENT_SLEEP)
-		pci_set_power_state(pdev, PCI_D3cold);
+		pci_set_power_state(pdev, PCI_D3hot);
 	return 0;
 }
 
@@ -244,6 +245,7 @@ static int __devinit cb710_probe(struct pci_dev *pdev,
 	if (err)
 		return err;
 
+	spin_lock_init(&chip->irq_lock);
 	chip->pdev = pdev;
 	chip->iobase = pcim_iomap_table(pdev)[0];
 

@@ -1,7 +1,7 @@
 /*
  * arch/arm/plat-spear/time.c
  *
- * Copyright (C) 2009 ST Microelectronics
+ * Copyright (C) 2010 ST Microelectronics
  * Shiraz Hashim<shiraz.hashim@st.com>
  *
  * This file is licensed under the terms of the GNU General Public
@@ -15,14 +15,14 @@
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/ioport.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/of_irq.h>
+#include <linux/of_address.h>
 #include <linux/time.h>
 #include <linux/irq.h>
 #include <asm/mach/time.h>
-#include <mach/irqs.h>
-#include <mach/hardware.h>
-#include <mach/spear.h>
 #include <mach/generic.h>
 
 /*
@@ -71,21 +71,6 @@ static void clockevent_set_mode(enum clock_event_mode mode,
 static int clockevent_next_event(unsigned long evt,
 				 struct clock_event_device *clk_event_dev);
 
-static cycle_t clocksource_read_cycles(struct clocksource *cs)
-{
-	return (cycle_t) readw(gpt_base + COUNT(CLKSRC));
-}
-
-static struct clocksource clksrc = {
-	.name = "tmr1",
-	.rating = 200,		/* its a pretty decent clock */
-	.read = clocksource_read_cycles,
-	.mask = 0xFFFF,		/* 16 bits */
-	.mult = 0,		/* to be computed */
-	.shift = 0,		/* to be computed */
-	.flags = CLOCK_SOURCE_IS_CONTINUOUS,
-};
-
 static void spear_clocksource_init(void)
 {
 	u32 tick_rate;
@@ -105,10 +90,9 @@ static void spear_clocksource_init(void)
 	val |= CTRL_ENABLE ;
 	writew(val, gpt_base + CR(CLKSRC));
 
-	clocksource_calc_mult_shift(&clksrc, tick_rate, SPEAR_MIN_RANGE);
-
 	/* register the clocksource */
-	clocksource_register(&clksrc);
+	clocksource_mmio_init(gpt_base + COUNT(CLKSRC), "tmr1", tick_rate,
+		200, 16, clocksource_mmio_readw_up);
 }
 
 static struct clock_event_device clkevt = {
@@ -162,11 +146,13 @@ static void clockevent_set_mode(enum clock_event_mode mode,
 static int clockevent_next_event(unsigned long cycles,
 				 struct clock_event_device *clk_event_dev)
 {
-	u16 val;
+	u16 val = readw(gpt_base + CR(CLKEVT));
+
+	if (val & CTRL_ENABLE)
+		writew(val & ~CTRL_ENABLE, gpt_base + CR(CLKEVT));
 
 	writew(cycles, gpt_base + LOAD(CLKEVT));
 
-	val = readw(gpt_base + CR(CLKEVT));
 	val |= CTRL_ENABLE | CTRL_INT_ENABLE;
 	writew(val, gpt_base + CR(CLKEVT));
 
@@ -190,7 +176,7 @@ static struct irqaction spear_timer_irq = {
 	.handler = spear_timer_interrupt
 };
 
-static void __init spear_clockevent_init(void)
+static void __init spear_clockevent_init(int irq)
 {
 	u32 tick_rate;
 
@@ -210,22 +196,35 @@ static void __init spear_clockevent_init(void)
 
 	clockevents_register_device(&clkevt);
 
-	setup_irq(SPEAR_GPT0_CHAN0_IRQ, &spear_timer_irq);
+	setup_irq(irq, &spear_timer_irq);
 }
 
-void __init spear_setup_timer(void)
-{
-	struct clk *pll3_clk;
+const static struct of_device_id timer_of_match[] __initconst = {
+	{ .compatible = "st,spear-timer", },
+	{ },
+};
 
-	if (!request_mem_region(SPEAR_GPT0_BASE, SZ_1K, "gpt0")) {
-		pr_err("%s:cannot get IO addr\n", __func__);
+void __init spear_setup_of_timer(void)
+{
+	struct device_node *np;
+	int irq, ret;
+
+	np = of_find_matching_node(NULL, timer_of_match);
+	if (!np) {
+		pr_err("%s: No timer passed via DT\n", __func__);
 		return;
 	}
 
-	gpt_base = (void __iomem *)ioremap(SPEAR_GPT0_BASE, SZ_1K);
+	irq = irq_of_parse_and_map(np, 0);
+	if (!irq) {
+		pr_err("%s: No irq passed for timer via DT\n", __func__);
+		return;
+	}
+
+	gpt_base = of_iomap(np, 0);
 	if (!gpt_base) {
-		pr_err("%s:ioremap failed for gpt\n", __func__);
-		goto err_mem;
+		pr_err("%s: of iomap failed\n", __func__);
+		return;
 	}
 
 	gpt_clk = clk_get_sys("gpt0", NULL);
@@ -234,26 +233,19 @@ void __init spear_setup_timer(void)
 		goto err_iomap;
 	}
 
-	pll3_clk = clk_get(NULL, "pll3_48m_clk");
-	if (!pll3_clk) {
-		pr_err("%s:couldn't get PLL3 as parent for gpt\n", __func__);
-		goto err_iomap;
+	ret = clk_prepare_enable(gpt_clk);
+	if (ret < 0) {
+		pr_err("%s:couldn't prepare-enable gpt clock\n", __func__);
+		goto err_prepare_enable_clk;
 	}
 
-	clk_set_parent(gpt_clk, pll3_clk);
-
-	spear_clockevent_init();
+	spear_clockevent_init(irq);
 	spear_clocksource_init();
 
 	return;
 
+err_prepare_enable_clk:
+	clk_put(gpt_clk);
 err_iomap:
 	iounmap(gpt_base);
-
-err_mem:
-	release_mem_region(SPEAR_GPT0_BASE, SZ_1K);
 }
-
-struct sys_timer spear_sys_timer = {
-	.init = spear_setup_timer,
-};

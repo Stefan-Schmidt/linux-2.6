@@ -28,17 +28,20 @@
 #define GFS2_LARGE_FH_SIZE 8
 #define GFS2_OLD_FH_SIZE 10
 
-static int gfs2_encode_fh(struct dentry *dentry, __u32 *p, int *len,
-			  int connectable)
+static int gfs2_encode_fh(struct inode *inode, __u32 *p, int *len,
+			  struct inode *parent)
 {
 	__be32 *fh = (__force __be32 *)p;
-	struct inode *inode = dentry->d_inode;
 	struct super_block *sb = inode->i_sb;
 	struct gfs2_inode *ip = GFS2_I(inode);
 
-	if (*len < GFS2_SMALL_FH_SIZE ||
-	    (connectable && *len < GFS2_LARGE_FH_SIZE))
+	if (parent && (*len < GFS2_LARGE_FH_SIZE)) {
+		*len = GFS2_LARGE_FH_SIZE;
 		return 255;
+	} else if (*len < GFS2_SMALL_FH_SIZE) {
+		*len = GFS2_SMALL_FH_SIZE;
+		return 255;
+	}
 
 	fh[0] = cpu_to_be32(ip->i_no_formal_ino >> 32);
 	fh[1] = cpu_to_be32(ip->i_no_formal_ino & 0xFFFFFFFF);
@@ -46,22 +49,16 @@ static int gfs2_encode_fh(struct dentry *dentry, __u32 *p, int *len,
 	fh[3] = cpu_to_be32(ip->i_no_addr & 0xFFFFFFFF);
 	*len = GFS2_SMALL_FH_SIZE;
 
-	if (!connectable || inode == sb->s_root->d_inode)
+	if (!parent || inode == sb->s_root->d_inode)
 		return *len;
 
-	spin_lock(&dentry->d_lock);
-	inode = dentry->d_parent->d_inode;
-	ip = GFS2_I(inode);
-	igrab(inode);
-	spin_unlock(&dentry->d_lock);
+	ip = GFS2_I(parent);
 
 	fh[4] = cpu_to_be32(ip->i_no_formal_ino >> 32);
 	fh[5] = cpu_to_be32(ip->i_no_formal_ino & 0xFFFFFFFF);
 	fh[6] = cpu_to_be32(ip->i_no_addr >> 32);
 	fh[7] = cpu_to_be32(ip->i_no_addr & 0xFFFFFFFF);
 	*len = GFS2_LARGE_FH_SIZE;
-
-	iput(inode);
 
 	return *len;
 }
@@ -95,6 +92,7 @@ static int gfs2_get_name(struct dentry *parent, char *name,
 	struct gfs2_holder gh;
 	u64 offset = 0;
 	int error;
+	struct file_ra_state f_ra = { .start = 0 };
 
 	if (!dir)
 		return -EINVAL;
@@ -114,7 +112,7 @@ static int gfs2_get_name(struct dentry *parent, char *name,
 	if (error)
 		return error;
 
-	error = gfs2_dir_read(dir, &offset, &gnfd, get_name_filldir);
+	error = gfs2_dir_read(dir, &offset, &gnfd, get_name_filldir, &f_ra);
 
 	gfs2_glock_dq_uninit(&gh);
 
@@ -126,24 +124,16 @@ static int gfs2_get_name(struct dentry *parent, char *name,
 
 static struct dentry *gfs2_get_parent(struct dentry *child)
 {
-	struct dentry *dentry;
-
-	dentry = d_obtain_alias(gfs2_lookupi(child->d_inode, &gfs2_qdotdot, 1));
-	if (!IS_ERR(dentry))
-		dentry->d_op = &gfs2_dops;
-	return dentry;
+	return d_obtain_alias(gfs2_lookupi(child->d_inode, &gfs2_qdotdot, 1));
 }
 
 static struct dentry *gfs2_get_dentry(struct super_block *sb,
 				      struct gfs2_inum_host *inum)
 {
 	struct gfs2_sbd *sdp = sb->s_fs_info;
-	struct gfs2_holder i_gh;
 	struct inode *inode;
-	struct dentry *dentry;
-	int error;
 
-	inode = gfs2_ilookup(sb, inum->no_addr);
+	inode = gfs2_ilookup(sb, inum->no_addr, 0);
 	if (inode) {
 		if (GFS2_I(inode)->i_no_formal_ino != inum->no_formal_ino) {
 			iput(inode);
@@ -152,52 +142,13 @@ static struct dentry *gfs2_get_dentry(struct super_block *sb,
 		goto out_inode;
 	}
 
-	error = gfs2_glock_nq_num(sdp, inum->no_addr, &gfs2_inode_glops,
-				  LM_ST_SHARED, LM_FLAG_ANY, &i_gh);
-	if (error)
-		return ERR_PTR(error);
-
-	error = gfs2_check_blk_type(sdp, inum->no_addr, GFS2_BLKST_DINODE);
-	if (error)
-		goto fail;
-
-	inode = gfs2_inode_lookup(sb, DT_UNKNOWN, inum->no_addr, 0);
-	if (IS_ERR(inode)) {
-		error = PTR_ERR(inode);
-		goto fail;
-	}
-
-	error = gfs2_inode_refresh(GFS2_I(inode));
-	if (error) {
-		iput(inode);
-		goto fail;
-	}
-
-	/* Pick up the works we bypass in gfs2_inode_lookup */
-	if (inode->i_state & I_NEW) 
-		gfs2_set_iop(inode);
-
-	if (GFS2_I(inode)->i_no_formal_ino != inum->no_formal_ino) {
-		iput(inode);
-		goto fail;
-	}
-
-	error = -EIO;
-	if (GFS2_I(inode)->i_diskflags & GFS2_DIF_SYSTEM) {
-		iput(inode);
-		goto fail;
-	}
-
-	gfs2_glock_dq_uninit(&i_gh);
+	inode = gfs2_lookup_by_inum(sdp, inum->no_addr, &inum->no_formal_ino,
+				    GFS2_BLKST_DINODE);
+	if (IS_ERR(inode))
+		return ERR_CAST(inode);
 
 out_inode:
-	dentry = d_obtain_alias(inode);
-	if (!IS_ERR(dentry))
-		dentry->d_op = &gfs2_dops;
-	return dentry;
-fail:
-	gfs2_glock_dq_uninit(&i_gh);
-	return ERR_PTR(error);
+	return d_obtain_alias(inode);
 }
 
 static struct dentry *gfs2_fh_to_dentry(struct super_block *sb, struct fid *fid,

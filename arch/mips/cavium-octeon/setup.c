@@ -9,6 +9,7 @@
 #include <linux/init.h>
 #include <linux/console.h>
 #include <linux/delay.h>
+#include <linux/export.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/serial.h>
@@ -20,11 +21,12 @@
 #include <linux/platform_device.h>
 #include <linux/serial_core.h>
 #include <linux/serial_8250.h>
+#include <linux/of_fdt.h>
+#include <linux/libfdt.h>
 
 #include <asm/processor.h>
 #include <asm/reboot.h>
 #include <asm/smp-ops.h>
-#include <asm/system.h>
 #include <asm/irq_cpu.h>
 #include <asm/mipsregs.h>
 #include <asm/bootinfo.h>
@@ -288,7 +290,6 @@ void octeon_user_io_init(void)
 	union octeon_cvmemctl cvmmemctl;
 	union cvmx_iob_fau_timeout fau_timeout;
 	union cvmx_pow_nw_tim nm_tim;
-	uint64_t cvmctl;
 
 	/* Get the current settings for CP0_CVMMEMCTL_REG */
 	cvmmemctl.u64 = read_c0_cvmmemctl();
@@ -392,12 +393,6 @@ void octeon_user_io_init(void)
 			  CONFIG_CAVIUM_OCTEON_CVMSEG_SIZE,
 			  CONFIG_CAVIUM_OCTEON_CVMSEG_SIZE * 128);
 
-	/* Move the performance counter interrupts to IRQ 6 */
-	cvmctl = read_c0_cvmctl();
-	cvmctl &= ~(7 << 7);
-	cvmctl |= 6 << 7;
-	write_c0_cvmctl(cvmctl);
-
 	/* Set a default for the hardware timeouts */
 	fau_timeout.u64 = 0;
 	fau_timeout.s.tout_val = 0xfff;
@@ -420,7 +415,6 @@ void octeon_user_io_init(void)
 void __init prom_init(void)
 {
 	struct cvmx_sysinfo *sysinfo;
-	const int coreid = cvmx_get_core_num();
 	int i;
 	int argc;
 #ifdef CONFIG_CAVIUM_RESERVE32
@@ -537,17 +531,6 @@ void __init prom_init(void)
 
 	octeon_uart = octeon_get_boot_uart();
 
-	/*
-	 * Disable All CIU Interrupts. The ones we need will be
-	 * enabled later.  Read the SUM register so we know the write
-	 * completed.
-	 */
-	cvmx_write_csr(CVMX_CIU_INTX_EN0((coreid * 2)), 0);
-	cvmx_write_csr(CVMX_CIU_INTX_EN0((coreid * 2 + 1)), 0);
-	cvmx_write_csr(CVMX_CIU_INTX_EN1((coreid * 2)), 0);
-	cvmx_write_csr(CVMX_CIU_INTX_EN1((coreid * 2 + 1)), 0);
-	cvmx_read_csr(CVMX_CIU_INTX_SUM0((coreid * 2)));
-
 #ifdef CONFIG_SMP
 	octeon_write_lcd("LinuxSMP");
 #else
@@ -661,20 +644,12 @@ void __init plat_mem_setup(void)
 
 	total = 0;
 
-	/* First add the init memory we will be returning.  */
-	memory = __pa_symbol(&__init_begin) & PAGE_MASK;
-	mem_alloc_size = (__pa_symbol(&__init_end) & PAGE_MASK) - memory;
-	if (mem_alloc_size > 0) {
-		add_memory_region(memory, mem_alloc_size, BOOT_MEM_RAM);
-		total += mem_alloc_size;
-	}
-
 	/*
 	 * The Mips memory init uses the first memory location for
 	 * some memory vectors. When SPARSEMEM is in use, it doesn't
 	 * verify that the size is big enough for the final
 	 * vectors. Making the smallest chuck 4MB seems to be enough
-	 * to consistantly work.
+	 * to consistently work.
 	 */
 	mem_alloc_size = 4 << 20;
 	if (mem_alloc_size > MAX_MEMORY)
@@ -786,11 +761,11 @@ void prom_free_prom_memory(void)
 			: "=r" (insn) : : "$31", "memory");
 
 		if ((insn >> 26) != 0x33)
-			panic("No PREF instruction at Core-14449 probe point.\n");
+			panic("No PREF instruction at Core-14449 probe point.");
 
 		if (((insn >> 16) & 0x1f) != 28)
 			panic("Core-14449 WAR not in place (%04x).\n"
-			      "Please build kernel with proper options (CONFIG_CAVIUM_CN63XXP1).\n", insn);
+			      "Please build kernel with proper options (CONFIG_CAVIUM_CN63XXP1).", insn);
 	}
 #ifdef CONFIG_CAVIUM_DECODE_RSL
 	cvmx_interrupt_rsl_enable();
@@ -798,7 +773,50 @@ void prom_free_prom_memory(void)
 	/* Add an interrupt handler for general failures. */
 	if (request_irq(OCTEON_IRQ_RML, octeon_rlm_interrupt, IRQF_SHARED,
 			"RML/RSL", octeon_rlm_interrupt)) {
-		panic("Unable to request_irq(OCTEON_IRQ_RML)\n");
+		panic("Unable to request_irq(OCTEON_IRQ_RML)");
 	}
 #endif
+}
+
+int octeon_prune_device_tree(void);
+
+extern const char __dtb_octeon_3xxx_begin;
+extern const char __dtb_octeon_3xxx_end;
+extern const char __dtb_octeon_68xx_begin;
+extern const char __dtb_octeon_68xx_end;
+void __init device_tree_init(void)
+{
+	int dt_size;
+	struct boot_param_header *fdt;
+	bool do_prune;
+
+	if (octeon_bootinfo->minor_version >= 3 && octeon_bootinfo->fdt_addr) {
+		fdt = phys_to_virt(octeon_bootinfo->fdt_addr);
+		if (fdt_check_header(fdt))
+			panic("Corrupt Device Tree passed to kernel.");
+		dt_size = be32_to_cpu(fdt->totalsize);
+		do_prune = false;
+	} else if (OCTEON_IS_MODEL(OCTEON_CN68XX)) {
+		fdt = (struct boot_param_header *)&__dtb_octeon_68xx_begin;
+		dt_size = &__dtb_octeon_68xx_end - &__dtb_octeon_68xx_begin;
+		do_prune = true;
+	} else {
+		fdt = (struct boot_param_header *)&__dtb_octeon_3xxx_begin;
+		dt_size = &__dtb_octeon_3xxx_end - &__dtb_octeon_3xxx_begin;
+		do_prune = true;
+	}
+
+	/* Copy the default tree from init memory. */
+	initial_boot_params = early_init_dt_alloc_memory_arch(dt_size, 8);
+	if (initial_boot_params == NULL)
+		panic("Could not allocate initial_boot_params\n");
+	memcpy(initial_boot_params, fdt, dt_size);
+
+	if (do_prune) {
+		octeon_prune_device_tree();
+		pr_info("Using internal Device Tree.\n");
+	} else {
+		pr_info("Using passed Device Tree.\n");
+	}
+	unflatten_device_tree();
 }

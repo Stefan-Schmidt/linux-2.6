@@ -118,13 +118,15 @@
 #define PF_NAME		"pf"
 #define PF_UNITS	4
 
+#include <linux/types.h>
+
 /* Here are things one can override from the insmod command.
    Most are autoprobed by paride unless set here.  Verbose is off
    by default.
 
 */
 
-static int verbose = 0;
+static bool verbose = 0;
 static int major = PF_MAJOR;
 static char *name = PF_NAME;
 static int cluster = 64;
@@ -243,7 +245,8 @@ static struct pf_unit units[PF_UNITS];
 static int pf_identify(struct pf_unit *pf);
 static void pf_lock(struct pf_unit *pf, int func);
 static void pf_eject(struct pf_unit *pf);
-static int pf_check_media(struct gendisk *disk);
+static unsigned int pf_check_events(struct gendisk *disk,
+				    unsigned int clearing);
 
 static char pf_scratch[512];	/* scratch block buffer */
 
@@ -270,7 +273,7 @@ static const struct block_device_operations pf_fops = {
 	.release	= pf_release,
 	.ioctl		= pf_ioctl,
 	.getgeo		= pf_getgeo,
-	.media_changed	= pf_check_media,
+	.check_events	= pf_check_events,
 };
 
 static void __init pf_init_units(void)
@@ -377,9 +380,9 @@ static int pf_release(struct gendisk *disk, fmode_t mode)
 
 }
 
-static int pf_check_media(struct gendisk *disk)
+static unsigned int pf_check_events(struct gendisk *disk, unsigned int clearing)
 {
-	return 1;
+	return DISK_EVENT_MEDIA_CHANGE;
 }
 
 static inline int status_reg(struct pf_unit *pf)

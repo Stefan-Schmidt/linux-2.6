@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2012, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -63,7 +63,7 @@ acpi_ns_dump_one_device(acpi_handle obj_handle,
  * FUNCTION:    acpi_ns_print_pathname
  *
  * PARAMETERS:  num_segments        - Number of ACPI name segments
- *              Pathname            - The compressed (internal) path
+ *              pathname            - The compressed (internal) path
  *
  * RETURN:      None
  *
@@ -107,10 +107,10 @@ void acpi_ns_print_pathname(u32 num_segments, char *pathname)
  *
  * FUNCTION:    acpi_ns_dump_pathname
  *
- * PARAMETERS:  Handle              - Object
- *              Msg                 - Prefix message
- *              Level               - Desired debug level
- *              Component           - Caller's component ID
+ * PARAMETERS:  handle              - Object
+ *              msg                 - Prefix message
+ *              level               - Desired debug level
+ *              component           - Caller's component ID
  *
  * RETURN:      None
  *
@@ -143,8 +143,8 @@ acpi_ns_dump_pathname(acpi_handle handle, char *msg, u32 level, u32 component)
  * FUNCTION:    acpi_ns_dump_one_object
  *
  * PARAMETERS:  obj_handle          - Node to be dumped
- *              Level               - Nesting level of the handle
- *              Context             - Passed into walk_namespace
+ *              level               - Nesting level of the handle
+ *              context             - Passed into walk_namespace
  *              return_value        - Not used
  *
  * RETURN:      Status
@@ -242,7 +242,20 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
 
 		if (!obj_desc) {
 
-			/* No attached object, we are done */
+			/* No attached object. Some types should always have an object */
+
+			switch (type) {
+			case ACPI_TYPE_INTEGER:
+			case ACPI_TYPE_PACKAGE:
+			case ACPI_TYPE_BUFFER:
+			case ACPI_TYPE_STRING:
+			case ACPI_TYPE_METHOD:
+				acpi_os_printf("<No attached object>");
+				break;
+
+			default:
+				break;
+			}
 
 			acpi_os_printf("\n");
 			return (AE_OK);
@@ -602,7 +615,7 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
  *
  * FUNCTION:    acpi_ns_dump_objects
  *
- * PARAMETERS:  Type                - Object type to be dumped
+ * PARAMETERS:  type                - Object type to be dumped
  *              display_type        - 0 or ACPI_DISPLAY_SUMMARY
  *              max_depth           - Maximum depth of dump. Use ACPI_UINT32_MAX
  *                                    for an effectively unlimited depth.
@@ -624,8 +637,21 @@ acpi_ns_dump_objects(acpi_object_type type,
 		     acpi_owner_id owner_id, acpi_handle start_handle)
 {
 	struct acpi_walk_info info;
+	acpi_status status;
 
 	ACPI_FUNCTION_ENTRY();
+
+	/*
+	 * Just lock the entire namespace for the duration of the dump.
+	 * We don't want any changes to the namespace during this time,
+	 * especially the temporary nodes since we are going to display
+	 * them also.
+	 */
+	status = acpi_ut_acquire_mutex(ACPI_MTX_NAMESPACE);
+	if (ACPI_FAILURE(status)) {
+		acpi_os_printf("Could not acquire namespace mutex\n");
+		return;
+	}
 
 	info.debug_level = ACPI_LV_TABLES;
 	info.owner_id = owner_id;
@@ -636,6 +662,8 @@ acpi_ns_dump_objects(acpi_object_type type,
 				     ACPI_NS_WALK_TEMP_NODES,
 				     acpi_ns_dump_one_object, NULL,
 				     (void *)&info, NULL);
+
+	(void)acpi_ut_release_mutex(ACPI_MTX_NAMESPACE);
 }
 #endif				/* ACPI_FUTURE_USAGE */
 
@@ -643,7 +671,7 @@ acpi_ns_dump_objects(acpi_object_type type,
  *
  * FUNCTION:    acpi_ns_dump_entry
  *
- * PARAMETERS:  Handle              - Node to be dumped
+ * PARAMETERS:  handle              - Node to be dumped
  *              debug_level         - Output level
  *
  * RETURN:      None

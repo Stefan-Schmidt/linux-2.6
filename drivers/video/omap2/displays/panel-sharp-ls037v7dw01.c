@@ -25,7 +25,7 @@
 #include <linux/err.h>
 #include <linux/slab.h>
 
-#include <plat/display.h>
+#include <video/omapdss.h>
 
 struct sharp_data {
 	struct backlight_device *bl;
@@ -44,6 +44,12 @@ static struct omap_video_timings sharp_ls_timings = {
 	.vsw		= 1,
 	.vfp		= 1,
 	.vbp		= 1,
+
+	.vsync_level	= OMAPDSS_SIG_ACTIVE_LOW,
+	.hsync_level	= OMAPDSS_SIG_ACTIVE_LOW,
+	.data_pclk_edge	= OMAPDSS_DRIVE_SIG_RISING_EDGE,
+	.de_level	= OMAPDSS_SIG_ACTIVE_HIGH,
+	.sync_pclk_edge	= OMAPDSS_DRIVE_SIG_OPPOSITE_EDGES,
 };
 
 static int sharp_ls_bl_update_status(struct backlight_device *bl)
@@ -86,9 +92,6 @@ static int sharp_ls_panel_probe(struct omap_dss_device *dssdev)
 	struct sharp_data *sd;
 	int r;
 
-	dssdev->panel.config = OMAP_DSS_LCD_TFT | OMAP_DSS_LCD_IVS |
-		OMAP_DSS_LCD_IHS;
-	dssdev->panel.acb = 0x28;
 	dssdev->panel.timings = sharp_ls_timings;
 
 	sd = kzalloc(sizeof(*sd), GFP_KERNEL);
@@ -99,6 +102,7 @@ static int sharp_ls_panel_probe(struct omap_dss_device *dssdev)
 
 	memset(&props, 0, sizeof(struct backlight_properties));
 	props.max_brightness = dssdev->max_backlight_level;
+	props.type = BACKLIGHT_RAW;
 
 	bl = backlight_device_register("sharp-ls", &dssdev->dev, dssdev,
 			&sharp_ls_bl_ops, &props);
@@ -119,7 +123,7 @@ static int sharp_ls_panel_probe(struct omap_dss_device *dssdev)
 	return 0;
 }
 
-static void sharp_ls_panel_remove(struct omap_dss_device *dssdev)
+static void __exit sharp_ls_panel_remove(struct omap_dss_device *dssdev)
 {
 	struct sharp_data *sd = dev_get_drvdata(&dssdev->dev);
 	struct backlight_device *bl = sd->bl;
@@ -204,7 +208,7 @@ static int sharp_ls_panel_resume(struct omap_dss_device *dssdev)
 
 static struct omap_dss_driver sharp_ls_driver = {
 	.probe		= sharp_ls_panel_probe,
-	.remove		= sharp_ls_panel_remove,
+	.remove		= __exit_p(sharp_ls_panel_remove),
 
 	.enable		= sharp_ls_panel_enable,
 	.disable	= sharp_ls_panel_disable,

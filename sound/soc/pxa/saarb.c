@@ -18,7 +18,6 @@
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
-#include <sound/soc-dapm.h>
 #include <sound/jack.h>
 
 #include <asm/mach-types.h>
@@ -52,7 +51,7 @@ static const struct snd_soc_dapm_widget saarb_dapm_widgets[] = {
 };
 
 /* saarb machine audio map */
-static const struct snd_soc_dapm_route audio_map[] = {
+static const struct snd_soc_dapm_route saarb_audio_map[] = {
 	{"Headset Stereophone", NULL, "HS1"},
 	{"Headset Stereophone", NULL, "HS2"},
 
@@ -93,15 +92,6 @@ static int saarb_i2s_hw_params(struct snd_pcm_substream *substream,
 	if (ret < 0)
 		return ret;
 
-	ret = snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S |
-			SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBM_CFM);
-	if (ret < 0)
-		return ret;
-	ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_I2S |
-			SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBM_CFM);
-	if (ret < 0)
-		return ret;
-
 	ret = snd_soc_dai_set_tdm_slot(cpu_dai, 3, 3, 2, width);
 
 	return ret;
@@ -120,35 +110,35 @@ static struct snd_soc_dai_link saarb_dai[] = {
 		.platform_name	= "pxa-pcm-audio",
 		.codec_name	= "88pm860x-codec",
 		.init		= saarb_pm860x_init,
+		.dai_fmt	= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
+				  SND_SOC_DAIFMT_CBM_CFM,
 		.ops		= &saarb_i2s_ops,
 	},
 };
 
 static struct snd_soc_card snd_soc_card_saarb = {
 	.name = "Saarb",
+	.owner = THIS_MODULE,
 	.dai_link = saarb_dai,
 	.num_links = ARRAY_SIZE(saarb_dai),
+
+	.dapm_widgets = saarb_dapm_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(saarb_dapm_widgets),
+	.dapm_routes = saarb_audio_map,
+	.num_dapm_routes = ARRAY_SIZE(saarb_audio_map),
 };
 
 static int saarb_pm860x_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_codec *codec = rtd->codec;
-	int ret;
-
-	snd_soc_dapm_new_controls(codec, saarb_dapm_widgets,
-				  ARRAY_SIZE(saarb_dapm_widgets));
-	snd_soc_dapm_add_routes(codec, audio_map, ARRAY_SIZE(audio_map));
+	struct snd_soc_dapm_context *dapm = &codec->dapm;
 
 	/* connected pins */
-	snd_soc_dapm_enable_pin(codec, "Ext Speaker");
-	snd_soc_dapm_enable_pin(codec, "Ext Mic 1");
-	snd_soc_dapm_enable_pin(codec, "Ext Mic 3");
-	snd_soc_dapm_disable_pin(codec, "Headset Mic 2");
-	snd_soc_dapm_disable_pin(codec, "Headset Stereophone");
-
-	ret = snd_soc_dapm_sync(codec);
-	if (ret)
-		return ret;
+	snd_soc_dapm_enable_pin(dapm, "Ext Speaker");
+	snd_soc_dapm_enable_pin(dapm, "Ext Mic 1");
+	snd_soc_dapm_enable_pin(dapm, "Ext Mic 3");
+	snd_soc_dapm_disable_pin(dapm, "Headset Mic 2");
+	snd_soc_dapm_disable_pin(dapm, "Headset Stereophone");
 
 	/* Headset jack detection */
 	snd_soc_jack_new(codec, "Headphone Jack", SND_JACK_HEADPHONE

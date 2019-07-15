@@ -41,13 +41,13 @@ static struct tcf_hashinfo mirred_hash_info = {
 	.lock	=	&mirred_lock,
 };
 
-static inline int tcf_mirred_release(struct tcf_mirred *m, int bind)
+static int tcf_mirred_release(struct tcf_mirred *m, int bind)
 {
 	if (m) {
 		if (bind)
 			m->tcf_bindcnt--;
 		m->tcf_refcnt--;
-		if(!m->tcf_bindcnt && m->tcf_refcnt <= 0) {
+		if (!m->tcf_bindcnt && m->tcf_refcnt <= 0) {
 			list_del(&m->tcfm_list);
 			if (m->tcfm_dev)
 				dev_put(m->tcfm_dev);
@@ -154,7 +154,7 @@ static int tcf_mirred_cleanup(struct tc_action *a, int bind)
 	return 0;
 }
 
-static int tcf_mirred(struct sk_buff *skb, struct tc_action *a,
+static int tcf_mirred(struct sk_buff *skb, const struct tc_action *a,
 		      struct tcf_result *res)
 {
 	struct tcf_mirred *m = a->priv;
@@ -165,8 +165,7 @@ static int tcf_mirred(struct sk_buff *skb, struct tc_action *a,
 
 	spin_lock(&m->tcf_lock);
 	m->tcf_tm.lastuse = jiffies;
-	m->tcf_bstats.bytes += qdisc_pkt_len(skb);
-	m->tcf_bstats.packets++;
+	bstats_update(&m->tcf_bstats, skb);
 
 	dev = m->tcfm_dev;
 	if (!dev) {
@@ -175,9 +174,8 @@ static int tcf_mirred(struct sk_buff *skb, struct tc_action *a,
 	}
 
 	if (!(dev->flags & IFF_UP)) {
-		if (net_ratelimit())
-			pr_notice("tc mirred to Houston: device %s is down\n",
-				  dev->name);
+		net_notice_ratelimited("tc mirred to Houston: device %s is down\n",
+				       dev->name);
 		goto out;
 	}
 
@@ -197,19 +195,17 @@ static int tcf_mirred(struct sk_buff *skb, struct tc_action *a,
 
 	skb2->skb_iif = skb->dev->ifindex;
 	skb2->dev = dev;
-	dev_queue_xmit(skb2);
-	err = 0;
+	err = dev_queue_xmit(skb2);
 
 out:
 	if (err) {
 		m->tcf_qstats.overlimits++;
-		/* should we be asking for packet to be dropped?
-		 * may make sense for redirect case only
-		 */
-		retval = TC_ACT_SHOT;
-	} else {
+		if (m->tcfm_eaction != TCA_EGRESS_MIRROR)
+			retval = TC_ACT_SHOT;
+		else
+			retval = m->tcf_action;
+	} else
 		retval = m->tcf_action;
-	}
 	spin_unlock(&m->tcf_lock);
 
 	return retval;
@@ -229,11 +225,13 @@ static int tcf_mirred_dump(struct sk_buff *skb, struct tc_action *a, int bind, i
 	};
 	struct tcf_t t;
 
-	NLA_PUT(skb, TCA_MIRRED_PARMS, sizeof(opt), &opt);
+	if (nla_put(skb, TCA_MIRRED_PARMS, sizeof(opt), &opt))
+		goto nla_put_failure;
 	t.install = jiffies_to_clock_t(jiffies - m->tcf_tm.install);
 	t.lastuse = jiffies_to_clock_t(jiffies - m->tcf_tm.lastuse);
 	t.expires = jiffies_to_clock_t(m->tcf_tm.expires);
-	NLA_PUT(skb, TCA_MIRRED_TM, sizeof(t), &t);
+	if (nla_put(skb, TCA_MIRRED_TM, sizeof(t), &t))
+		goto nla_put_failure;
 	return skb->len;
 
 nla_put_failure:
